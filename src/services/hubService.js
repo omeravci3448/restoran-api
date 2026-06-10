@@ -3,7 +3,15 @@ const { query } = require('../config/db');
 
 // DİKKAT: hub.mdayazilim.com PANEL (frontend), API ayrı subdomain'de.
 // Yanlış adres verilirse nginx HTML döner ve sync/verify sessizce başarısız olur.
-const HUB_URL = process.env.HUB_URL || 'https://hub-api.mdayazilim.com';
+// Env'e şemasız ("hub-api.mdayazilim.com") girilirse ERR_INVALID_URL olur —
+// normalize edip https:// ekliyoruz, sondaki / işaretlerini temizliyoruz.
+function normalizeHubUrl(u) {
+    let s = String(u || '').trim().replace(/\/+$/, '');
+    if (!s) return 'https://hub-api.mdayazilim.com';
+    if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+    return s;
+}
+const HUB_URL = normalizeHubUrl(process.env.HUB_URL || 'https://hub-api.mdayazilim.com');
 const API_KEY = process.env.APP_API_KEY || 'dm_restoran_b8f4d2a1e3c5';
 
 // Hub'a doğrula → modules array'i + tier (license_type) ile dön
