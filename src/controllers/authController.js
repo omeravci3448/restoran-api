@@ -1,0 +1,276 @@
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+const { query, tx } = require('../config/db');
+const { signToken } = require('../middleware/authMiddleware');
+const hubService = require('../services/hubService');
+const { sendOTP } = require('../services/emailService');
+
+// ——— Yardımcılar ———
+
+const sixDigit = () => String(Math.floor(100000 + Math.random() * 900000));
+
+// 5 haneli random sayı (10000-99999), mevcut tenant'larda çakışmadığını garanti eder
+async function newBusinessCode() {
+    for (let i = 0; i < 30; i++) {
+        const code = String(10000 + Math.floor(Math.random() * 90000));
+        const exists = await query('SELECT 1 FROM tenants WHERE business_code = ?', [code]);
+        if (!exists.rows.length) return code;
+    }
+    throw new Error('İşyeri kodu üretilemedi (çok fazla çakışma — 5 haneyi 6 haneye çıkarmak gerek).');
+}
+
+const slugify = (s) => (s || '').toLowerCase()
+    .replace(/[ığüşöç]/g, m => ({ 'ı': 'i', 'ğ': 'g', 'ü': 'u', 'ş': 's', 'ö': 'o', 'ç': 'c' }[m]))
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+
+// ——— ADIM 1: Kayıt formu gönder, OTP yolla ———
+exports.requestRegistration = async (req, res) => {
+    const f = req.body || {};
+    if (!f.businessName || !f.email || !f.password) {
+        return res.status(400).json({ message: 'İşletme adı, e-posta ve şifre zorunlu.' });
+    }
+    if (String(f.password).length < 6) {
+        return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
+    }
+
+    // Bu e-posta zaten kayıtlıysa engelle
+    const existing = await query('SELECT 1 FROM users WHERE email = ?', [f.email]);
+    if (existing.rows.length) return res.status(409).json({ message: 'Bu e-posta zaten kayıtlı. Giriş yap veya farklı e-posta kullan.' });
+
+    // Aynı e-posta için varsa eski pending kaydı temizle
+    await query('DELETE FROM pending_registrations WHERE email = ?', [f.email]);
+
+    const otp = sixDigit();
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const pendingId = uuidv4();
+
+    // Form datayı serialize et — verify aşamasında tenant oluştururken kullanılacak
+    const formData = {
+        businessName: f.businessName,
+        email: f.email,
+        password: f.password,  // verify aşamasına kadar saklanır, sonra hash'lenir ve silinir
+        phone: f.phone || null,
+        address: f.address || null,
+        billingName: f.billingName || f.businessName,
+        billingAddress: f.billingAddress || f.address || null,
+        billingTaxId: f.billingTaxId || null,
+        billingTaxOffice: f.billingTaxOffice || null,
+        tier: f.tier || 'TIER_1_5',
+        modules: Array.isArray(f.modules) ? f.modules : ['BASE'],
+        referredBy: f.referredBy ? String(f.referredBy).toUpperCase().trim() : null
+    };
+
+    await query(
+        `INSERT INTO pending_registrations (id, email, form_data, otp_code, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [pendingId, f.email, JSON.stringify(formData), otp, expires]
+    );
+
+    const result = await sendOTP(f.email, otp, f.businessName);
+    res.status(201).json({
+        pendingId,
+        email: f.email,
+        message: 'Doğrulama kodu e-postanıza gönderildi.',
+        devOtp: result.dev ? otp : undefined  // SMTP yoksa dev için OTP geri döner
+    });
+};
+
+// ——— ADIM 2: OTP doğrula → tenant oluştur, hub'a gönder, JWT döndür ———
+exports.verifyRegistration = async (req, res) => {
+    const { pendingId, otp } = req.body || {};
+    if (!pendingId || !otp) return res.status(400).json({ message: 'pendingId ve OTP zorunlu.' });
+
+    const pRes = await query('SELECT * FROM pending_registrations WHERE id = ?', [pendingId]);
+    if (!pRes.rows.length) return res.status(404).json({ message: 'Kayıt bulunamadı veya süresi doldu.' });
+
+    const p = pRes.rows[0];
+    if (new Date(p.expires_at) < new Date()) {
+        await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
+        return res.status(410).json({ message: 'Doğrulama kodu süresi doldu. Tekrar kayıt başlatın.' });
+    }
+    if (Number(p.attempts) >= 5) {
+        await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
+        return res.status(429).json({ message: 'Çok fazla hatalı deneme. Tekrar kayıt başlatın.' });
+    }
+    if (String(otp).trim() !== p.otp_code) {
+        await query('UPDATE pending_registrations SET attempts = attempts + 1 WHERE id = ?', [pendingId]);
+        return res.status(400).json({ message: 'Doğrulama kodu hatalı.' });
+    }
+
+    const form = JSON.parse(p.form_data);
+    const tenantId = uuidv4();
+    const userId = uuidv4();
+    const slug = slugify(form.businessName) + '-' + crypto.randomBytes(2).toString('hex');
+    const bizCode = await newBusinessCode();
+    const refCode = 'MDA' + crypto.randomBytes(4).toString('hex').toUpperCase();
+    const hash = await bcrypt.hash(form.password, 10);
+
+    // Demo lisans — sadece müşterinin seçtiği modüller (BASE hardcode'u kaldırıldı)
+    const modules = Array.isArray(form.modules) ? form.modules : [];
+    const demoEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Hub'dan seçilen tier'ın masa limitini çek (dinamik, kod adına bağlı değil)
+    let tableLimit = null;
+    try {
+        const catalog = await hubService.getModulesAndTiers();
+        const tierRow = catalog.tiers.find(t => t.name === form.tier);
+        tableLimit = tierRow?.tableLimit ?? null; // null = sınırsız
+    } catch (_) { /* hub erişilemezse null kalır (sınırsız varsayılır) */ }
+
+    await tx(async () => {
+        await query(
+            `INSERT INTO tenants
+                (id, slug, business_code, business_name, owner_email, phone, address,
+                 billing_name, billing_address, billing_tax_id, billing_tax_office,
+                 referral_code, referred_by, discount_rate,
+                 license_tier, license_modules, license_end_date, license_table_limit, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1)`,
+            [tenantId, slug, bizCode, form.businessName, form.email, form.phone, form.address,
+                form.billingName, form.billingAddress, form.billingTaxId, form.billingTaxOffice,
+                refCode, form.referredBy,
+                form.tier, JSON.stringify(modules), demoEnd, tableLimit]
+        );
+        await query(
+            `INSERT INTO users (id, tenant_id, email, password_hash, name, role)
+             VALUES (?, ?, ?, ?, ?, 'OWNER')`,
+            [userId, tenantId, form.email, hash, form.businessName]
+        );
+        await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
+    });
+
+    // Hub'a tam senkron — fatura/vergi/modules/referans dahil
+    // Başarısız olsa bile kayıt devam etmiş olur — arka planda
+    hubService.syncWithHub({
+        customerEmail: form.email,
+        businessName: form.businessName,
+        businessType: form.tier,
+        phone: form.phone,
+        billingName: form.billingName,
+        billingAddress: form.billingAddress,
+        billingTaxId: form.billingTaxId,
+        billingTaxOffice: form.billingTaxOffice,
+        referralCode: refCode,
+        referredBy: form.referredBy,
+        modules
+    }).then(async (hubResp) => {
+        // Hub indirim oranı döndürürse tenant'a yaz
+        if (hubResp && hubResp.discountRate != null) {
+            await query('UPDATE tenants SET discount_rate = ? WHERE id = ?',
+                [hubResp.discountRate, tenantId]);
+        }
+    }).catch(() => {});
+
+    const token = signToken(userId);
+    res.status(201).json({
+        token, tenantId,
+        businessName: form.businessName,
+        businessCode: bizCode,
+        referralCode: refCode,
+        licenseTier: form.tier,
+        modules,
+        licenseEndDate: demoEnd,
+        message: '7 günlük demo aktif. İşyeri kodunuzu kaydedin.'
+    });
+};
+
+// ——— OTP'yi tekrar gönder ———
+exports.resendOtp = async (req, res) => {
+    const { pendingId } = req.body || {};
+    const r = await query('SELECT * FROM pending_registrations WHERE id = ?', [pendingId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Kayıt bulunamadı.' });
+    const p = r.rows[0];
+    const newOtp = sixDigit();
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await query('UPDATE pending_registrations SET otp_code = ?, expires_at = ?, attempts = 0 WHERE id = ?',
+        [newOtp, expires, pendingId]);
+    const result = await sendOTP(p.email, newOtp, JSON.parse(p.form_data).businessName);
+    res.json({ message: 'Yeni kod gönderildi.', devOtp: result.dev ? newOtp : undefined });
+};
+
+// ——— GİRİŞ: email + işyeri kodu + şifre ———
+exports.login = async (req, res) => {
+    const { email, businessCode: bizCode, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ message: 'E-posta ve şifre gerekli.' });
+
+    // İşyeri kodu opsiyonel — verilirse o tenant'a, verilmezse en son kayıt olan tenant'a giriş
+    let sql = `SELECT u.*, t.business_code, t.is_active AS tenant_active
+                 FROM users u JOIN tenants t ON t.id = u.tenant_id
+                WHERE u.email = ?`;
+    const params = [email];
+    if (bizCode) {
+        sql += ' AND t.business_code = ?';
+        params.push(String(bizCode).toUpperCase().trim());
+    }
+    sql += ' ORDER BY u.created_at DESC LIMIT 1';
+
+    const r = await query(sql, params);
+    if (!r.rows.length) {
+        return res.status(401).json({ message: bizCode ? 'E-posta veya işyeri kodu hatalı.' : 'Hatalı kullanıcı veya şifre.' });
+    }
+    const u = r.rows[0];
+
+    // Aynı e-postaya birden fazla tenant varsa kullanıcıyı bilgilendir
+    if (!bizCode) {
+        const multi = await query('SELECT COUNT(*) AS c FROM users WHERE email = ?', [email]);
+        if (Number(multi.rows[0].c) > 1) {
+            return res.status(400).json({
+                code: 'MULTI_TENANT',
+                message: 'Bu e-postaya birden çok işletme bağlı. Lütfen işyeri kodunu da girin.'
+            });
+        }
+    }
+
+    const ok = await bcrypt.compare(password, u.password_hash);
+    if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
+    if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
+
+    hubService.refreshTenantLicense(u.tenant_id, email).catch(() => {});
+    hubService.pingActivity(email);
+
+    const token = signToken(u.id);
+    res.json({
+        token, userId: u.id, role: u.role, name: u.name,
+        tenantId: u.tenant_id, businessCode: u.business_code
+    });
+};
+
+exports.me = async (req, res) => {
+    res.json({
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name,
+        role: req.user.role,
+        tenantId: req.user.tenantId,
+        businessName: req.user.businessName,
+        licenseTier: req.user.licenseTier,
+        modules: req.user.modules
+    });
+};
+
+exports.createStaff = async (req, res) => {
+    const { email, password, name, role } = req.body;
+    if (!email || !password) return res.status(400).json({ message: 'E-posta ve şifre gerekli.' });
+    const allowedRoles = ['CASHIER', 'WAITER', 'MANAGER'];
+    const finalRole = allowedRoles.includes(role) ? role : 'CASHIER';
+    const id = uuidv4();
+    const hash = await bcrypt.hash(password, 10);
+    try {
+        await query(
+            'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)',
+            [id, req.user.tenantId, email, hash, name || email, finalRole]
+        );
+        res.status(201).json({ id, email, name: name || email, role: finalRole });
+    } catch (e) {
+        if (String(e.message).includes('UNIQUE')) return res.status(409).json({ message: 'Bu e-posta bu işletmede zaten kayıtlı.' });
+        throw e;
+    }
+};
+
+exports.listStaff = async (req, res) => {
+    const r = await query(
+        'SELECT id, email, name, role, is_active, created_at FROM users WHERE tenant_id = ? ORDER BY created_at DESC',
+        [req.user.tenantId]
+    );
+    res.json(r.rows);
+};

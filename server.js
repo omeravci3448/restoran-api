@@ -1,0 +1,65 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { initDb, query } = require('./src/config/db');
+const hubService = require('./src/services/hubService');
+
+// Server start'ta: tüm tenant'ların license_table_limit'i hub'dan tazele
+// (eski seed'lerde NULL kalabilir, ya da hub'da tier limiti değişebilir)
+async function backfillTableLimits() {
+    try {
+        const r = await query('SELECT id, license_tier FROM tenants WHERE license_tier IS NOT NULL');
+        if (!r.rows.length) return;
+        const cat = await hubService.getModulesAndTiers();
+        for (const t of r.rows) {
+            const tier = cat.tiers.find(x => x.name === t.license_tier);
+            if (tier !== undefined) {
+                await query('UPDATE tenants SET license_table_limit = ? WHERE id = ?',
+                    [tier.tableLimit ?? null, t.id]);
+            }
+        }
+        console.log('[mda-restoran] tier limit backfill tamamlandı:', r.rows.length, 'tenant güncellendi');
+    } catch (e) {
+        console.log('[mda-restoran] tier limit backfill atlandı (hub erişimi yok):', e.message);
+    }
+}
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '4mb' }));
+
+// Sağlık
+app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+// Modüller
+app.use('/api/auth', require('./src/routes/authRoutes'));
+app.use('/api/tenant', require('./src/routes/tenantRoutes'));
+app.use('/api/license', require('./src/routes/licenseRoutes'));
+app.use('/api/tables', require('./src/routes/tableRoutes'));
+app.use('/api/categories', require('./src/routes/categoryRoutes'));
+app.use('/api/products', require('./src/routes/productRoutes'));
+app.use('/api/orders', require('./src/routes/orderRoutes'));
+app.use('/api/payments', require('./src/routes/paymentRoutes'));
+app.use('/api/stock', require('./src/routes/stockRoutes'));
+app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
+app.use('/api/marketplace', require('./src/routes/marketplaceRoutes'));
+app.use('/api/reports', require('./src/routes/reportRoutes'));
+app.use('/api/waiter', require('./src/routes/waiterRoutes'));
+app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
+
+// 404
+app.use((_req, res) => res.status(404).json({ message: 'Endpoint bulunamadı.' }));
+
+// Genel hata yakalama
+app.use((err, _req, res, _next) => {
+    console.error('[ERR]', err);
+    res.status(500).json({ message: err.message || 'Sunucu hatası.' });
+});
+
+initDb();
+const PORT = process.env.PORT || 5400;
+app.listen(PORT, () => {
+    console.log(`[mda-restoran] backend ${PORT} portunda — ${process.env.NODE_ENV || 'dev'}`);
+    // 5sn sonra backfill — DB init bitsin
+    setTimeout(() => { backfillTableLimits(); }, 5000);
+});
