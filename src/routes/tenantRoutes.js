@@ -4,5 +4,6 @@ const { protect, requireRole, requireManagerPin } = require('../middleware/authM
 
 router.get('/me', protect, ctrl.getProfile); // okuma açık (her sayfa işletme adını okur)
 router.put('/me', protect, requireManagerPin, requireRole('OWNER', 'MANAGER'), ctrl.updateProfile);
+router.post('/close', protect, requireManagerPin, requireRole('OWNER', 'MANAGER'), ctrl.requestClosure);
 
 module.exports = router;

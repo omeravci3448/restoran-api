@@ -18,6 +18,28 @@ exports.getProfile = async (req, res) => {
     res.json(t);
 };
 
+// KVKK — hesap kapatma / veri silme talebi.
+// Hard-delete YAPMAZ: mali kayıtlar (sipariş/ödeme) VUK gereği yasal saklama
+// yükümlülüğüne tabidir. Bu yüzden hesap deaktive edilir, talep zamanı kaydedilir,
+// hub'a bildirilir. Kişisel verilerin silinmesi/anonimleştirilmesi yasal saklama
+// süresi sonunda veya işletme politikasına göre yapılır.
+exports.requestClosure = async (req, res) => {
+    const { confirmText } = req.body || {};
+    if (confirmText !== 'KAPAT') {
+        return res.status(400).json({ message: 'Onay için kutuya KAPAT yazmalısınız.' });
+    }
+    await query(
+        'UPDATE tenants SET closure_requested_at = ?, is_active = 0 WHERE id = ?',
+        [new Date().toISOString(), req.user.tenantId]
+    );
+    try {
+        const hub = require('../services/hubService');
+        const t = await query('SELECT owner_email FROM tenants WHERE id = ?', [req.user.tenantId]);
+        if (t.rows[0]?.owner_email) hub.pingActivity(t.rows[0].owner_email);
+    } catch (_) {}
+    res.json({ ok: true, message: 'Hesap kapatma talebiniz alındı ve erişim durduruldu.' });
+};
+
 exports.updateProfile = async (req, res) => {
     const f = req.body;
     await query(

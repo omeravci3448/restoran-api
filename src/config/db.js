@@ -64,6 +64,9 @@ const initDb = () => {
             license_end_date TEXT,
             license_table_limit INTEGER,
             manager_pin TEXT,
+            kvkk_consent_at TEXT,
+            kvkk_consent_version TEXT,
+            closure_requested_at TEXT,
             show_cost_analytics INTEGER DEFAULT 1,
             is_active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -80,6 +83,9 @@ const initDb = () => {
         db.run("ALTER TABLE tenants ADD COLUMN discount_rate INTEGER DEFAULT 0", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN license_table_limit INTEGER", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN manager_pin TEXT", [], () => {}); // yönetici şifresi (hash) — rapor/ayar/lisans kilidi
+        db.run("ALTER TABLE tenants ADD COLUMN kvkk_consent_at TEXT", [], () => {});        // KVKK açık rıza zamanı
+        db.run("ALTER TABLE tenants ADD COLUMN kvkk_consent_version TEXT", [], () => {});    // onaylanan metin sürümü
+        db.run("ALTER TABLE tenants ADD COLUMN closure_requested_at TEXT", [], () => {});    // hesap kapatma talebi zamanı
 
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (

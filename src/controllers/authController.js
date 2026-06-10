@@ -33,6 +33,10 @@ exports.requestRegistration = async (req, res) => {
     if (String(f.password).length < 6) {
         return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
     }
+    // KVKK açık rıza zorunlu (kayıt için)
+    if (!f.kvkkConsent) {
+        return res.status(400).json({ message: 'Devam etmek için KVKK Aydınlatma Metni\'ni onaylamanız gerekir.' });
+    }
 
     // Bu e-posta zaten kayıtlıysa engelle
     const existing = await query('SELECT 1 FROM users WHERE email = ?', [f.email]);
@@ -58,7 +62,9 @@ exports.requestRegistration = async (req, res) => {
         billingTaxOffice: f.billingTaxOffice || null,
         tier: f.tier || 'TIER_1_5',
         modules: Array.isArray(f.modules) ? f.modules : ['BASE'],
-        referredBy: f.referredBy ? String(f.referredBy).toUpperCase().trim() : null
+        referredBy: f.referredBy ? String(f.referredBy).toUpperCase().trim() : null,
+        kvkkConsent: true,
+        kvkkConsentVersion: f.kvkkConsentVersion || '1.0'
     };
 
     await query(
@@ -137,12 +143,14 @@ exports.verifyRegistration = async (req, res) => {
                 (id, slug, business_code, business_name, owner_email, phone, address,
                  billing_name, billing_address, billing_tax_id, billing_tax_office,
                  referral_code, referred_by, discount_rate,
-                 license_tier, license_modules, license_end_date, license_table_limit, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1)`,
+                 license_tier, license_modules, license_end_date, license_table_limit,
+                 kvkk_consent_at, kvkk_consent_version, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 1)`,
             [tenantId, slug, bizCode, form.businessName, form.email, form.phone, form.address,
                 form.billingName, form.billingAddress, form.billingTaxId, form.billingTaxOffice,
                 refCode, form.referredBy,
-                form.tier, JSON.stringify(modules), demoEnd, tableLimit]
+                form.tier, JSON.stringify(modules), demoEnd, tableLimit,
+                new Date().toISOString(), form.kvkkConsentVersion || '1.0']
         );
         await query(
             `INSERT INTO users (id, tenant_id, email, password_hash, name, role)
