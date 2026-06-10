@@ -1,7 +1,9 @@
 const axios = require('axios');
 const { query } = require('../config/db');
 
-const HUB_URL = process.env.HUB_URL || 'https://hub.mdayazilim.com';
+// DİKKAT: hub.mdayazilim.com PANEL (frontend), API ayrı subdomain'de.
+// Yanlış adres verilirse nginx HTML döner ve sync/verify sessizce başarısız olur.
+const HUB_URL = process.env.HUB_URL || 'https://hub-api.mdayazilim.com';
 const API_KEY = process.env.APP_API_KEY || 'dm_restoran_b8f4d2a1e3c5';
 
 // Hub'a doğrula → modules array'i + tier (license_type) ile dön
@@ -131,6 +133,7 @@ async function refreshTenantLicense(tenantId, customerEmail) {
 }
 
 module.exports = {
+    HUB_URL,
     verifyWithHub, syncWithHub, getModulesAndTiers, pingActivity, refreshTenantLicense,
     getBankInfo, createPurchase, declarePaid, listPurchases, getPurchase
 };

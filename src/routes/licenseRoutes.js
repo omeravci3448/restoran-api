@@ -6,6 +6,7 @@ const { protect, requireManagerPin, requireRole } = require('../middleware/authM
 router.get('/catalog', ctrl.catalog);
 router.post('/quote', ctrl.quote);
 router.get('/bank-info', ctrl.bankInfo);
+router.get('/hub-status', ctrl.hubStatus); // teşhis: hub bağlantısı sağlıklı mı (tarayıcıdan açılır)
 
 // Hub'dan webhook (public — Patron'un Hub'ı çağırır)
 router.post('/webhook/purchase', ctrl.webhookPurchase);

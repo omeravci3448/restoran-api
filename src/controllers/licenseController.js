@@ -22,6 +22,38 @@ const FALLBACK_CATALOG = {
     categories: []
 };
 
+// TEŞHİS: hub bağlantısını sunucu tarafından dener ve hükmü Türkçe söyler.
+// Tarayıcıdan açılır: GET /api/license/hub-status — API key SIZDIRMAZ.
+exports.hubStatus = async (_req, res) => {
+    const axios = require('axios');
+    const target = `${hub.HUB_URL}/api/subscriptions/modules-pricing?appId=dama-restoran`;
+    try {
+        const r = await axios.get(target, { timeout: 8000, validateStatus: () => true });
+        const ct = String(r.headers['content-type'] || '');
+        const isJson = ct.includes('application/json');
+        const looksHtml = typeof r.data === 'string' && /<html|<!doctype/i.test(r.data);
+        let verdict;
+        if (r.status === 200 && isJson && Array.isArray(r.data?.tiers) && r.data.tiers.length) {
+            verdict = '✅ SORUN YOK — hub API doğru cevap veriyor, ' + r.data.tiers.length + ' paket geliyor.';
+        } else if (looksHtml || (r.status === 200 && !isJson)) {
+            verdict = '❌ YANLIŞ ADRES — HUB_URL hub PANELİNE (frontend/nginx) işaret ediyor, API\'ye değil. ' +
+                'Coolify\'da restoran-api env\'inde HUB_URL\'i hub API adresine çevirin (büyük ihtimalle https://hub-api.mdayazilim.com) ve restart edin.';
+        } else if (r.status === 401) {
+            verdict = '❌ HUB ESKİ KOD — modules-pricing PIN istiyor. Hub\'ı son commit ile yeniden deploy edin.';
+        } else if (r.status === 200 && isJson) {
+            verdict = '⚠️ Hub cevap veriyor ama paket listesi BOŞ — hub DB\'sinde dama-restoran tier kayıtları yok (Fiyatlandırma sayfasından kontrol edin).';
+        } else {
+            verdict = '⚠️ BEKLENMEDİK CEVAP — HTTP ' + r.status + '. Hub loglarına bakın.';
+        }
+        res.json({ hubUrl: hub.HUB_URL, target, httpStatus: r.status, contentType: ct, verdict });
+    } catch (e) {
+        res.json({
+            hubUrl: hub.HUB_URL, target, error: e.code || e.message,
+            verdict: '❌ ULAŞILAMADI — DNS/ağ hatası veya hub kapalı (' + (e.code || e.message) + '). HUB_URL adresini ve hub\'ın ayakta olduğunu kontrol edin.'
+        });
+    }
+};
+
 // Hub'dan tüm modül + tier fiyatlarını çek. Hub erişilemezse yedek katalog
 // döndür (kayıt akışı asla paketsiz kalmasın). fromHub=false → frontend isterse uyarabilir.
 exports.catalog = async (_req, res) => {
