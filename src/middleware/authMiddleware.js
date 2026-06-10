@@ -75,8 +75,26 @@ function requireRole(...roles) {
     };
 }
 
+// Yönetici şifresi ister — kasiyerlerin rapor/ayar/lisans sayfalarına
+// erişmesini engeller. x-manager-pin header'ı tenant.manager_pin (hash) ile
+// karşılaştırılır. PIN henüz hiç ayarlanmadıysa erişime izin verir (ilk kurulum
+// için; sahip Ayarlar'dan PIN belirleyince koruma devreye girer).
+const bcryptMw = require('bcryptjs');
+function requireManagerPin(req, res, next) {
+    query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId])
+        .then(async (r) => {
+            const hash = r.rows[0]?.manager_pin;
+            if (!hash) return next(); // henüz ayarlanmamış → açık (ilk kurulum)
+            const pin = req.headers['x-manager-pin'] || '';
+            const ok = pin && await bcryptMw.compare(String(pin), hash);
+            if (ok) return next();
+            return res.status(403).json({ code: 'MANAGER_PIN_REQUIRED', message: 'Yönetici şifresi gerekli.' });
+        })
+        .catch(() => res.status(500).json({ message: 'Yetki kontrolü hatası.' }));
+}
+
 function signToken(userId) {
     return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '12h' });
 }
 
-module.exports = { protect, requireModule, requireRole, signToken };
+module.exports = { protect, requireModule, requireRole, requireManagerPin, signToken };

@@ -1,8 +1,8 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/tenantController');
-const { protect, requireRole } = require('../middleware/authMiddleware');
+const { protect, requireRole, requireManagerPin } = require('../middleware/authMiddleware');
 
-router.get('/me', protect, ctrl.getProfile);
-router.put('/me', protect, requireRole('OWNER', 'MANAGER'), ctrl.updateProfile);
+router.get('/me', protect, ctrl.getProfile); // okuma açık (her sayfa işletme adını okur)
+router.put('/me', protect, requireManagerPin, requireRole('OWNER', 'MANAGER'), ctrl.updateProfile);
 
 module.exports = router;

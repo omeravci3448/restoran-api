@@ -106,17 +106,25 @@ exports.verifyRegistration = async (req, res) => {
     const refCode = 'MDA' + crypto.randomBytes(4).toString('hex').toUpperCase();
     const hash = await bcrypt.hash(form.password, 10);
 
-    // Demo lisans — sadece müşterinin seçtiği modüller (BASE hardcode'u kaldırıldı)
-    const modules = Array.isArray(form.modules) ? form.modules : [];
+    // Demo lisans — 7 gün boyunca TÜM modüller açık (müşteri her şeyi denesin).
+    // Demo sonunda satın alırken hangi modülleri tuttuğu lisansla belirlenir.
+    // Tier'ın MASA LİMİTİ yine geçerli (kayıttaki paket seçimi sınırlar).
     const demoEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
-    // Hub'dan seçilen tier'ın masa limitini çek (dinamik, kod adına bağlı değil)
+    // Hub erişilemezse bile demoda tüm modüller açık olsun diye bilinen liste (fallback)
+    const DEMO_FALLBACK_MODULES = ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK', 'MARKETPLACE', 'FINANSAL_RAPORLAMA'];
+    let modules = Array.isArray(form.modules) ? form.modules : [];
     let tableLimit = null;
     try {
         const catalog = await hubService.getModulesAndTiers();
+        // Demo: kataloğdaki tüm modülleri aç (seçilenlerle birleştir)
+        const allModuleNames = (catalog.modules || []).map(m => m.name);
+        modules = Array.from(new Set([...modules, ...allModuleNames]));
         const tierRow = catalog.tiers.find(t => t.name === form.tier);
         tableLimit = tierRow?.tableLimit ?? null; // null = sınırsız
-    } catch (_) { /* hub erişilemezse null kalır (sınırsız varsayılır) */ }
+    } catch (_) {
+        // Hub erişilemedi → bilinen tüm modülleri aç (demo her şeyi denesin)
+        modules = Array.from(new Set([...modules, ...DEMO_FALLBACK_MODULES]));
+    }
 
     await tx(async () => {
         await query(
@@ -273,4 +281,39 @@ exports.listStaff = async (req, res) => {
         [req.user.tenantId]
     );
     res.json(r.rows);
+};
+
+// ——— YÖNETİCİ ŞİFRESİ (manager PIN) ———
+// Rapor/Ayar/Lisans sayfalarını kasiyerlerden korur.
+
+exports.managerStatus = async (req, res) => {
+    const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
+    res.json({ isSet: !!r.rows[0]?.manager_pin });
+};
+
+exports.managerSet = async (req, res) => {
+    const { pin, currentPin } = req.body || {};
+    if (!pin || String(pin).length < 4) {
+        return res.status(400).json({ message: 'Yönetici şifresi en az 4 karakter olmalı.' });
+    }
+    const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
+    const existing = r.rows[0]?.manager_pin;
+    // Zaten ayarlıysa değiştirmek için mevcut şifre gerekir (kasiyer ele geçiremesin)
+    if (existing) {
+        const ok = currentPin && await bcrypt.compare(String(currentPin), existing);
+        if (!ok) return res.status(403).json({ message: 'Mevcut yönetici şifresi hatalı.' });
+    }
+    const hash = await bcrypt.hash(String(pin), 10);
+    await query('UPDATE tenants SET manager_pin = ? WHERE id = ?', [hash, req.user.tenantId]);
+    res.json({ ok: true });
+};
+
+exports.managerVerify = async (req, res) => {
+    const { pin } = req.body || {};
+    const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
+    const hash = r.rows[0]?.manager_pin;
+    if (!hash) return res.json({ ok: true, notSet: true }); // henüz ayarlanmamış
+    const ok = pin && await bcrypt.compare(String(pin), hash);
+    if (!ok) return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
+    res.json({ ok: true });
 };

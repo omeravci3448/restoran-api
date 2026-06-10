@@ -63,6 +63,7 @@ const initDb = () => {
             license_modules TEXT,
             license_end_date TEXT,
             license_table_limit INTEGER,
+            manager_pin TEXT,
             show_cost_analytics INTEGER DEFAULT 1,
             is_active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -78,6 +79,7 @@ const initDb = () => {
         db.run("ALTER TABLE tenants ADD COLUMN referred_by TEXT", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN discount_rate INTEGER DEFAULT 0", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN license_table_limit INTEGER", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN manager_pin TEXT", [], () => {}); // yönetici şifresi (hash) — rapor/ayar/lisans kilidi
 
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (
