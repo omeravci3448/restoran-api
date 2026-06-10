@@ -12,9 +12,11 @@ router.get('/me', protect, ctrl.me);
 router.get('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.listStaff);
 router.post('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.createStaff);
 
-// Yönetici şifresi (manager PIN) — rapor/ayar/lisans kilidi
+// Yönetici şifresi (manager PIN) — rapor/ayar/lisans kilidi.
+// Sadece OWNER/MANAGER belirleyip doğrulayabilir → kasiyer ilk PIN'i kurup
+// sahibi kilitleyemez (privilege escalation engellendi) + brute-force yüzeyi daralır.
 router.get('/manager-status', protect, ctrl.managerStatus);
-router.post('/manager-set', protect, ctrl.managerSet);
-router.post('/manager-verify', protect, ctrl.managerVerify);
+router.post('/manager-set', protect, requireRole('OWNER', 'MANAGER'), ctrl.managerSet);
+router.post('/manager-verify', protect, requireRole('OWNER', 'MANAGER'), ctrl.managerVerify);
 
 module.exports = router;

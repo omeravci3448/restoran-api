@@ -112,18 +112,23 @@ exports.verifyRegistration = async (req, res) => {
     const demoEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     // Hub erişilemezse bile demoda tüm modüller açık olsun diye bilinen liste (fallback)
     const DEMO_FALLBACK_MODULES = ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK', 'MARKETPLACE', 'FINANSAL_RAPORLAMA'];
+    // Hub erişilemezse masa limiti yine uygulansın diye bilinen tier limitleri (fallback).
+    // null = sınırsız (TIER_20_PLUS). Bilinmeyen tier → güvenli küçük default (5).
+    const FALLBACK_TIER_LIMITS = { TIER_1_5: 5, TIER_6_10: 10, TIER_11_20: 20, TIER_20_PLUS: null };
     let modules = Array.isArray(form.modules) ? form.modules : [];
-    let tableLimit = null;
+    let tableLimit;
     try {
         const catalog = await hubService.getModulesAndTiers();
-        // Demo: kataloğdaki tüm modülleri aç (seçilenlerle birleştir)
         const allModuleNames = (catalog.modules || []).map(m => m.name);
         modules = Array.from(new Set([...modules, ...allModuleNames]));
         const tierRow = catalog.tiers.find(t => t.name === form.tier);
-        tableLimit = tierRow?.tableLimit ?? null; // null = sınırsız
+        // Hub tier'ı bulduysa onu kullan; bulamadıysa fallback
+        tableLimit = tierRow ? (tierRow.tableLimit ?? null)
+            : (form.tier in FALLBACK_TIER_LIMITS ? FALLBACK_TIER_LIMITS[form.tier] : 5);
     } catch (_) {
-        // Hub erişilemedi → bilinen tüm modülleri aç (demo her şeyi denesin)
+        // Hub erişilemedi → tüm modüller + fallback masa limiti (sınırsız masa açığı kapatıldı)
         modules = Array.from(new Set([...modules, ...DEMO_FALLBACK_MODULES]));
+        tableLimit = form.tier in FALLBACK_TIER_LIMITS ? FALLBACK_TIER_LIMITS[form.tier] : 5;
     }
 
     await tx(async () => {
@@ -291,10 +296,26 @@ exports.managerStatus = async (req, res) => {
     res.json({ isSet: !!r.rows[0]?.manager_pin });
 };
 
+// Yönetici şifresi deneme sınırı (tenant başına, bellek içi — tek container yeterli)
+const mgrAttempts = new Map(); // tenantId → { count, resetAt }
+function mgrRateLimited(tenantId) {
+    const now = Date.now();
+    const rec = mgrAttempts.get(tenantId);
+    if (rec && now < rec.resetAt && rec.count >= 8) return true;
+    return false;
+}
+function mgrRecordFail(tenantId) {
+    const now = Date.now();
+    const rec = mgrAttempts.get(tenantId);
+    if (!rec || now >= rec.resetAt) mgrAttempts.set(tenantId, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    else rec.count++;
+}
+function mgrReset(tenantId) { mgrAttempts.delete(tenantId); }
+
 exports.managerSet = async (req, res) => {
     const { pin, currentPin } = req.body || {};
-    if (!pin || String(pin).length < 4) {
-        return res.status(400).json({ message: 'Yönetici şifresi en az 4 karakter olmalı.' });
+    if (!pin || String(pin).length < 6) {
+        return res.status(400).json({ message: 'Yönetici şifresi en az 6 haneli olmalı.' });
     }
     const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
     const existing = r.rows[0]?.manager_pin;
@@ -310,10 +331,17 @@ exports.managerSet = async (req, res) => {
 
 exports.managerVerify = async (req, res) => {
     const { pin } = req.body || {};
+    if (mgrRateLimited(req.user.tenantId)) {
+        return res.status(429).json({ message: 'Çok fazla hatalı deneme. Birkaç dakika sonra tekrar deneyin.' });
+    }
     const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
     const hash = r.rows[0]?.manager_pin;
     if (!hash) return res.json({ ok: true, notSet: true }); // henüz ayarlanmamış
     const ok = pin && await bcrypt.compare(String(pin), hash);
-    if (!ok) return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
+    if (!ok) {
+        mgrRecordFail(req.user.tenantId);
+        return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
+    }
+    mgrReset(req.user.tenantId);
     res.json({ ok: true });
 };

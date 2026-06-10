@@ -88,12 +88,38 @@ async function refreshTenantLicense(tenantId, customerEmail) {
         await query('UPDATE tenants SET is_active = 0 WHERE id = ?', [tenantId]);
         return { ok: false, reason: 'INACTIVE', payload };
     }
-    const modulesJson = JSON.stringify(payload.modules || []);
+    // NON-DESTRUCTIVE: Hub demo aboneliği genelde modülsüz/tier'sız (license_type='DEMO')
+    // döner. Bunu körü körüne yazarsak kayıttaki "tüm modüller + tier masa limiti"
+    // silinir (demo bozulur, masa limiti sınırsıza döner). Bu yüzden:
+    //  - modules: hub BOŞ döndürürse mevcut yereldeki modülleri KORU (gerçek lisans
+    //    dolu modül listesiyle gelince üzerine yazılır → downgrade yine çalışır).
+    //  - tier + masa limiti: hub'ın category'si bilinen bir TIER ise güncelle; değilse
+    //    (örn 'DEMO') yereldeki tier + limiti KORU.
+    const local = (await query(
+        'SELECT license_tier, license_modules, license_table_limit FROM tenants WHERE id = ?', [tenantId]
+    )).rows[0] || {};
+
+    const hubModules = Array.isArray(payload.modules) ? payload.modules : [];
+    const modulesJson = hubModules.length ? JSON.stringify(hubModules) : (local.license_modules || '[]');
+
+    const category = payload.category || payload.type;
+    let tierToWrite = local.license_tier;
+    let limitToWrite = local.license_table_limit;
+    try {
+        const cat = await getModulesAndTiers();
+        const tierRow = (cat.tiers || []).find(t => t.name === category);
+        if (tierRow) { // hub gerçek bir tier döndürdü → tier + limiti güncelle
+            tierToWrite = category;
+            limitToWrite = tierRow.tableLimit ?? null;
+        }
+    } catch (_) { /* katalog yoksa yereldeki tier + limiti koru */ }
+
     await query(
         `UPDATE tenants
-            SET license_tier = ?, license_modules = ?, license_end_date = ?, is_active = 1
+            SET license_tier = ?, license_modules = ?, license_end_date = ?,
+                license_table_limit = ?, is_active = 1
           WHERE id = ?`,
-        [payload.category || payload.type, modulesJson, payload.expires, tenantId]
+        [tierToWrite, modulesJson, payload.expires, limitToWrite, tenantId]
     );
     await query(
         `INSERT INTO license_cache (tenant_id, payload, checked_at)
