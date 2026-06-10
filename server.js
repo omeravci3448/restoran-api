@@ -1,8 +1,13 @@
 require('dotenv').config();
+require('express-async-errors'); // async route handler hatalarını error middleware'e taşır (Express 4)
 const express = require('express');
 const cors = require('cors');
 const { initDb, query } = require('./src/config/db');
 const hubService = require('./src/services/hubService');
+
+// Tek bir DB hatası (örn SQLITE_BUSY) tüm servisi düşürmesin — logla, ayakta kal
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 // Server start'ta: tüm tenant'ların license_table_limit'i hub'dan tazele
 // (eski seed'lerde NULL kalabilir, ya da hub'da tier limiti değişebilir)
@@ -25,7 +30,20 @@ async function backfillTableLimits() {
 }
 
 const app = express();
-app.use(cors());
+
+// CORS — JWT Bearer token ile auth yapıldığı için cookie/CSRF riski yok.
+// CORS_ORIGINS env'i verilirse allowlist olarak çalışır (virgülle ayrılmış),
+// verilmezse gelen origin'i yansıtır (QR menü herkese açık erişilir olmalı).
+const allowList = (process.env.CORS_ORIGINS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+    origin: (origin, cb) => {
+        if (!origin || allowList.length === 0 || allowList.includes(origin)) {
+            return cb(null, true);
+        }
+        return cb(null, false);
+    }
+}));
 app.use(express.json({ limit: '4mb' }));
 
 // Sağlık

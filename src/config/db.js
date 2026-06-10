@@ -14,6 +14,9 @@ const db = new sqlite3.Database(dbPath, (err) => {
     if (!err) {
         db.run('PRAGMA journal_mode=WAL');
         db.run('PRAGMA foreign_keys=ON');
+        // Eş zamanlı yazımda (kasiyer + garson + QR menü aynı anda) SQLITE_BUSY
+        // hemen atılmasın, 5sn beklesin — çok kullanıcılı canlı ortam için kritik.
+        db.run('PRAGMA busy_timeout=5000');
     }
 });
 

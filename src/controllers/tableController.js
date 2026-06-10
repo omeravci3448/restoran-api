@@ -145,7 +145,7 @@ exports.qrPng = async (req, res) => {
         [req.params.id, req.user.tenantId]
     );
     if (!r.rows.length) return res.status(404).json({ message: 'Masa yok.' });
-    const base = req.query.publicBase || process.env.QR_PUBLIC_BASE || 'https://m.damasoft.com.tr';
+    const base = req.query.publicBase || process.env.QR_PUBLIC_BASE || 'https://restoran.mdayazilim.com';
     const url = `${base}/m/${r.rows[0].slug}/${r.rows[0].qr_token}`;
     const png = await QRCode.toBuffer(url, { width: 480, margin: 1 });
     res.type('image/png').send(png);
