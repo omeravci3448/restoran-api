@@ -246,7 +246,36 @@ exports.login = async (req, res) => {
     if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
     if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
 
-    hubService.refreshTenantLicense(u.tenant_id, email).catch(() => {});
+    // Arka planda hub ile uzlaştır (self-healing): kayıt sırasında hub erişilemediyse
+    // müşteri hub'da hiç oluşmamış olabilir. Login'de tekrar sync ederek hub'da
+    // müşteri + abonelik kaydını garantiye al, sonra lisansı tazele.
+    (async () => {
+        try {
+            const t = (await query(
+                `SELECT business_name, owner_email, phone, billing_name, billing_address,
+                        billing_tax_id, billing_tax_office, referral_code, referred_by,
+                        license_tier, license_modules
+                   FROM tenants WHERE id = ?`, [u.tenant_id])).rows[0];
+            if (t) {
+                let mods = [];
+                try { mods = JSON.parse(t.license_modules || '[]'); } catch (_) {}
+                await hubService.syncWithHub({
+                    customerEmail: t.owner_email,
+                    businessName: t.business_name,
+                    businessType: t.license_tier,
+                    phone: t.phone,
+                    billingName: t.billing_name,
+                    billingAddress: t.billing_address,
+                    billingTaxId: t.billing_tax_id,
+                    billingTaxOffice: t.billing_tax_office,
+                    referralCode: t.referral_code,
+                    referredBy: t.referred_by,
+                    modules: mods
+                });
+            }
+        } catch (_) { /* hub erişilemezse sessiz geç */ }
+        hubService.refreshTenantLicense(u.tenant_id, email).catch(() => {});
+    })();
     hubService.pingActivity(email);
 
     const token = signToken(u.id);

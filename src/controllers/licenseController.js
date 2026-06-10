@@ -1,13 +1,40 @@
 const { query } = require('../config/db');
 const hub = require('../services/hubService');
 
-// Hub'dan tüm modül + tier fiyatlarını çek (müşteriye paket fiyatı göstermek için)
+// Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
+// Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların
+// yedekte 0 olması sorun değil; gerçek fiyatlar Lisans sayfasında hub'dan gelir.
+const FALLBACK_CATALOG = {
+    appId: 'dama-restoran',
+    tiers: [
+        { name: 'TIER_1_5', displayName: '1-5 Masa', price: 0, tableLimit: 5 },
+        { name: 'TIER_6_10', displayName: '6-10 Masa', price: 0, tableLimit: 10 },
+        { name: 'TIER_11_20', displayName: '11-20 Masa', price: 0, tableLimit: 20 },
+        { name: 'TIER_20_PLUS', displayName: '20+ Masa (Sınırsız)', price: 0, tableLimit: null }
+    ],
+    modules: [
+        { name: 'BASE', displayName: 'Temel (Dahil)', price: 0 },
+        { name: 'MENU_DIGITAL', displayName: 'Dijital QR Menü', price: 0 },
+        { name: 'GARSON', displayName: 'Garson Mobil Uygulaması', price: 0 },
+        { name: 'STOK', displayName: 'Stok + Tedarikçi', price: 0 },
+        { name: 'MARKETPLACE', displayName: 'Pazaryeri', price: 0 }
+    ],
+    categories: []
+};
+
+// Hub'dan tüm modül + tier fiyatlarını çek. Hub erişilemezse yedek katalog
+// döndür (kayıt akışı asla paketsiz kalmasın). fromHub=false → frontend isterse uyarabilir.
 exports.catalog = async (_req, res) => {
     try {
         const data = await hub.getModulesAndTiers();
-        res.json(data);
+        if (data && Array.isArray(data.tiers) && data.tiers.length) {
+            return res.json({ ...data, fromHub: true });
+        }
+        // Hub döndü ama boş → yedek
+        return res.json({ ...FALLBACK_CATALOG, fromHub: false });
     } catch (e) {
-        res.status(502).json({ message: 'Hub fiyat listesine ulaşılamadı.', error: e.message });
+        // Hub erişilemedi → yedek katalog (kayıt yine çalışsın)
+        return res.json({ ...FALLBACK_CATALOG, fromHub: false });
     }
 };
 
