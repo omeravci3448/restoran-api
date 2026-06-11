@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const QRCode = require('qrcode');
 const { query } = require('../config/db');
-const hub = require('../services/hubService');
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
 
@@ -12,24 +11,24 @@ async function activeTableCount(tenantId) {
     return Number(r.rows[0].c);
 }
 
-// Tier'ın display name'ini hub'dan canlı çek (cache yok — yine de hızlı)
-async function fetchTierLabel(tierName) {
+// Tier kodunu YEREL olarak okunur etikete çevir — HUB ÇAĞRISI YOK (hız kritik).
+// Masalar sayfası her açılışta çağırdığı için ağ çağrısı yapılırsa ekran kilitlenir.
+function prettyTierLabel(tierName) {
     if (!tierName) return '';
-    try {
-        const cat = await hub.getModulesAndTiers();
-        const row = cat.tiers.find(t => t.name === tierName);
-        return row?.displayName || tierName;
-    } catch (_) { return tierName; }
+    const m = String(tierName).match(/^TIER_(\d+)_(\d+)$/);
+    if (m) return `${m[1]}-${m[2]} Masa`;
+    if (/^TIER_(\d+)_PLUS$/.test(tierName)) return `${tierName.match(/\d+/)[0]}+ Masa`;
+    return String(tierName).replace(/^TIER_/, '').replace(/_/g, ' ');
 }
 
 // Verilen kadar daha eklemek lisans sınırını aşıyor mu kontrol eder
-// Limit: tenant.license_table_limit (null = sınırsız)
+// Limit: tenant.license_table_limit (null = sınırsız). HUB ÇAĞRISI YOK.
 async function checkTableLimit(req, res, addCount = 1) {
     const limit = req.user.licenseTableLimit;
     if (limit == null) return false; // null = sınırsız
     const current = await activeTableCount(req.user.tenantId);
     if (current + addCount > limit) {
-        const label = await fetchTierLabel(req.user.licenseTier);
+        const label = prettyTierLabel(req.user.licenseTier);
         res.status(403).json({
             code: 'TABLE_LIMIT_REACHED',
             tier: req.user.licenseTier,
@@ -61,7 +60,7 @@ exports.list = async (req, res) => {
 exports.limitInfo = async (req, res) => {
     const limit = req.user.licenseTableLimit;
     const used = await activeTableCount(req.user.tenantId);
-    const label = await fetchTierLabel(req.user.licenseTier);
+    const label = prettyTierLabel(req.user.licenseTier);
     res.json({
         tier: req.user.licenseTier,
         tierLabel: label,
