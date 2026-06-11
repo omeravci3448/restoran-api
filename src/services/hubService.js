@@ -27,9 +27,17 @@ async function syncWithHub(payload) {
     return data;
 }
 
+// Modül/tier kataloğu sık değişmez ama her login + her başlangıç backfill'i hub'a gidiyor.
+// 60sn'lik in-memory cache: login dalgalarında hub'a giden istek sayısını ezici biçimde düşürür,
+// hub yavaşsa o gecikme login akışına yansımaz. Hata olursa cache yazılmaz (eski iyi veri kalır).
+let _catCache = { data: null, at: 0 };
+const CATALOG_TTL_MS = 60000;
 async function getModulesAndTiers() {
+    const now = Date.now();
+    if (_catCache.data && (now - _catCache.at) < CATALOG_TTL_MS) return _catCache.data;
     const url = `${HUB_URL}/api/subscriptions/modules-pricing?appId=dama-restoran`;
     const { data } = await axios.get(url, { timeout: 8000 });
+    _catCache = { data, at: now };
     return data;
 }
 

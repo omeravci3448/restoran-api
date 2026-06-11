@@ -1,6 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
+const { AsyncLocalStorage } = require('async_hooks');
 
 const dbPath = process.env.NODE_ENV === 'production'
     ? '/app/data/database.sqlite'
@@ -10,60 +11,79 @@ if (process.env.NODE_ENV === 'production' && !fs.existsSync('/app/data')) {
     try { fs.mkdirSync('/app/data', { recursive: true }); } catch (_) {}
 }
 
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (!err) {
-        db.run('PRAGMA journal_mode=WAL');
-        db.run('PRAGMA foreign_keys=ON');
-        // Eş zamanlı yazımda (kasiyer + garson + QR menü aynı anda) SQLITE_BUSY
-        // hemen atılmasın, 5sn beklesin — çok kullanıcılı canlı ortam için kritik.
-        db.run('PRAGMA busy_timeout=5000');
-    }
-});
+// İKİ BAĞLANTI (WAL'in eşzamanlı okuma garantisini kullanmak için):
+//  - writeDb: yazmalar + transaction'lar, tek sıradan (kilit) geçer.
+//  - readDb : okumalar, KİLİTSİZ ve eşzamanlı. Böylece /api/auth/me, /tables gibi
+//    okumalar bir yazmanın/transaction'ın arkasında ASLA beklemez (donma biter).
+function mkConn(label) {
+    const c = new sqlite3.Database(dbPath, (err) => {
+        if (!err) {
+            c.run('PRAGMA journal_mode=WAL');
+            c.run('PRAGMA foreign_keys=ON');
+            c.run('PRAGMA busy_timeout=4000');
+        } else {
+            console.error(`[db:${label}]`, err.message);
+        }
+    });
+    return c;
+}
+const writeDb = mkConn('write');
+const readDb = mkConn('read');
+const db = writeDb; // initDb (CREATE/ALTER) ve eski referanslar yazma bağlantısını kullanır
 
-// Ham sorgu — kilitsiz, doğrudan tek bağlantıya gider.
-const rawQuery = (sql, params = []) => new Promise((resolve, reject) => {
+const QUERY_TIMEOUT_MS = 8000;
+const isRead = (sql) => {
     const op = sql.trim().toUpperCase();
-    if (op.startsWith('SELECT') || op.startsWith('PRAGMA') || op.startsWith('WITH')) {
-        db.all(sql, params, (err, rows) => err ? reject(err) : resolve({ rows }));
-    } else {
-        db.run(sql, params, function (err) {
-            if (err) reject(err);
-            else resolve({ rows: [], lastID: this.lastID, changes: this.changes });
-        });
-    }
-});
+    return op.startsWith('SELECT') || op.startsWith('WITH') || op.startsWith('PRAGMA');
+};
 
-// ——— Serileştirme kilidi ———
-// node-sqlite3 TEK bağlantı kullanıyor. Manuel BEGIN/COMMIT transaction'lar
-// eşzamanlı isteklerle iç içe geçerse ("transaction within a transaction")
-// bağlantı bozulur ve tüm sorgular asılı kalır (üretimdeki donma buydu).
-// Çözüm: tüm sorgu/transaction'ları tek bir promise zincirinden geçir →
-// transaction sınırları atomik kalır, araya başka istek giremez.
-// AsyncLocalStorage ile "transaction içindeyim" bağlamı SADECE o transaction'ın
-// async zincirine taşınır → başka istekler kilide takılıp bekler, sızamaz.
-const { AsyncLocalStorage } = require('async_hooks');
+// Ham sorgu — verilen bağlantıda çalışır + ZAMAN AŞIMI (takılan statement sonsuza
+// asılı kalmasın; reject edip zincirin ilerlemesini ve isteğin hata almasını sağlar).
+function rawQuery(conn, sql, params = []) {
+    return new Promise((resolve, reject) => {
+        let done = false;
+        const timer = setTimeout(() => {
+            if (done) return; done = true;
+            reject(new Error('DB_TIMEOUT: ' + sql.slice(0, 60)));
+        }, QUERY_TIMEOUT_MS);
+        const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); fn(); };
+        if (isRead(sql)) {
+            conn.all(sql, params, (err, rows) => finish(() => err ? reject(err) : resolve({ rows })));
+        } else {
+            conn.run(sql, params, function (err) {
+                finish(() => err ? reject(err) : resolve({ rows: [], lastID: this && this.lastID, changes: this && this.changes }));
+            });
+        }
+    });
+}
+
+// ——— Yazma serileştirme kilidi (SADECE yazmalar/transaction) ———
+// Manuel BEGIN/COMMIT transaction'lar eşzamanlı yazmalarla iç içe geçerse
+// ("transaction within a transaction") bağlantı bozulur. Yazmaları tek sıradan
+// geçirip bunu önlüyoruz. Okumalar bu kilide GİRMEZ (ayrı bağlantı, eşzamanlı).
 const _als = new AsyncLocalStorage();
-
 let _lock = Promise.resolve();
 function _runLocked(fn) {
     const run = _lock.then(fn, fn);
-    _lock = run.then(() => {}, () => {}); // hata olsa da zincir devam etsin
+    _lock = run.then(() => {}, () => {}); // hata/timeout olsa da zincir ilerlesin
     return run;
 }
 
 const query = (sql, params = []) => {
-    // SADECE bu transaction'ın kendi async bağlamındaki query'ler kilidi atlar
-    if (_als.getStore()?.inTx) return rawQuery(sql, params);
-    return _runLocked(() => rawQuery(sql, params));
+    // Transaction içindeysek (kendi async bağlamı) → yazma bağlantısı, kilidi atla
+    if (_als.getStore()?.inTx) return rawQuery(writeDb, sql, params);
+    // Okuma → ayrı bağlantı, KİLİTSİZ (yazmanın arkasında beklemez)
+    if (isRead(sql)) return rawQuery(readDb, sql, params);
+    // Yazma → yazma bağlantısı, sıraya gir
+    return _runLocked(() => rawQuery(writeDb, sql, params));
 };
 
-// Transaction: kilidi tüm süre boyunca tutar. fn içindeki query'ler aynı async
-// bağlamda olduğu için kilidi tekrar almaz (deadlock önlemi). Başka isteklerin
-// query'leri farklı bağlamda → kilitte bekler. BEGIN..COMMIT arasına kimse giremez.
+// Transaction: yazma kilidini tüm süre tutar; içindeki query'ler aynı async
+// bağlamda olduğu için yazma bağlantısını doğrudan kullanır (deadlock önlemi).
 const tx = (fn) => _runLocked(() => _als.run({ inTx: true }, async () => {
-    await rawQuery('BEGIN IMMEDIATE');
-    try { const r = await fn(); await rawQuery('COMMIT'); return r; }
-    catch (e) { await rawQuery('ROLLBACK').catch(() => {}); throw e; }
+    await rawQuery(writeDb, 'BEGIN IMMEDIATE');
+    try { const r = await fn(); await rawQuery(writeDb, 'COMMIT'); return r; }
+    catch (e) { await rawQuery(writeDb, 'ROLLBACK').catch(() => {}); throw e; }
 }));
 
 const initDb = () => {
