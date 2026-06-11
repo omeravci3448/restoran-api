@@ -20,7 +20,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
     }
 });
 
-const query = (sql, params = []) => new Promise((resolve, reject) => {
+// Ham sorgu — kilitsiz, doğrudan tek bağlantıya gider.
+const rawQuery = (sql, params = []) => new Promise((resolve, reject) => {
     const op = sql.trim().toUpperCase();
     if (op.startsWith('SELECT') || op.startsWith('PRAGMA') || op.startsWith('WITH')) {
         db.all(sql, params, (err, rows) => err ? reject(err) : resolve({ rows }));
@@ -32,12 +33,38 @@ const query = (sql, params = []) => new Promise((resolve, reject) => {
     }
 });
 
-// Tek bir transaction içinde birden fazla statement çalıştırmak için
-const tx = async (fn) => {
-    await query('BEGIN IMMEDIATE');
-    try { const r = await fn(); await query('COMMIT'); return r; }
-    catch (e) { await query('ROLLBACK'); throw e; }
+// ——— Serileştirme kilidi ———
+// node-sqlite3 TEK bağlantı kullanıyor. Manuel BEGIN/COMMIT transaction'lar
+// eşzamanlı isteklerle iç içe geçerse ("transaction within a transaction")
+// bağlantı bozulur ve tüm sorgular asılı kalır (üretimdeki donma buydu).
+// Çözüm: tüm sorgu/transaction'ları tek bir promise zincirinden geçir →
+// transaction sınırları atomik kalır, araya başka istek giremez.
+// AsyncLocalStorage ile "transaction içindeyim" bağlamı SADECE o transaction'ın
+// async zincirine taşınır → başka istekler kilide takılıp bekler, sızamaz.
+const { AsyncLocalStorage } = require('async_hooks');
+const _als = new AsyncLocalStorage();
+
+let _lock = Promise.resolve();
+function _runLocked(fn) {
+    const run = _lock.then(fn, fn);
+    _lock = run.then(() => {}, () => {}); // hata olsa da zincir devam etsin
+    return run;
+}
+
+const query = (sql, params = []) => {
+    // SADECE bu transaction'ın kendi async bağlamındaki query'ler kilidi atlar
+    if (_als.getStore()?.inTx) return rawQuery(sql, params);
+    return _runLocked(() => rawQuery(sql, params));
 };
+
+// Transaction: kilidi tüm süre boyunca tutar. fn içindeki query'ler aynı async
+// bağlamda olduğu için kilidi tekrar almaz (deadlock önlemi). Başka isteklerin
+// query'leri farklı bağlamda → kilitte bekler. BEGIN..COMMIT arasına kimse giremez.
+const tx = (fn) => _runLocked(() => _als.run({ inTx: true }, async () => {
+    await rawQuery('BEGIN IMMEDIATE');
+    try { const r = await fn(); await rawQuery('COMMIT'); return r; }
+    catch (e) { await rawQuery('ROLLBACK').catch(() => {}); throw e; }
+}));
 
 const initDb = () => {
     db.serialize(() => {

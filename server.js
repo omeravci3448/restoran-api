@@ -61,6 +61,18 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
 // Sağlık
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
+// DB sağlık/teşhis: veritabanı kaç ms'de cevap veriyor (donma teşhisi).
+app.get('/health/db', async (_req, res) => {
+    const t0 = Date.now();
+    try {
+        await query('SELECT 1 AS ok');
+        const ms = Date.now() - t0;
+        res.json({ ok: true, dbResponseMs: ms, verdict: ms < 200 ? 'hızlı' : (ms < 2000 ? 'yavaş' : 'ÇOK YAVAŞ — kilitlenme olabilir') });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message, dbResponseMs: Date.now() - t0 });
+    }
+});
+
 // Modüller
 app.use('/api/auth', require('./src/routes/authRoutes'));
 app.use('/api/tenant', require('./src/routes/tenantRoutes'));
