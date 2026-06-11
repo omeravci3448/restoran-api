@@ -219,6 +219,12 @@ const initDb = () => {
             FOREIGN KEY(table_id) REFERENCES tables(id),
             FOREIGN KEY(opened_by) REFERENCES users(id)
         )`);
+        // Pazaryeri ekonomisi — sipariş anında dondurulan kesintiler (rapor net kârı bunları düşer).
+        // Sipariş anında yazılır ki kanal komisyonu sonradan değişse bile geçmiş kâr bozulmaz.
+        db.run("ALTER TABLE orders ADD COLUMN commission_amount REAL DEFAULT 0", [], () => {}); // sepet × komisyon%
+        db.run("ALTER TABLE orders ADD COLUMN platform_fee REAL DEFAULT 0", [], () => {});      // sipariş başı sabit ücret
+        db.run("ALTER TABLE orders ADD COLUMN extra_cost REAL DEFAULT 0", [], () => {});         // kurye, zarar, vb.
+        db.run("ALTER TABLE orders ADD COLUMN extra_cost_note TEXT", [], () => {});
 
         // — ORDER ITEMS —
         db.run(`CREATE TABLE IF NOT EXISTS order_items (
@@ -239,6 +245,19 @@ const initDb = () => {
         )`);
         // Migration: var olan DB'lere unit kolonu ekle (idempotent)
         db.run("ALTER TABLE order_items ADD COLUMN unit TEXT", [], () => {});
+
+        // — PAZARYERİ KANALLARI — Yemeksepeti/Trendyol/Getir vb. komisyon + sabit ücret config.
+        // Entegrasyon yok; manuel sipariş girişinde kanal seçilince komisyon otomatik hesaplanır.
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_channels (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            commission_rate REAL DEFAULT 0,   -- sepet bazında % komisyon
+            fixed_fee REAL DEFAULT 0,         -- sipariş başına sabit işlem ücreti (₺)
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+        )`);
 
         // — PAYMENTS (her sipariş için 1+ ödeme, farklı yöntemlerle split) —
         db.run(`CREATE TABLE IF NOT EXISTS payments (

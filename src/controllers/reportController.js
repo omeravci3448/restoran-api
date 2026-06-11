@@ -55,12 +55,27 @@ exports.daySummary = async (req, res) => {
           WHERE o.tenant_id = ? AND o.status = 'CLOSED' AND substr(o.closed_at, 1, 10) = ?`,
         [t, day]);
 
+    // Pazaryeri kesintileri (komisyon + sabit işlem ücreti + ekstra maliyet) — net kârdan düşülür
+    const mpRow = await query(
+        `SELECT COALESCE(SUM(commission_amount), 0) AS commission,
+                COALESCE(SUM(platform_fee), 0) AS fee,
+                COALESCE(SUM(extra_cost), 0) AS extra
+           FROM orders
+          WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 10) = ?`,
+        [t, day]);
+    const mp = mpRow.rows[0];
+    const marketplaceCost = Number(mp.commission || 0) + Number(mp.fee || 0) + Number(mp.extra || 0);
+
     const totalCost = Number(costRow.rows[0].total_cost || 0);
     const revenue = Number(totals.rows[0].revenue || 0);
     const totalsWithProfit = {
         ...totals.rows[0],
         total_cost: totalCost,
-        net_profit: revenue - totalCost
+        marketplace_commission: Number(mp.commission || 0),
+        marketplace_fee: Number(mp.fee || 0),
+        marketplace_extra: Number(mp.extra || 0),
+        marketplace_cost: marketplaceCost,
+        net_profit: revenue - totalCost - marketplaceCost
     };
 
     // Ayara göre maliyet/kar görünürlüğü
@@ -111,9 +126,21 @@ exports.monthSummary = async (req, res) => {
     const costMap = {};
     dailyCost.rows.forEach(r => { costMap[r.day] = Number(r.cost); });
 
+    // Gün başına pazaryeri kesintisi (komisyon + işlem ücreti + ekstra maliyet)
+    const dailyMp = await query(
+        `SELECT substr(closed_at, 1, 10) AS day,
+                COALESCE(SUM(commission_amount + platform_fee + extra_cost), 0) AS mp_cost
+           FROM orders
+          WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 7) = ?
+          GROUP BY day`,
+        [t, monthStr]);
+    const mpMap = {};
+    dailyMp.rows.forEach(r => { mpMap[r.day] = Number(r.mp_cost); });
+
     const dailyWithProfit = dailySimple.rows.map(d => {
         const cost = costMap[d.day] || 0;
-        return { ...d, cost, profit: Number(d.revenue) - cost };
+        const mpCost = mpMap[d.day] || 0;
+        return { ...d, cost, marketplace_cost: mpCost, profit: Number(d.revenue) - cost - mpCost };
     });
 
     const totals = dailyWithProfit.reduce((s, r) => ({
@@ -122,8 +149,9 @@ exports.monthSummary = async (req, res) => {
         dine_in: s.dine_in + Number(r.dine_in),
         marketplace: s.marketplace + Number(r.marketplace),
         cost: s.cost + Number(r.cost),
+        marketplace_cost: s.marketplace_cost + Number(r.marketplace_cost),
         profit: s.profit + Number(r.profit)
-    }), { revenue: 0, cnt: 0, dine_in: 0, marketplace: 0, cost: 0, profit: 0 });
+    }), { revenue: 0, cnt: 0, dine_in: 0, marketplace: 0, cost: 0, marketplace_cost: 0, profit: 0 });
 
     const topProducts = await query(
         `SELECT oi.product_name AS name,
