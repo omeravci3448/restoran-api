@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const bus = require('../services/eventBus');
 
 // Bekleyen garson çağrılarını listele (personel uygulaması için)
 exports.pending = async (req, res) => {
@@ -26,15 +27,22 @@ exports.publicCall = async (req, res) => {
     const { tenantSlug, qrToken } = req.params;
     const reason = (req.body && req.body.reason) || 'GENERIC';
     const t = await query(
-        `SELECT tb.id AS table_id, tb.tenant_id
+        `SELECT tb.id AS table_id, tb.tenant_id, tb.name AS table_name, tb.code AS table_code, tb.section
            FROM tables tb JOIN tenants te ON te.id = tb.tenant_id
           WHERE te.slug = ? AND tb.qr_token = ?`,
         [tenantSlug, qrToken]);
     if (!t.rows.length) return res.status(404).json({ message: 'Masa bulunamadı.' });
+    const tb = t.rows[0];
 
     const id = uuidv4();
     await query(
         `INSERT INTO waiter_calls (id, tenant_id, table_id, reason) VALUES (?, ?, ?, ?)`,
-        [id, t.rows[0].tenant_id, t.rows[0].table_id, reason]);
+        [id, tb.tenant_id, tb.table_id, reason]);
+
+    // Kasaya anlık bildirim
+    bus.emit(tb.tenant_id, 'waiter_call', {
+        id, tableId: tb.table_id, tableName: tb.table_name, tableCode: tb.table_code, section: tb.section, reason
+    });
+
     res.status(201).json({ id });
 };

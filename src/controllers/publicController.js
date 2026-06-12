@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const bus = require('../services/eventBus');
 
 // QR'dan gelen müşteri için bu masanın bağlamını döndür
 async function loadTableContext(tenantSlug, qrToken) {
@@ -110,6 +111,15 @@ exports.placeOrder = async (req, res) => {
     const sumRow = await query('SELECT COALESCE(SUM(total),0) AS s FROM order_items WHERE order_id = ?', [orderId]);
     const s = Number(sumRow.rows[0].s);
     await query('UPDATE orders SET subtotal = ?, total = ? WHERE id = ?', [s, s, orderId]);
+
+    // Kasaya anlık bildirim (yalnızca gerçekten kalem eklendiyse)
+    if (added > 0) {
+        bus.emit(ctx.tenant_id, 'new_order', {
+            orderId, tableId: ctx.table_id, tableName: ctx.table_name,
+            tableCode: ctx.table_code, section: ctx.section,
+            addedItems: added, addedSubtotal: subAdded, orderTotal: s
+        });
+    }
 
     res.status(201).json({ orderId, addedItems: added, addedSubtotal: subAdded, orderTotal: s });
 };
