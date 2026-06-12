@@ -171,3 +171,32 @@ exports.cancel = async (req, res) => {
     if (o.rows[0].table_id) await query("UPDATE tables SET status = 'EMPTY' WHERE id = ?", [o.rows[0].table_id]);
     res.json({ message: 'İptal edildi.' });
 };
+
+// Müşterinin QR'dan gönderdiği, henüz görülmemiş sipariş kalemleri — masaya göre.
+// Kasada "yeni siparişler" alanında ne ısmarlandığı görünür.
+exports.pendingQr = async (req, res) => {
+    const r = await query(
+        `SELECT oi.id, oi.order_id, oi.product_name, oi.qty, oi.unit_price, oi.total, oi.note, oi.created_at,
+                o.table_id, t.name AS table_name, t.code AS table_code, t.section
+           FROM order_items oi
+           JOIN orders o ON o.id = oi.order_id
+           LEFT JOIN tables t ON t.id = o.table_id
+          WHERE o.tenant_id = ? AND o.status = 'OPEN'
+            AND oi.source = 'CUSTOMER_QR' AND oi.status = 'NEW'
+          ORDER BY oi.created_at`,
+        [req.user.tenantId]);
+    res.json(r.rows);
+};
+
+// "Gördüm/Hazırlanıyor" — bir masanın yeni QR kalemlerini görüldü işaretle (alandan düşsün).
+exports.ackPendingQr = async (req, res) => {
+    const { orderId } = req.body || {};
+    if (!orderId) return res.status(400).json({ message: 'orderId gerekli.' });
+    const r = await query(
+        `UPDATE order_items SET status = 'SEEN'
+          WHERE source = 'CUSTOMER_QR' AND status = 'NEW'
+            AND order_id = ?
+            AND order_id IN (SELECT id FROM orders WHERE tenant_id = ?)`,
+        [orderId, req.user.tenantId]);
+    res.json({ ok: true, updated: r.changes || 0 });
+};
