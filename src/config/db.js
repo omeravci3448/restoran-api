@@ -245,6 +245,8 @@ const initDb = () => {
         )`);
         // Migration: var olan DB'lere unit kolonu ekle (idempotent)
         db.run("ALTER TABLE order_items ADD COLUMN unit TEXT", [], () => {});
+        // Kalem bazlı tahsilat: bu kalemin kaç adedi ödendi (kalan = qty - paid_qty)
+        db.run("ALTER TABLE order_items ADD COLUMN paid_qty REAL DEFAULT 0", [], () => {});
 
         // — PAZARYERİ KANALLARI — Yemeksepeti/Trendyol/Getir vb. komisyon + sabit ücret config.
         // Entegrasyon yok; manuel sipariş girişinde kanal seçilince komisyon otomatik hesaplanır.
