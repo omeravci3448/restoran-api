@@ -270,6 +270,160 @@ const initDb = () => {
             FOREIGN KEY(tenant_id) REFERENCES tenants(id)
         )`);
 
+        // ——— PAZARYERİ ENTEGRASYONU (Trendyol GO, Yemeksepeti, Migros…) ———
+        // Kanal tanımına adaptör bilgisi ekleniyor (mevcut manuel kanallar bozulmaz:
+        // adapter_code NULL ise kanal eskisi gibi MANUEL çalışır).
+        db.run("ALTER TABLE marketplace_channels ADD COLUMN adapter_code TEXT", [], () => {});        // 'trendyolgo' | 'sandbox' | ...
+        db.run("ALTER TABLE marketplace_channels ADD COLUMN is_api_enabled INTEGER DEFAULT 0", [], () => {});
+        db.run("ALTER TABLE marketplace_channels ADD COLUMN capabilities_json TEXT", [], () => {});   // adaptörden yazılır, arayüz okur
+
+        // orders: pazaryeri alanları (channel + external_ref ZATEN vardı)
+        db.run("ALTER TABLE orders ADD COLUMN channel_sub TEXT", [], () => {});           // Trendyol|TrendyolGo|Galaxy
+        db.run("ALTER TABLE orders ADD COLUMN channel_status_raw TEXT", [], () => {});    // platformun ham durumu
+        db.run("ALTER TABLE orders ADD COLUMN delivery_mode TEXT", [], () => {});         // PLATFORM_COURIER|RESTAURANT_COURIER|PICKUP
+        db.run("ALTER TABLE orders ADD COLUMN is_test INTEGER DEFAULT 0", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN is_address_masked INTEGER DEFAULT 0", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN external_order_no TEXT", [], () => {});     // fişe/mutfağa basılan insan-okur no
+        db.run("ALTER TABLE orders ADD COLUMN platform_modified_at INTEGER", [], () => {}); // polling cursor'ı
+        db.run("ALTER TABLE orders ADD COLUMN raw_payload_id TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN seller_revenue REAL", [], () => {});        // hakediş (settlements'tan)
+        db.run("ALTER TABLE orders ADD COLUMN settlement_status TEXT", [], () => {});     // PENDING|MATCHED|MISMATCH
+        // İDEMPOTENCY OMURGASI — aynı pazaryeri siparişi ikinci kez açılamaz.
+        db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_channel_ref
+                ON orders(tenant_id, channel, external_ref) WHERE external_ref IS NOT NULL`, [], () => {});
+
+        // order_items: pazaryeri kalem alanları
+        db.run("ALTER TABLE order_items ADD COLUMN external_item_id TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN external_product_id TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN modifiers_json TEXT", [], () => {});   // seçenek/ekstra/çıkarılan
+        db.run("ALTER TABLE order_items ADD COLUMN is_cancelled INTEGER DEFAULT 0", [], () => {});
+
+        // Kimlik bilgileri — AES-256-GCM ile ŞİFRELİ (düz metin ASLA yazılmaz).
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_credentials (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'supplier',   -- chain|supplier|store
+            scope_ref TEXT,
+            cipher_blob TEXT NOT NULL,
+            iv TEXT NOT NULL,
+            auth_tag TEXT NOT NULL,
+            key_version INTEGER DEFAULT 1,
+            fingerprint TEXT,                          -- arayüzde gösterilen maskeli iz
+            env TEXT NOT NULL DEFAULT 'prod',          -- prod|stage (test anahtarları CANLIDAN FARKLI)
+            status TEXT NOT NULL DEFAULT 'active',     -- active|invalid|revoked
+            last_verified_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, channel_id, scope, scope_ref, env),
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+        )`);
+
+        // Şube eşlemesi — platformdaki mağaza ↔ bizdeki kiracı.
+        // Kiracı izolasyonunun bekçisi: gelen sipariş buradan çözülemezse HİÇBİR kiracıya yazılmaz.
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_store_links (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            external_store_id TEXT NOT NULL,
+            external_chain_id TEXT,
+            external_store_name TEXT,
+            credential_id TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(channel_id, external_store_id),
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+        )`);
+
+        // OLAY KUTUSU (inbox) — webhook VE polling ortak girişi.
+        // UNIQUE(channel_id, event_key) mükerrer olayları burada öldürür.
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT,
+            channel_id TEXT NOT NULL,
+            channel_code TEXT,
+            source TEXT NOT NULL,                      -- webhook|poll|manual_refetch|reconcile
+            event_key TEXT NOT NULL,
+            external_order_id TEXT,
+            platform_status TEXT,
+            occurred_at INTEGER,
+            received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            payload TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',     -- pending|processing|done|failed|ignored
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            processed_at TEXT,
+            UNIQUE(channel_id, event_key)
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_mp_events_state ON marketplace_events(state, received_at)`);
+
+        // KOMUT KUTUSU (outbox) — giden aksiyonlar (kabul/ret/hazır/fiyat).
+        // idem_key aynı aksiyonun ikinci kez gitmesini engeller.
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_commands (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            order_id TEXT,
+            external_order_id TEXT,
+            action TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            idem_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued',      -- queued|inflight|done|failed|dead
+            attempts INTEGER DEFAULT 0,
+            next_attempt_at INTEGER,
+            job_ref TEXT,                              -- asenkron sonuç (batchRequestId)
+            response TEXT,
+            last_error TEXT,
+            created_by_user_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, channel_id, idem_key)
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_mp_cmd_due ON marketplace_commands(state, next_attempt_at)`);
+
+        // Senkron durumu — polling imleci ve çoklu worker kilidi
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_sync_state (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            store_link_id TEXT,
+            resource TEXT NOT NULL,                    -- orders|menu|settlements
+            cursor TEXT,
+            last_run_at TEXT,
+            last_ok_at TEXT,
+            lease_until INTEGER,
+            consecutive_errors INTEGER DEFAULT 0,
+            UNIQUE(tenant_id, channel_id, store_link_id, resource)
+        )`);
+
+        // ÜRÜN EŞLEŞTİRME — platformlara menü PUSH EDİLEMEDİĞİ için ZORUNLU.
+        // (Trendyol'da ürün oluşturma yok; menü platform panelinden kurulur, biz eşleriz.)
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_product_map (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            store_link_id TEXT,
+            kind TEXT NOT NULL DEFAULT 'product',      -- product|category|modifier_group|modifier
+            external_id TEXT NOT NULL,
+            external_name TEXT,
+            external_price REAL,
+            pos_ref_id TEXT,                           -- bizdeki products.id
+            match_source TEXT,                         -- manual|auto_name
+            confidence REAL,
+            is_ignored INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, channel_id, store_link_id, kind, external_id)
+        )`);
+
+        // Durum eşleme override'ı — belgesiz/değişen platform kodları kod deploy'suz düzeltilebilsin
+        db.run(`CREATE TABLE IF NOT EXISTS marketplace_status_map (
+            channel_id TEXT NOT NULL,
+            platform_status TEXT NOT NULL,
+            normalized_status TEXT NOT NULL,
+            is_terminal INTEGER DEFAULT 0,
+            PRIMARY KEY(channel_id, platform_status)
+        )`);
+
         // — PAYMENTS (her sipariş için 1+ ödeme, farklı yöntemlerle split) —
         db.run(`CREATE TABLE IF NOT EXISTS payments (
             id TEXT PRIMARY KEY,
