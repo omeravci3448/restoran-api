@@ -198,6 +198,15 @@ const initDb = () => {
             FOREIGN KEY(tenant_id) REFERENCES tenants(id),
             FOREIGN KEY(category_id) REFERENCES categories(id)
         )`);
+        // Migration — Şeffaf Menü (Tarım ve Orman Bakanlığı, Gıda Etiketleme Yönetmeliği).
+        // Merkezi Bakanlık API'si yok; işletme bu bilgiyi kendi QR menüsünde göstermekle
+        // yükümlü. Alanlar mevcut DB'ye idempotent eklenir (eski kayıtlar bozulmaz).
+        db.run("ALTER TABLE products ADD COLUMN allergens TEXT", [], () => {});                    // JSON dizi: ["gluten","sut",...] (14 zorunlu grup)
+        db.run("ALTER TABLE products ADD COLUMN ingredients TEXT", [], () => {});                  // bileşen/içindekiler (son tarih 31.12.2026)
+        db.run("ALTER TABLE products ADD COLUMN calories INTEGER", [], () => {});                  // porsiyon başı enerji (kcal) — son tarih 31.12.2027
+        db.run("ALTER TABLE products ADD COLUMN portion_grams INTEGER", [], () => {});             // net gramaj (kaloriyi anlamlı kılar)
+        db.run("ALTER TABLE products ADD COLUMN contains_alcohol INTEGER DEFAULT 0", [], () => {}); // alkol içerir mi
+        db.run("ALTER TABLE products ADD COLUMN contains_pork INTEGER DEFAULT 0", [], () => {});    // domuz türevi içerir mi
 
         // — ORDERS (siparişler, masa veya pazaryeri kaynaklı) —
         db.run(`CREATE TABLE IF NOT EXISTS orders (

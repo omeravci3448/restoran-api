@@ -32,7 +32,8 @@ exports.menu = async (req, res) => {
         'SELECT id, name, sort_order FROM categories WHERE tenant_id = ? AND is_active = 1 ORDER BY sort_order, name',
         [ctx.tenant_id]);
     const prods = await query(
-        `SELECT id, category_id, name, description, price, image_url, stock_unit
+        `SELECT id, category_id, name, description, price, image_url, stock_unit,
+                allergens, ingredients, calories, portion_grams, contains_alcohol, contains_pork
            FROM products
           WHERE tenant_id = ? AND is_available = 1
           ORDER BY sort_order, name`,
