@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/db');
+const lisans = require('../services/lisansDurumu');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
@@ -27,12 +28,24 @@ async function protect(req, res, next) {
     if (!u.is_active) return res.status(403).json({ message: 'Kullanıcı pasif.' });
     if (!u.tenant_active) return res.status(403).json({ code: 'TENANT_INACTIVE', message: 'İşletme pasif (lisans).' });
 
-    // Lisans bitiş kontrolü — license_end_date varsa
-    if (u.license_end_date) {
-        const end = new Date(u.license_end_date);
-        if (Date.now() > end.getTime()) {
-            return res.status(403).json({ code: 'LICENSE_EXPIRED', message: 'Lisans süresi dolmuş.' });
-        }
+    // Lisans kapisi — ani kapatma YOK, kademeli (bkz services/lisansDurumu.js):
+    //   AKTIF -> (bitis) -> SALT_OKUNUR 3 gun -> (3. gunun sonunda 00:00) -> KAPALI
+    // POS bir kasa programi; gun ortasinda kapanmasi isletmeyi satistan alikoyar.
+    const ld = lisans.hesapla(u.license_end_date);
+    if (ld.durum === lisans.DURUM.KAPALI) {
+        return res.status(403).json({
+            code: 'LICENSE_EXPIRED',
+            message: 'Lisans süresi doldu. Devam etmek için paketinizi yenileyin.',
+            bitis: ld.bitis, toleransBitis: ld.toleransBitis,
+        });
+    }
+    if (ld.durum === lisans.DURUM.SALT_OKUNUR && !lisans.saltOkunurdaGecerMi(req)) {
+        return res.status(403).json({
+            code: 'LICENSE_READONLY',
+            message: 'Lisansınızın süresi doldu. Şu an yalnızca görüntüleme yapabilirsiniz; '
+                   + 'satış ve kayıt işlemleri için paketinizi yenileyin.',
+            kalanGun: ld.kalanGun, toleransBitis: ld.toleransBitis,
+        });
     }
 
     let modules = [];
@@ -47,7 +60,11 @@ async function protect(req, res, next) {
         businessName: u.business_name,
         licenseTier: u.license_tier,
         licenseTableLimit: u.license_table_limit, // null = sınırsız
-        modules
+        modules,
+        lisansDurum: ld.durum,
+        lisansBitis: ld.bitis,
+        lisansKalanGun: ld.kalanGun,
+        lisansToleransBitis: ld.toleransBitis,
     };
     next();
 }

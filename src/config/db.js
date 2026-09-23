@@ -177,6 +177,25 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )`);
 
+        // — DENEME KAYITLARI (7 gunluk ucretsiz deneme, isletme basina BIR KEZ) —
+        // Kiraci silinse bile bu kayit KALIR - yoksa hesabi silip tekrar deneme alinir.
+        // Yakalama olcutu: normalize telefon (son 10 hane) + varsa SofraMix isletme no.
+        db.run(`CREATE TABLE IF NOT EXISTS deneme_kayitlari (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT,
+            telefon_norm TEXT,
+            soframix_business_id TEXT,
+            isletme_adi TEXT,
+            kaynak TEXT,
+            baslangic TEXT DEFAULT CURRENT_TIMESTAMP,
+            bitis TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_deneme_tel ON deneme_kayitlari(telefon_norm)`);
+        db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_deneme_smx
+                ON deneme_kayitlari(soframix_business_id)
+                WHERE soframix_business_id IS NOT NULL`);
+
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
