@@ -53,12 +53,16 @@ exports.updateProfile = async (req, res) => {
                 billing_tax_office = COALESCE(?, billing_tax_office),
                 currency = COALESCE(?, currency),
                 tax_rate = COALESCE(?, tax_rate),
-                show_cost_analytics = COALESCE(?, show_cost_analytics)
+                show_cost_analytics = COALESCE(?, show_cost_analytics),
+                stock_module_on = COALESCE(?, stock_module_on),
+                stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale)
           WHERE id = ?`,
         [f.businessName, f.phone, f.address,
             f.billingName, f.billingAddress, f.billingTaxId, f.billingTaxOffice,
             f.currency, f.taxRate,
             f.showCostAnalytics == null ? null : (f.showCostAnalytics ? 1 : 0),
+            f.stockModuleOn == null ? null : (f.stockModuleOn ? 1 : 0),
+            f.stockOutBlocksSale == null ? null : (f.stockOutBlocksSale ? 1 : 0),
             req.user.tenantId]
     );
     res.json({ message: 'Güncellendi.' });

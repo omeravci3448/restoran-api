@@ -92,6 +92,10 @@ exports.placeOrder = async (req, res) => {
         await query("UPDATE tables SET status = 'OCCUPIED' WHERE id = ?", [ctx.table_id]);
     }
 
+    // Isletme "stok bitince satisi durdur" dediyse QR siparisinde de gecerli olsun.
+    const tCfg = await query('SELECT stock_out_blocks_sale FROM tenants WHERE id = ?', [ctx.tenant_id]);
+    const stokEngeli = !!(tCfg.rows[0] && tCfg.rows[0].stock_out_blocks_sale);
+
     let added = 0, subAdded = 0;
     for (const it of items) {
         const p = await query('SELECT * FROM products WHERE id = ? AND tenant_id = ? AND is_available = 1',
@@ -99,6 +103,9 @@ exports.placeOrder = async (req, res) => {
         if (!p.rows.length) continue;
         const prod = p.rows[0];
         const qty = Math.max(1, Number(it.qty || 1));
+        // Stok engeli acikken stogu yetmeyen urunu sepete alma (sessizce atlanir —
+        // musteri menude zaten "tukendi" gorur; burasi son emniyet kapisi).
+        if (prod.tracks_stock && stokEngeli && Number(prod.stock_qty) < qty) continue;
         const total = qty * Number(prod.price);
         await query(
             `INSERT INTO order_items (id, order_id, product_id, product_name, qty, unit, unit_price, total, note, source, status)

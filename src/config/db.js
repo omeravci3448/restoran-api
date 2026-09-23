@@ -133,6 +133,34 @@ const initDb = () => {
         db.run("ALTER TABLE tenants ADD COLUMN kvkk_consent_at TEXT", [], () => {});        // KVKK açık rıza zamanı
         db.run("ALTER TABLE tenants ADD COLUMN kvkk_consent_version TEXT", [], () => {});    // onaylanan metin sürümü
         db.run("ALTER TABLE tenants ADD COLUMN closure_requested_at TEXT", [], () => {});    // hesap kapatma talebi zamanı
+        // Stok davranisi - isletme kendi secer (Patron karari 2026-09-22):
+        // Bircok restoran stok tutmak istemiyor; stok bittiginde satisi durdurmak
+        // VARSAYILAN OLARAK KAPALI olmali, aksi halde unutulan bir stok girisi
+        // urunu servis ortasinda satistan dusurur.
+        // Ust kurum (zincir/belediye/platform adi). Root panelinden duzenlenir;
+        // SofraMix uzerinden gelen isletmelerde 'SofraMix' yazilabilir.
+        db.run("ALTER TABLE tenants ADD COLUMN parent_org TEXT", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN stock_module_on INTEGER DEFAULT 0", [], () => {});      // stok arayuzu gorunsun mu
+        db.run("ALTER TABLE tenants ADD COLUMN stock_out_blocks_sale INTEGER DEFAULT 0", [], () => {}); // stok bitince satisi durdur
+
+        // — ROOT USERS (ekosistem yoneticisi) —
+        // users tablosuna KONULMADI: users.tenant_id NOT NULL ve tum sorgular
+        // tenant_id ile filtreli. Root'u oraya koymak kiraci izolasyonunu delerdi.
+        db.run(`CREATE TABLE IF NOT EXISTS root_users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            name TEXT,
+            is_active INTEGER DEFAULT 1,
+            last_login_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // Authenticator (TOTP) ikinci dogrulama. totp_last_step: ayni kodun ikinci kez
+        // kullanilmasini engeller (tekrar saldirisi) - kod 30 sn gecerli oldugu icin
+        // arada ele gecirilse bile yeniden oynatilamaz.
+        db.run("ALTER TABLE root_users ADD COLUMN totp_secret TEXT", [], () => {});
+        db.run("ALTER TABLE root_users ADD COLUMN totp_enabled INTEGER DEFAULT 0", [], () => {});
+        db.run("ALTER TABLE root_users ADD COLUMN totp_last_step INTEGER", [], () => {});
 
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (

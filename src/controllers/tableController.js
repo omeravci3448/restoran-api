@@ -50,7 +50,7 @@ exports.list = async (req, res) => {
                 (SELECT total FROM orders o WHERE o.table_id = t.id AND o.status = 'OPEN' LIMIT 1) AS open_order_total
            FROM tables t
           WHERE t.tenant_id = ? AND t.is_active = 1
-          ORDER BY t.section, t.code`,
+          ORDER BY t.section, LENGTH(t.code), t.code`,
         [req.user.tenantId]
     );
     res.json(r.rows);

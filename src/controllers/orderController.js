@@ -74,6 +74,19 @@ exports.addItem = async (req, res) => {
     if (!p.rows.length) return res.status(404).json({ message: 'Ürün yok.' });
     const prod = p.rows[0];
 
+    // Stok bitince satis engeli — YALNIZCA isletme bunu acikca sectiyse (varsayilan KAPALI).
+    // Cogu restoran stok tutmuyor; unutulan bir stok girisi urunu servis ortasinda
+    // satistan dusurmemeli. Ayar: tenants.stock_out_blocks_sale
+    if (prod.tracks_stock) {
+        const t = await query('SELECT stock_out_blocks_sale FROM tenants WHERE id = ?', [req.user.tenantId]);
+        if (t.rows[0] && t.rows[0].stock_out_blocks_sale && Number(prod.stock_qty) < Number(qty)) {
+            return res.status(409).json({
+                code: 'STOCK_OUT',
+                message: `"${prod.name}" stokta yok (kalan: ${prod.stock_qty} ${prod.stock_unit || ''}).`
+            });
+        }
+    }
+
     const unit = unitPriceOverride != null ? Number(unitPriceOverride) : Number(prod.price);
     const total = Number(qty) * unit;
     const itemId = uuidv4();

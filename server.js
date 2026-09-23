@@ -4,6 +4,8 @@ const express = require('express');
 const cors = require('cors');
 const { initDb, query } = require('./src/config/db');
 const hubService = require('./src/services/hubService');
+// Root (ekosistem yoneticisi) kurulumu - acilista cagriliyor
+const { ensureRootUser } = require('./src/controllers/rootController');
 
 // Tek bir DB hatası (örn SQLITE_BUSY) tüm servisi düşürmesin — logla, ayakta kal
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
@@ -89,6 +91,7 @@ app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
+app.use('/api/root', require('./src/routes/rootRoutes'));     // ekosistem yönetimi (işletme aç/yönet)
 
 // 404
 app.use((_req, res) => res.status(404).json({ message: 'Endpoint bulunamadı.' }));
@@ -109,4 +112,14 @@ app.listen(PORT, () => {
     console.log(`[mda-restoran] backend ${PORT} portunda — ${process.env.NODE_ENV || 'dev'}`);
     // 5sn sonra backfill — DB init bitsin
     setTimeout(() => { backfillTableLimits(); }, 5000);
+    // Root (ekosistem yöneticisi) kurulumu — ROOT_EMAIL/ROOT_PASSWORD yoksa
+    // kullanıcı HİÇ oluşmaz ve panel kapalı kalır (güvenli varsayılan).
+    setTimeout(async () => {
+        try {
+            const r = await ensureRootUser();
+            console.log(r.kuruldu
+                ? `[root] ekosistem yöneticisi hazır: ${r.email}`
+                : `[root] panel kapalı (${r.sebep})`);
+        } catch (e) { console.error('[root] kurulum hatası:', e.message); }
+    }, 5000);
 });

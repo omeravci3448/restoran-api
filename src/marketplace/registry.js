@@ -1,5 +1,6 @@
 const { TrendyolGoAdapter } = require('./adapters/trendyolgo');
 const { SandboxAdapter } = require('./adapters/sandbox');
+const { SofraMixAdapter } = require('./adapters/soframix');
 const pending = require('./adapters/pending');
 
 // Adaptör kaydı — kanal kodu → adaptör örneği.
@@ -7,6 +8,8 @@ const pending = require('./adapters/pending');
 const ADAPTERS = {
     trendyolgo: new TrendyolGoAdapter(),
     sandbox: new SandboxAdapter(),
+    // SofraMix: iki tarafi da biz yazdigimiz icin tam yetenekli kanal
+    soframix: new SofraMixAdapter(),
     // Erişim/doküman bekleyenler — bilinçli olarak boş (bkz. adapters/pending.js)
     yemeksepeti: pending.yemeksepeti,
     migros: pending.migros,

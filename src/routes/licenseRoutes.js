@@ -8,8 +8,14 @@ router.post('/quote', ctrl.quote);
 router.get('/bank-info', ctrl.bankInfo);
 router.get('/hub-status', ctrl.hubStatus); // teşhis: hub bağlantısı sağlıklı mı (tarayıcıdan açılır)
 
-// Hub'dan webhook (public — Patron'un Hub'ı çağırır)
-router.post('/webhook/purchase', ctrl.webhookPurchase);
+// NOT: Hub webhook'u (POST /webhook/purchase) 2026-09-23'te KALDIRILDI.
+// Kimlik dogrulamiyordu: gecerli bir tenantId bilen herkes kendine sinirsiz
+// lisans yazabiliyor ve pasiflestirilmis bir kiraciyi (is_active=1) diriltebiliyordu.
+// Kaldirmak guvenliydi cunku lisans ZATEN her giriste hub'dan tazeleniyor
+// (authController -> hubService.refreshTenantLicense). Tek kayip: satin alma
+// sonrasi "aninda" yansima, artik bir sonraki giriste oluyor.
+// Disaridan lisans tanimlama (SofraMix provizyonu) icin AYRI ve bastan kilitli
+// bir uc acilacak; bu uc geri getirilmeyecek.
 
 // Auth + rol + yönetici şifresi — lisans işlemleri kasiyere kapalı
 const mgr = [protect, requireRole('OWNER', 'MANAGER'), requireManagerPin];

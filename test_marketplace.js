@@ -60,9 +60,10 @@ async function throws(name, fn, kind) {
 
     console.log('\n=== 4) Adaptör kaydı ===');
     const all = listAdapters();
-    ok('5 kanal kayıtlı', all.length === 5, all.map((a) => a.code));
+    ok('6 kanal kayıtlı', all.length === 6, all.map((a) => a.code));
     const avail = listAvailable().map((a) => a.code);
-    ok('bağlanabilir: trendyolgo + sandbox', avail.includes('trendyolgo') && avail.includes('sandbox') && avail.length === 2, avail);
+    ok('bağlanabilir: trendyolgo + sandbox + soframix',
+        ['trendyolgo','sandbox','soframix'].every(c => avail.includes(c)) && avail.length === 3, avail);
     const ys = all.find((a) => a.code === 'yemeksepeti');
     ok('yemeksepeti blocker açıklıyor', ys.available === false && /PGP|onay/i.test(ys.blocker));
     const mig = all.find((a) => a.code === 'migros');

@@ -167,6 +167,10 @@ exports.purchase = async (req, res) => {
         const total = Math.max(0, subtotal - subtotal * discountRate / 100);
 
         const tenant = tenantRow.rows[0];
+        // NOT: Bu adres artik 404 doner - webhook ucu 2026-09-23'te guvenlik nedeniyle
+        // kaldirildi (bkz. licenseRoutes.js). Alan hub'in istek semasinda zorunlu
+        // olabilecegi icin gonderilmeye devam ediyor; hub cagirirsa nazikce 404 alir
+        // ve lisans kullanicinin bir sonraki girisinde zaten yansir.
         const webhookBase = process.env.PUBLIC_BACKEND_URL || `http://localhost:${process.env.PORT || 5400}`;
 
         const hubResp = await hub.createPurchase({
@@ -223,34 +227,3 @@ exports.purchaseStatus = async (req, res) => {
     }
 };
 
-// Hub webhook'u (Patron onayladığında çağrılır)
-exports.webhookPurchase = async (req, res) => {
-    const { event, tenantId, tier, modules, endDate } = req.body || {};
-    if (!tenantId) return res.status(400).json({ message: 'tenantId yok' });
-
-    if (event === 'purchase.confirmed' && tier) {
-        try {
-            // Yeni tier'ın masa limitini çek
-            let tableLimit = null;
-            try {
-                const cat = await hub.getModulesAndTiers();
-                const t = cat.tiers.find(x => x.name === tier);
-                tableLimit = t?.tableLimit ?? null;
-            } catch (_) {}
-
-            await query(
-                `UPDATE tenants
-                    SET license_tier = ?,
-                        license_modules = ?,
-                        license_end_date = ?,
-                        license_table_limit = ?,
-                        is_active = 1
-                  WHERE id = ?`,
-                [tier, JSON.stringify(modules || []), endDate, tableLimit, tenantId]
-            );
-        } catch (e) {
-            return res.status(500).json({ message: 'Lisans yansıtılamadı.', error: e.message });
-        }
-    }
-    res.json({ ok: true });
-};
