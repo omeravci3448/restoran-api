@@ -59,7 +59,16 @@ const kopya = (o) => JSON.parse(JSON.stringify(o));
     ok('itemAvailability KAPALI (stok bitince paket kapanmaz)', c.itemAvailability === false);
     ok('partialCancel KAPALI (SofraMixte kalem iptali yok)', c.partialCancel === false);
     ok('prepTimeOnAccept KAPALI (SofraMixte alan yok, uydurmuyoruz)', c.prepTimeOnAccept === false);
-    ok('ingress hibrit', c.ingress === 'hybrid');
+    // SIPARIS YONU BILEREK KAPALI: SofraMix'in makine anahtari yalnizca
+    // GET /api/business/menu ucunu aciyor, digerleri panel oturumu istiyor ve
+    // GET disi her yontem 403 doner. true beyan etmek arayuzde calismayan
+    // dugmeler acmak demekti (kasiyer "Hazir" der, siparis oldugu yerde kalir).
+    ok('ingress polling (webhook/hibrit iddia edilmiyor)', c.ingress === 'polling', c.ingress);
+    ok('acceptReject KAPALI (makine anahtari yazma yapamiyor)', c.acceptReject === false);
+    ok('markReady KAPALI', c.markReady === false);
+    ok('markDelivered KAPALI', c.markDelivered === false);
+    ok('storeOpenClose KAPALI', c.storeOpenClose === false);
+    ok('menuRead ACIK (tek gercekten calisan yon)', c.menuRead === true);
 
     console.log('\n=== 2) Siparis normalize ===');
     const ev = smx._toRawEvent(SIPARIS);

@@ -87,7 +87,22 @@ async function pingActivity(customerEmail) {
 }
 
 // Lisans cevabını cache'le ve tenant'a uygula
+// Lisansi hub YONETMIYOR olabilir. SofraMix'ten provizyonla acilan kiraci hub'da
+// KAYITLI DEGILDIR: hub ona "abonelik yok" der, eski kod da is_active=0 yazardi ve
+// authMiddleware her istegi 403 ile keserdi. O zaman lisansDurumu'nun kademeli
+// kapanmasi (3 gun salt-okunur + odeme yapabilme) hic devreye giremezdi.
+// Yani "musteri parasini yatirmis ama kasayi hic acamiyor" durumu.
+async function hubDisiMi(tenantId) {
+    const r = await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId]);
+    const t = r.rows[0];
+    if (!t) return false;
+    return t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX';
+}
+
 async function refreshTenantLicense(tenantId, customerEmail) {
+    if (await hubDisiMi(tenantId)) {
+        return { ok: false, reason: 'HUB_DISI', message: 'SofraMix kiracisi - lisansi hub yonetmiyor, dokunulmadi.' };
+    }
     let payload;
     try {
         payload = await verifyWithHub(customerEmail);
@@ -132,12 +147,25 @@ async function refreshTenantLicense(tenantId, customerEmail) {
         }
     } catch (_) { /* katalog yoksa yereldeki tier + limiti koru */ }
 
+    // Lisans yalnizca UZATILIR, KISALTILMAZ. Hub gecici olarak daha erken bir tarih
+    // dondurdugunde (senkron gecikmesi, farkli kanaldan yapilmis odeme) yereldeki
+    // ileri tarih silinirse musteri odedigi gunleri kaybeder ve bunu kimse fark etmez.
+    // Kisaltma gerekiyorsa root panelinden ACIKCA yapilir.
+    const yerelBitis = (await query('SELECT license_end_date FROM tenants WHERE id = ?', [tenantId])).rows[0];
+    let bitisYaz = payload.expires;
+    const y = yerelBitis && yerelBitis.license_end_date ? new Date(yerelBitis.license_end_date) : null;
+    const h = payload.expires ? new Date(payload.expires) : null;
+    if (y && h && y > h) {
+        bitisYaz = yerelBitis.license_end_date;
+        console.warn(`[lisans] hub daha erken tarih dondu (${payload.expires}), yereldeki ${bitisYaz} korundu - kiraci ${tenantId}`);
+    }
+
     await query(
         `UPDATE tenants
             SET license_tier = ?, license_modules = ?, license_end_date = ?,
                 license_table_limit = ?, is_active = 1
           WHERE id = ?`,
-        [tierToWrite, modulesJson, payload.expires, limitToWrite, tenantId]
+        [tierToWrite, modulesJson, bitisYaz, limitToWrite, tenantId]
     );
     await query(
         `INSERT INTO license_cache (tenant_id, payload, checked_at)

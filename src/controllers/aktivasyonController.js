@@ -10,19 +10,32 @@ const { query } = require('../config/db');
 // Jetonun HAM hali DB'de DURMAZ - yalnizca sha256 ozeti durur. DB sizsa bile
 // kimse baglantiyi yeniden kuramaz.
 
-// IP basina deneme siniri: jeton 32 bayt rastgele oldugu icin tahmin edilemez,
-// bu sinir kaba kuvveti degil DB'yi bos yere yormayi engeller.
+// Deneme siniri IKI anahtarla birden tutuluyor: IP ve JETON.
+// Yalniz IP'ye baglansaydi X-Forwarded-For sahtelenebildigi icin tek bir jeton
+// sinirsiz denenebilirdi; yalniz jetona baglansaydi rastgele jetonlarla DB
+// yorulabilirdi. Ikisi birlikte iki delige de kapi koyuyor.
+// (server.js'te trust proxy acik - yoksa req.ip herkes icin ayni cikar ve
+//  sinir tek kisiye degil TUM SISTEME uygulanirdi.)
 const denemeler = new Map();
-function cokMu(ip) {
-    const k = denemeler.get(ip);
-    if (!k || Date.now() >= k.sifirlanma) return false;
-    return k.sayi >= 30;
+const IP_SINIR = 30, JETON_SINIR = 10, PENCERE_MS = 15 * 60 * 1000;
+
+function anahtarlar(req) {
+    const jeton = String((req.params && req.params.jeton) || '');
+    return [['ip:' + req.ip, IP_SINIR], ['jt:' + jeton.slice(0, 16), JETON_SINIR]];
 }
-function say(ip) {
-    const k = denemeler.get(ip);
-    if (!k || Date.now() >= k.sifirlanma) denemeler.set(ip, { sayi: 1, sifirlanma: Date.now() + 15 * 60 * 1000 });
-    else k.sayi++;
-    if (denemeler.size > 5000) denemeler.clear();
+function cokMu(req) {
+    return anahtarlar(req).some(([a, sinir]) => {
+        const k = denemeler.get(a);
+        return Boolean(k && Date.now() < k.sifirlanma && k.sayi >= sinir);
+    });
+}
+function say(req) {
+    for (const [a] of anahtarlar(req)) {
+        const k = denemeler.get(a);
+        if (!k || Date.now() >= k.sifirlanma) denemeler.set(a, { sayi: 1, sifirlanma: Date.now() + PENCERE_MS });
+        else k.sayi++;
+    }
+    if (denemeler.size > 20000) denemeler.clear();
 }
 
 function ozetle(ham) {
@@ -46,8 +59,8 @@ async function jetonBul(ham) {
 
 // GET /api/aktivasyon/:jeton  -> baglantinin gecerli olup olmadigini soyler
 exports.kontrol = async (req, res) => {
-    if (cokMu(req.ip)) return res.status(429).json({ message: 'Cok fazla deneme. Biraz sonra tekrar deneyin.' });
-    say(req.ip);
+    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    say(req);
     const j = await jetonBul(req.params.jeton);
     if (!j) return res.status(404).json({ gecerli: false, message: 'Baglanti gecersiz.' });
     if (j.gecersiz) {
@@ -63,8 +76,8 @@ exports.kontrol = async (req, res) => {
 
 // POST /api/aktivasyon/:jeton  { sifre }
 exports.belirle = async (req, res) => {
-    if (cokMu(req.ip)) return res.status(429).json({ message: 'Cok fazla deneme. Biraz sonra tekrar deneyin.' });
-    say(req.ip);
+    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    say(req);
     const sifre = String((req.body || {}).sifre || '');
     if (sifre.length < 8) return res.status(400).json({ message: 'Sifre en az 8 karakter olmali.' });
 

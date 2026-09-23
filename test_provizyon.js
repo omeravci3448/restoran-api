@@ -21,7 +21,7 @@ const yeniOdeme = (x = {}) => ({
 
 // Test KENDI izini siler: aksi halde ikinci kosuda 'slug zaten var' ve
 // 'kac kiraci acildi' sayimlari onceki kosudan kirlenir.
-const TEST_ADLARI = ['Kebapçı Şükrü', 'Deneme Lokanta', 'Ikiz Lokanta 0', 'Ikiz Lokanta 1', 'İşletme'];
+const TEST_ADLARI = ['Kebapçı Şükrü', 'Deneme Lokanta', 'Ikiz Lokanta 0', 'Ikiz Lokanta 1', 'İşletme', 'Epostasiz Lokanta'];
 async function temizle() {
     const t = await query(
         `SELECT id FROM tenants WHERE business_name IN (${TEST_ADLARI.map(() => '?').join(',')})`, TEST_ADLARI);
@@ -130,8 +130,36 @@ async function temizle() {
 
     console.log('\n=== 6) Gecersiz/eksik veri ===');
     ok('odeme_id yoksa atlanir', (await P.odemeIsle({ odeme_id: '' })).durum === 'atlandi');
-    const s6 = await P.odemeIsle(yeniOdeme({ isletme_adi: '' }));
+    const s6 = await P.odemeIsle(yeniOdeme({ isletme_adi: '', yetkili_email: `x${uuid().slice(0, 6)}@ornek.test` }));
     ok('isletme adi bossa varsayilan ad', s6.durum === 'islendi', s6);
+
+    console.log('\n--- yetkili e-postasi YOKSA kiraci ACILMAZ ---');
+    // Eskiden uydurma bir adresle (sahip-12345@ornek.local) kiraci acilirdi:
+    // lisans baslar, posta gidecek adres olmadigi icin gitmez, kimse giremez,
+    // hicbir uyari cikmazdi. Simdi elle cozulmek uzere bekliyor.
+    const s6b = await P.odemeIsle(yeniOdeme({ isletme_adi: 'Epostasiz Lokanta', yetkili_email: '', yetkili_tel: '' }));
+    ok('elde birakildi', s6b.durum === 'elde', s6b);
+    ok('sebep eposta_yok', s6b.sebep === 'eposta_yok', s6b.sebep);
+    const sahte = await query("SELECT COUNT(*) c FROM users WHERE email LIKE '%@ornek.local'");
+    ok('uydurma e-postali kullanici olusmadi', sahte.rows[0].c === 0, sahte.rows[0]);
+
+    console.log('\n--- elde kalan odeme TEKRAR denenebilmeli ---');
+    // En kritik kural: 'elde' satiri idempotency kapisini KAPATMAMALI, yoksa
+    // sorun elle cozulse bile o odeme bir daha asla islenmezdi.
+    const s6c = await P.odemeIsle({ odeme_id: (await query(
+        "SELECT odeme_id FROM pos_provizyon WHERE durum = 'elde' ORDER BY created_at DESC LIMIT 1")).rows[0].odeme_id,
+        isletme_adi: 'Epostasiz Lokanta', yetkili_email: `sonra${uuid().slice(0, 6)}@ornek.test`,
+        tutar_kurus: 1200000, onay_tarihi: new Date().toISOString() });
+    ok('cozulunce islendi', s6c.durum === 'islendi', s6c);
+    ok('kiraci simdi acildi', s6c.kiraciAcildi === true);
+
+    console.log('\n--- tarih bicimi: SofraMix "YYYY-MM-DD HH:MM:SS" gonderiyor ---');
+    ok('SQLite bicimi ISOya cevriliyor',
+        P.tarihNormalle('2026-09-01 08:00:00') === '2026-09-01T08:00:00.000Z',
+        P.tarihNormalle('2026-09-01 08:00:00'));
+    ok('ISO oldugu gibi kalir',
+        P.tarihNormalle('2026-09-01T08:00:00.000Z') === '2026-09-01T08:00:00.000Z');
+    ok('bozuk tarih cokertmiyor', typeof P.tarihNormalle('abc') === 'string');
 
     console.log('\n=== 7) Lisans bitis hesabi ===');
     ok('ileri tarihli lisans UZERINE eklenir',

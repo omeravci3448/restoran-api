@@ -29,20 +29,29 @@ class SofraMixAdapter extends BaseAdapter {
             requiredStoreLinkFields: [
                 { key: 'externalStoreId', label: 'SofraMix isletme no (business_id)', type: 'text', required: true },
             ],
+            // ⚠ SIPARIS YONU BUGUN KAPALI - beyan bilerek false.
+            // SofraMix'in makine anahtari (X-Smx-Anahtar) YALNIZCA
+            // GET /api/business/menu ucunu aciyor; siparis okuma ve durum yazma
+            // uclari panel oturumu istiyor ve auth katmani makine anahtariyla
+            // GET disi her yontemi 403 ile kesiyor. Bunlari true beyan etmek,
+            // arayuzde calismayan dugmeler acmak demekti: kasiyer "Hazir" der,
+            // 403 doner, siparis SofraMix'te oldugu yerde kalir.
+            // SofraMix o uclari anahtara acinca burasi tekrar true'ya cekilir
+            // (metodlar zaten yazili duruyor).
             capabilities: {
-                ingress: 'hybrid',
-                acceptReject: true,
-                markPreparing: true,
-                markReady: true,
-                markDispatched: true,
-                markDelivered: true,
+                ingress: 'polling',
+                acceptReject: false,
+                markPreparing: false,
+                markReady: false,
+                markDispatched: false,
+                markDelivered: false,
                 partialCancel: false,
                 prepTimeOnAccept: false,
                 menuRead: true,
                 menuWrite: false,
                 priceUpdate: false,
                 itemAvailability: false,
-                storeOpenClose: true,
+                storeOpenClose: false,
                 settlements: false,
                 asyncJobs: false,
                 sandbox: true,
@@ -96,8 +105,12 @@ class SofraMixAdapter extends BaseAdapter {
         return { ok: true, accountInfo: { urunSayisi: (d && d.products && d.products.length) || 0 } };
     }
 
-    // degisen_sonra: SofraMix'e EKLENECEK artimli cekme parametresi (Faz 1).
-    // Yoksa uc onu yok sayar, tam listeyi doner; adaptor yine dogru calisir.
+    // ⚠ ARTIMLI CEKME YOK. `degisen_sonra` SofraMix'e EKLENMEDI; uc yalnizca
+    // `date` okuyor ve parametresiz cagrida "aktif olanlar VEYA son 12 saat,
+    // en cok 200 kayit" donuyor. Yani imlec ILERLEMEZ: 12 saatten eski kapanmis
+    // siparis hic gorulmez, yogun gunde 200 ustu kayit sessizce duser.
+    // Bu yuzden capabilities'te siparis yonu false - bu metod bugun uretimde
+    // CAGRILMIYOR, SofraMix parametreyi ekleyene kadar oyle kalmali.
     async fetchOrders(ctx, opts) {
         const o = opts || {};
         const d = await this._req(ctx, 'GET', '/api/business/orders', {
@@ -314,7 +327,11 @@ class SofraMixAdapter extends BaseAdapter {
     }
 
     async setStoreStatus(ctx, p) {
-        return this._req(ctx, 'POST', '/api/business/pause', { body: { acik: !!p.open } });
+        // ⚠ ALAN ADI: SofraMix govdede `paused` okuyor, `acik` DEGIL - ve anlami
+        // da ters. Eskiden { acik } gonderiliyordu; SofraMix o alani hic gormedigi
+        // icin paused daima "yok" sayiliyor ve dukkan HER SEFERINDE aciliyordu.
+        // Yani "dukkani kapat" komutu sessizce "ac" yaziyordu.
+        return this._req(ctx, 'POST', '/api/business/pause', { body: { paused: !p.open } });
     }
 }
 

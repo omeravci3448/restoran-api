@@ -41,5 +41,7 @@ router.post('/tenants/:id/owner-password', protectRoot, ctrl.resetOwnerPassword)
 router.get('/provizyon', protectRoot, ctrl.provizyonListe);
 router.get('/provizyon/ozet', protectRoot, ctrl.provizyonOzet);
 router.post('/provizyon/cek', protectRoot, ctrl.provizyonCek);
+router.post('/provizyon/:odemeId/tekrar', protectRoot, ctrl.provizyonTekrarDene);
+router.post('/provizyon/tenant/:tenantId/posta', protectRoot, ctrl.provizyonPostaYenile);
 
 module.exports = router;

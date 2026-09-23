@@ -32,6 +32,10 @@ async function backfillTableLimits() {
 }
 
 const app = express();
+// Traefik arkasindayiz. Bu ayar OLMADAN req.ip herkes icin ayni degeri (Docker
+// gecidi) dondurur; IP basina konan her oran siniri fiilen TUM SISTEME uygulanir,
+// yani bir kisi digerlerini kilitleyebilir. 1 = tek vekil katmani.
+app.set('trust proxy', 1);
 
 // CORS — JWT Bearer token ile auth yapıldığı için cookie/CSRF riski yok.
 // CORS_ORIGINS env'i verilirse allowlist olarak çalışır (virgülle ayrılmış),

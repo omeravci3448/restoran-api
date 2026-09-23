@@ -10,11 +10,21 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100; // 2 ondalık
 // ——————————————————————————————————————————————————————————
 exports.listChannels = async (req, res) => {
     const r = await query(
-        `SELECT id, name, commission_rate, fixed_fee, is_active
+        `SELECT id, name, adapter_code, commission_rate, fixed_fee, is_active
            FROM marketplace_channels WHERE tenant_id = ? ORDER BY name`,
         [req.user.tenantId]);
     res.json(r.rows);
 };
+
+// Beyaz liste: yalnizca registry'de kayitli VE baglanabilir adaptorler.
+// Bos/eksik deger null doner (kanal adaptorsuz kalir, eski davranis korunur),
+// taninmayan deger false doner (cagiran 400 dondurur).
+function adaptorKoduCoz(ham) {
+    const k = String(ham || '').trim().toLowerCase();
+    if (!k) return null;
+    const { listAvailable } = require('../marketplace/registry');
+    return listAvailable().some((a) => a.code === k) ? k : false;
+}
 
 exports.createChannel = async (req, res) => {
     const name = String(req.body.name || '').trim();
@@ -27,12 +37,19 @@ exports.createChannel = async (req, res) => {
     // Aynı isim mükerrer olmasın
     const dup = await query('SELECT id FROM marketplace_channels WHERE tenant_id = ? AND name = ?', [req.user.tenantId, name]);
     if (dup.rows.length) return res.status(409).json({ message: 'Bu isimde bir kanal zaten var.' });
+    // Adaptor kodu. Bu alan YAZILMADIGI surece kanal yalnizca elle siparis
+    // girilen bir muhasebe etiketi olarak kalir: anahtar kaydetme ve menu cekme
+    // uclari "Bu kanalda adaptor tanimli degil" deyip 400 doner. Yani entegrasyon
+    // fiilen kurulamaz. Beyaz liste: yalnizca kayitli ve baglanabilir adaptorler.
+    const adapterCode = adaptorKoduCoz(req.body.adapterCode);
+    if (adapterCode === false) return res.status(400).json({ message: 'Bilinmeyen veya henüz bağlanamayan pazaryeri kodu.' });
+
     const id = uuidv4();
     await query(
-        `INSERT INTO marketplace_channels (id, tenant_id, name, commission_rate, fixed_fee, is_active)
-         VALUES (?, ?, ?, ?, ?, 1)`,
-        [id, req.user.tenantId, name, r2(commissionRate), r2(fixedFee)]);
-    res.status(201).json({ id, name, commission_rate: r2(commissionRate), fixed_fee: r2(fixedFee), is_active: 1 });
+        `INSERT INTO marketplace_channels (id, tenant_id, name, adapter_code, commission_rate, fixed_fee, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`,
+        [id, req.user.tenantId, name, adapterCode, r2(commissionRate), r2(fixedFee)]);
+    res.status(201).json({ id, name, adapter_code: adapterCode, commission_rate: r2(commissionRate), fixed_fee: r2(fixedFee), is_active: 1 });
 };
 
 exports.updateChannel = async (req, res) => {
@@ -44,14 +61,21 @@ exports.updateChannel = async (req, res) => {
         return res.status(400).json({ message: 'Komisyon %0–100 arası olmalı.' });
     if (b.fixedFee != null && Number(b.fixedFee) < 0)
         return res.status(400).json({ message: 'İşlem ücreti negatif olamaz.' });
+    let adapterCode = null;
+    if (b.adapterCode !== undefined) {
+        adapterCode = adaptorKoduCoz(b.adapterCode);
+        if (adapterCode === false) return res.status(400).json({ message: 'Bilinmeyen veya henüz bağlanamayan pazaryeri kodu.' });
+    }
     await query(
         `UPDATE marketplace_channels
             SET name = COALESCE(?, name),
+                adapter_code = COALESCE(?, adapter_code),
                 commission_rate = COALESCE(?, commission_rate),
                 fixed_fee = COALESCE(?, fixed_fee),
                 is_active = COALESCE(?, is_active)
           WHERE id = ? AND tenant_id = ?`,
         [b.name != null ? String(b.name).trim() : null,
+         adapterCode,
          b.commissionRate != null ? r2(b.commissionRate) : null,
          b.fixedFee != null ? r2(b.fixedFee) : null,
          b.isActive != null ? (b.isActive ? 1 : 0) : null,

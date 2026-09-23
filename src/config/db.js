@@ -220,6 +220,14 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_provizyon_donem ON pos_provizyon(onay_tarihi)`);
+        // Tarih bicimi duzeltmesi: SofraMix 'YYYY-MM-DD HH:MM:SS' (UTC) donuyor, POS ISO
+        // kullaniyor. Ayni sutunda iki bicim karisinca metin karsilastirmasinda bosluk
+        // (0x20) < 'T' (0x54) oldugu icin donemin ilk gunundeki odemeler fatura ozetinden
+        // sessizce dusuyordu. Eski satirlar tek seferde ISO'ya cevriliyor (desen tuttugu
+        // icin ikinci calistirmada hicbir satir eslesmez).
+        db.run(`UPDATE pos_provizyon
+                    SET onay_tarihi = replace(onay_tarihi, ' ', 'T') || 'Z'
+                  WHERE onay_tarihi LIKE '____-__-__ __:__:__'`, [], () => {});
 
         // — TEK KULLANIMLIK GIRIS/SIFRE BELIRLEME JETONLARI —
         db.run(`CREATE TABLE IF NOT EXISTS aktivasyon_jetonlari (

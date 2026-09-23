@@ -111,16 +111,31 @@ async function iste(yol, yontem = 'GET', govde) {
     ok('kiraci DBde', !!k, k);
     ok('SofraMix kiracisi', k.parent_org === 'SofraMix');
 
-    console.log('\n=== 3) Ayni tur tekrar calisirsa ikinci kez islemez ===');
-    const t2 = await cekici.birTur();
-    ok('zaten islenmis sayildi', t2.zaten === 1 && t2.islenen === 0, t2);
+    console.log('\n=== 3) Normal tur AYNI kaydi tekrar CEKMEZ (KVKK defteri kirlenmesin) ===');
+    // SofraMix veri ciktigi HER istekte kisisel veri aktarim kaydi yaziyor.
+    // Normal turda imlec son odemenin 1 sn sonrasi oldugu icin bos donmeli.
+    const t2 = await cekici.birTur({ genis: false });
+    ok('normal tur bos dondu', t2.gelen === 0 && t2.islenen === 0, t2);
+
+    console.log('\n--- GENIS tur ayni kaydi getirir ama IKINCI KEZ ISLEMEZ ---');
+    const t2g = await cekici.birTur({ genis: true });
+    ok('genis tur kaydi tekrar getirdi', t2g.gelen === 1, t2g);
+    ok('zaten islenmis sayildi', t2g.zaten === 1 && t2g.islenen === 0, t2g);
     const say = (await query('SELECT COUNT(*) c FROM tenants WHERE owner_email = ?', [mail])).rows[0];
     ok('ikinci kiraci acilmadi', say.c === 1, say);
 
-    console.log('\n=== 4) Imlec en son odemeden GERIYE bakiyor (odeme atlamasin) ===');
-    const nrd = await cekici.nereden();
-    ok('imlec gecmise donuk', new Date(nrd).getTime() < Date.now(), nrd);
-    ok('imlec 7 gunden yeni', Date.now() - new Date(nrd).getTime() < 8 * 86400000, nrd);
+    console.log('\n=== 4) Imlec ===');
+    const nrd = await cekici.nereden(false);
+    const nrdG = await cekici.nereden(true);
+    ok('normal imlec son odemenin ILERISINDE (tekrar cekmesin)',
+        new Date(nrd).getTime() > new Date(nrdG).getTime(), { nrd, nrdG });
+    ok('genis imlec GERIYE doniyor (odeme atlamasin)',
+        new Date(nrdG).getTime() < Date.now() - 5 * 3600000, nrdG);
+
+    console.log('\n--- SofraMix tarihi ISOya cevrilerek saklaniyor ---');
+    const kayit = (await query(
+        'SELECT onay_tarihi FROM pos_provizyon WHERE odeme_id = ?', [odemeler[0].odeme_id])).rows[0];
+    ok('onay_tarihi ISO bicimde', /^\d{4}-\d{2}-\d{2}T.*Z$/.test(kayit.onay_tarihi), kayit.onay_tarihi);
 
     console.log('\n=== 5) Aktivasyon baglantisi ===');
     const jr = (await query(

@@ -300,10 +300,68 @@ exports.provizyonListe = async (req, res) => {
 };
 
 exports.provizyonOzet = async (req, res) => {
-    const { donemOzeti } = require('../services/posProvizyon');
+    const { donemOzeti, bekleyenElde } = require('../services/posProvizyon');
+    const { saglik } = require('../services/posOdemeCekici');
     const bas = req.query.baslangic || new Date(Date.now() - 30 * 86400000).toISOString();
     const bit = req.query.bitis || new Date().toISOString();
-    res.json({ baslangic: bas, bitis: bit, ...(await donemOzeti({ baslangic: bas, bitis: bit })) });
+    res.json({
+        baslangic: bas, bitis: bit,
+        ...(await donemOzeti({ baslangic: bas, bitis: bit })),
+        bekleyen: await bekleyenElde(),
+        baglanti: saglik(),
+    });
+};
+
+// Elle cozulmus 'elde' odemeyi yeniden dene. Ornek: ayni e-postali ikinci
+// isletme silindikten ya da yetkili e-postasi SofraMix'te doldurulduktan sonra.
+exports.provizyonTekrarDene = async (req, res) => {
+    const { odemeIsle } = require('../services/posProvizyon');
+    const r = await query('SELECT * FROM pos_provizyon WHERE odeme_id = ?', [req.params.odemeId]);
+    const k = r.rows[0];
+    if (!k) return res.status(404).json({ message: 'Odeme bulunamadi.' });
+    if (k.durum === 'islendi') return res.status(409).json({ message: 'Bu odeme zaten islenmis.' });
+    const s = await odemeIsle({
+        odeme_id: k.odeme_id, business_id: k.soframix_business_id, isletme_adi: k.isletme_adi,
+        yetkili_email: k.yetkili_eposta, yetkili_tel: k.yetkili_tel, tutar_kurus: k.tutar_kurus,
+        kdv_kurus: k.kdv_kurus, yontem: k.yontem, onay_tarihi: k.onay_tarihi, kaynak: k.kaynak,
+    });
+    res.json(s);
+};
+
+// Aktivasyon postasini yeniden gonder. SMTP gecici olarak calismadiysa ya da
+// jetonun 72 saati dolduysa tek cikis yolu buydu - eskiden hic yoktu.
+exports.provizyonPostaYenile = async (req, res) => {
+    const { aktivasyonJetonu } = require('../services/posProvizyon');
+    const tenantId = req.params.tenantId;
+    const t = (await query(
+        'SELECT id, business_name, business_code, owner_email, license_end_date FROM tenants WHERE id = ?',
+        [tenantId])).rows[0];
+    if (!t) return res.status(404).json({ message: 'Isletme bulunamadi.' });
+    const u = (await query(
+        "SELECT id, email FROM users WHERE tenant_id = ? AND role = 'OWNER' ORDER BY created_at LIMIT 1",
+        [tenantId])).rows[0];
+    if (!u) return res.status(400).json({ message: 'Bu isletmenin sahip kullanicisi yok.' });
+    const alici = String(req.body?.eposta || t.owner_email || u.email || '').trim();
+    if (!alici || alici.endsWith('@ornek.local')) {
+        return res.status(400).json({ message: 'Gecerli bir e-posta adresi gerekli.' });
+    }
+    // Eski bekleyen jetonlar kapatilir: tek gecerli baglanti kalsin.
+    await query('UPDATE aktivasyon_jetonlari SET kullanildi_at = ? WHERE tenant_id = ? AND kullanildi_at IS NULL',
+        [new Date().toISOString(), tenantId]);
+    const j = await aktivasyonJetonu(tenantId, u.id);
+    const cekici = require('../services/posOdemeCekici');
+    const PANEL = (process.env.POS_PANEL_URL || 'https://restoran.mdayazilim.com').replace(/\/+$/, '');
+    const gitti = await cekici.postaDene(alici, 'MDA Restoran POS hesabiniz hazir',
+        `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
+            <h2 style="color:#E2622A;margin:0 0 12px">MDA Restoran POS</h2>
+            <p style="color:#374151">Merhaba ${t.business_name},</p>
+            <p style="color:#374151">Sifrenizi belirlemek icin:</p>
+            <p style="margin:20px 0"><a href="${PANEL}/aktivasyon/${j.ham}" style="background:#E2622A;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:700">Sifremi belirle</a></p>
+            <p style="color:#374151;font-size:.92rem">Isyeri kodunuz: <b>${t.business_code}</b></p>
+        </div>`, tenantId);
+    // SMTP calismiyorsa baglantiyi EKRANDA veriyoruz - Patron elden iletebilsin.
+    res.json({ gonderildi: gitti, eposta: alici, sonGecerlilik: j.son,
+        baglanti: gitti ? undefined : `${PANEL}/aktivasyon/${j.ham}` });
 };
 
 // Elle tetikleme: "para gitti ama POS acilmadi" diyen bir isletme icin
