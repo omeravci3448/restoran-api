@@ -49,6 +49,10 @@ class BaseAdapter {
     async cancelOrder() { throw AdapterError.unsupported('cancelOrder'); }
 
     // — Menü / ürün —
+    // Sozlesme: { kategoriler: [{externalId, name, sort}],
+    //             urunler:    [{externalId, name, description, externalCategoryId,
+    //                           imageUrl, sort, priceKurus, isActive, platformPriceKurus}] }
+    // Tum adaptorler AYNI sekli dondurur; cagiran taraf kanal bazli dallanmaz.
     async pullMenu() { throw AdapterError.unsupported('pullMenu'); }
     async setItemAvailability() { throw AdapterError.unsupported('setItemAvailability'); }
     async updatePrices() { throw AdapterError.unsupported('updatePrices'); }

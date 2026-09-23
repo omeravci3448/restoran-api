@@ -329,16 +329,24 @@ class TrendyolGoAdapter extends BaseAdapter {
         const data = await this._req(ctx, 'GET',
             `/product/meal/suppliers/${this._supplierId(ctx)}/stores/${encodeURIComponent(storeId)}/products`);
         const list = data?.content || data?.products || data || [];
-        return {
-            products: (Array.isArray(list) ? list : []).map((p) => ({
-                externalId: String(p.id ?? p.productId),
-                name: p.name,
-                priceKurus: toKurus(p.price ?? p.sellingPrice),
-                externalCategoryId: p.sectionId != null ? String(p.sectionId) : null,
-                isActive: String(p.status || '').toUpperCase() !== 'PASSIVE',
-            })),
-            raw: data,
-        };
+        // Ortak sozlesme: { kategoriler, urunler }. Trendyol ayri bir kategori
+        // listesi vermiyor, urunlerin sectionId'si uzerinden turetiliyor.
+        const urunler = (Array.isArray(list) ? list : []).map((p) => ({
+            externalId: String(p.id ?? p.productId),
+            name: p.name,
+            description: p.description || null,
+            externalCategoryId: p.sectionId != null ? String(p.sectionId) : null,
+            imageUrl: p.imageUrl || null,
+            sort: Number(p.sort) || 0,
+            priceKurus: 0,                                    // menu cekmede fiyat tasinmaz
+            isActive: false,                                  // fiyat girilene kadar pasif
+            platformPriceKurus: toKurus(p.price ?? p.sellingPrice) || 0,
+        }));
+        const gorulen = new Map();
+        for (const u of urunler) if (u.externalCategoryId && !gorulen.has(u.externalCategoryId)) {
+            gorulen.set(u.externalCategoryId, { externalId: u.externalCategoryId, name: 'Kategori ' + u.externalCategoryId, sort: 0 });
+        }
+        return { kategoriler: [...gorulen.values()], urunler, raw: data };
     }
 
     // Fiyat güncelleme ASENKRON — batchRequestId döner, getJobStatus ile takip edilir.

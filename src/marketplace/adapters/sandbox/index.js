@@ -118,10 +118,17 @@ class SandboxAdapter extends BaseAdapter {
     async cancelOrder(_c, p) { this._sent.push({ action: 'cancel', ...p }); return { ok: true }; }
 
     async pullMenu() {
-        return { products: [
-            { externalId: 'P-100', name: 'Adana Kebap', priceKurus: toKurus(185.5), isActive: true },
-            { externalId: 'P-200', name: 'Ayran', priceKurus: toKurus(50), isActive: true },
-        ] };
+        // Menu cekmede fiyat BILEREK 0 ve urun PASIF gelir (gercek adaptorlerle ayni
+        // davranis): isletme salon fiyatini kendi girene kadar satilamasin.
+        return {
+            kategoriler: [{ externalId: 'C-1', name: 'Test Kategori', sort: 0 }],
+            urunler: [
+                { externalId: 'P-100', name: 'Adana Kebap', description: null, externalCategoryId: 'C-1',
+                  imageUrl: null, sort: 0, priceKurus: 0, isActive: false, platformPriceKurus: toKurus(185.5) },
+                { externalId: 'P-200', name: 'Ayran', description: null, externalCategoryId: 'C-1',
+                  imageUrl: null, sort: 1, priceKurus: 0, isActive: false, platformPriceKurus: toKurus(50) },
+            ],
+        };
     }
 
     async updatePrices(_c, { items }) { this._sent.push({ action: 'price', count: items?.length }); return { jobRef: 'SBX-JOB-1' }; }
