@@ -20,6 +20,10 @@ router.get('/hub-status', ctrl.hubStatus); // teşhis: hub bağlantısı sağlı
 // Auth + rol + yönetici şifresi — lisans işlemleri kasiyere kapalı
 const mgr = [protect, requireRole('OWNER', 'MANAGER'), requireManagerPin];
 router.post('/refresh', ...mgr, ctrl.refresh);
+// Yalnizca oturum yeterli: yonetici sifresi ISTENMIYOR, cunku bu uc sadece
+// 'odemeyi nereden yapacaksiniz' sorusunu cevapliyor ve lisans sayfasi daha
+// ManagerGate'i gecmeden once cizilebilmeli.
+router.get('/yenileme-kanali', protect, ctrl.yenilemeKanali);
 router.post('/purchase', ...mgr, ctrl.purchase);
 router.post('/purchases/:id/mark-paid', ...mgr, ctrl.markPaid);
 router.get('/purchases', ...mgr, ctrl.purchases);

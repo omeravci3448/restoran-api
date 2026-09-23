@@ -130,4 +130,7 @@ app.listen(PORT, () => {
 
     // SofraMix POS ödemelerini çekme döngüsü — env yoksa sessizce kapalı kalır.
     require('./src/services/posOdemeCekici').baslat();
+
+    // Pazaryeri siparislerini cekme dongusu. Bagli kanal yoksa hicbir sey yapmaz.
+    require('./src/services/siparisCekici').baslat();
 });

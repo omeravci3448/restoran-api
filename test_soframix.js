@@ -64,11 +64,18 @@ const kopya = (o) => JSON.parse(JSON.stringify(o));
     // GET disi her yontem 403 doner. true beyan etmek arayuzde calismayan
     // dugmeler acmak demekti (kasiyer "Hazir" der, siparis oldugu yerde kalir).
     ok('ingress polling (webhook/hibrit iddia edilmiyor)', c.ingress === 'polling', c.ingress);
-    ok('acceptReject KAPALI (makine anahtari yazma yapamiyor)', c.acceptReject === false);
-    ok('markReady KAPALI', c.markReady === false);
-    ok('markDelivered KAPALI', c.markDelivered === false);
-    ok('storeOpenClose KAPALI', c.storeOpenClose === false);
-    ok('menuRead ACIK (tek gercekten calisan yon)', c.menuRead === true);
+    // SIPARIS yonu ACIK: SofraMix'te siparis_oku / siparis_yaz / dukkan_yonet
+    // izinleri var. Isletme anahtari uretirken "sadece menumu okusun" dediyse
+    // cagrilar 403 doner ve cekici bunu YETKI SORUNU olarak isaretler -
+    // yetenegi false yapmak yanlis olurdu, platform destekliyor.
+    ok('acceptReject ACIK', c.acceptReject === true);
+    ok('markReady ACIK', c.markReady === true);
+    ok('markDelivered ACIK', c.markDelivered === true);
+    ok('storeOpenClose ACIK', c.storeOpenClose === true);
+    ok('menuRead ACIK', c.menuRead === true);
+    // ⚠ MENU/FIYAT YONU KAPALI KALMALI - SofraMix'te menu_yaz izni YOK.
+    ok('menuWrite KAPALI (fiyat POStan itilmez)', c.menuWrite === false);
+    ok('priceUpdate KAPALI', c.priceUpdate === false);
 
     console.log('\n=== 2) Siparis normalize ===');
     const ev = smx._toRawEvent(SIPARIS);

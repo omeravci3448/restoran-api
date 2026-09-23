@@ -254,9 +254,17 @@ exports.login = async (req, res) => {
             const t = (await query(
                 `SELECT business_name, owner_email, phone, billing_name, billing_address,
                         billing_tax_id, billing_tax_office, referral_code, referred_by,
-                        license_tier, license_modules
+                        license_tier, license_modules, parent_org
                    FROM tenants WHERE id = ?`, [u.tenant_id])).rows[0];
-            if (t) {
+            // ⚠ KVKK: SofraMix kiracisinin yetkili ad/eposta/telefonu SofraMix'ten
+            // bize aktarilan veridir. Onu bir de MDA Hub'a gondermek UCUNCU bir
+            // tarafa aktarim demek - ne aydinlatma metninde ne isleyici
+            // sozlesmesinde yeri var. Ustelik gereksiz: bu kiracinin lisansini
+            // hub yonetmiyor (bkz. hubService.hubDisiMi), yani senkronun hicbir
+            // islevi de yok.
+            const hubDisi = t && (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX'
+                || t.license_tier === 'TIER_DENEME');
+            if (t && !hubDisi) {
                 let mods = [];
                 try { mods = JSON.parse(t.license_modules || '[]'); } catch (_) {}
                 await hubService.syncWithHub({

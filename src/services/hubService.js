@@ -96,7 +96,9 @@ async function hubDisiMi(tenantId) {
     const r = await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId]);
     const t = r.rows[0];
     if (!t) return false;
-    return t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX';
+    // TIER_DENEME de hub disi: deneme kiracisi hub'da kayitli degil, hub'a
+    // sorulsa 'abonelik yok' der ve 7 gunluk deneme daha ilk giriste kapanirdi.
+    return t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX' || t.license_tier === 'TIER_DENEME';
 }
 
 async function refreshTenantLicense(tenantId, customerEmail) {

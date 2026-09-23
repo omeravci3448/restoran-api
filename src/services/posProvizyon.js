@@ -107,6 +107,32 @@ async function kiraciBul({ smxId, tel, eposta }) {
     return { tenantId: null, esles: 'yok' };
 }
 
+// Kiraci acma - HEM provizyon HEM deneme akisi buradan geciyor.
+// Ayri ayri yazilsaydi biri modul listesini, digeri slug uretimini farkli
+// yapar ve "deneme surumunde calisiyordu, satin alinca bozuldu" turunden
+// hatalar dogardi.
+async function kiraciAc({ ad, eposta, tel, yetkiliAd, parentOrg, tier, bitis, moduller }) {
+    const tenantId = uuidv4();
+    const userId = uuidv4();
+    const kod = await benzersizKod();
+    const slug = await benzersizSlug(ad);
+    // Duz sifre URETILMEZ: sahibi tek kullanimlik baglantiyla kendi belirler.
+    const gecici = crypto.randomBytes(24).toString('base64url');
+    await query(
+        `INSERT INTO tenants
+            (id, slug, business_code, business_name, parent_org, owner_email, phone,
+             billing_name, license_tier, license_modules, license_end_date, is_active, show_cost_analytics)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+        [tenantId, slug, kod, ad, parentOrg || null, eposta, tel || null, ad,
+            tier || 'TIER_SOFRAMIX', JSON.stringify(moduller || VARSAYILAN_MODULLER), bitis]);
+    await query(
+        'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)',
+        [userId, tenantId, eposta, await bcrypt.hash(gecici, 10),
+            String(yetkiliAd || ad).slice(0, 80), 'OWNER']);
+    const jeton = await aktivasyonJetonu(tenantId, userId);
+    return { tenantId, userId, isyeriKodu: kod, slug, aktivasyonJetonu: jeton };
+}
+
 // SofraMix tarihleri SQLite bicimiyle geliyor: 'YYYY-MM-DD HH:MM:SS' (UTC).
 // POS ise her yerde ISO kullaniyor. Ayni sutunda iki bicim karisirsa METIN
 // karsilastirmasi bozulur: bosluk (0x20) < 'T' (0x54) oldugu icin donemin ILK
@@ -192,24 +218,14 @@ async function odemeIsle(o) {
         } else {
             // 2b) Kiraci YOK -> ac. Sifre burada BELIRLENMEZ; sahibi tek kullanimlik
             //     baglantiyla kendi belirler, boylece duz sifre hicbir yerde durmaz.
-            tenantId = uuidv4();
-            const userId = uuidv4();
-            const kod = await benzersizKod();
-            const slug = await benzersizSlug(ad);
-            const gecici = crypto.randomBytes(24).toString('base64url');
-            await query(
-                `INSERT INTO tenants
-                    (id, slug, business_code, business_name, parent_org, owner_email, phone,
-                     billing_name, license_tier, license_modules, license_end_date, is_active, show_cost_analytics)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TIER_SOFRAMIX', ?, ?, 1, 1)`,
-                [tenantId, slug, kod, ad, smxId ? 'SofraMix' : null, eposta, tel, ad,
-                    JSON.stringify(VARSAYILAN_MODULLER), yeniBitis(null)]);
-            await query(
-                'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)',
-                [userId, tenantId, eposta, await bcrypt.hash(gecici, 10),
-                    String(o.yetkili_ad || ad).slice(0, 80), 'OWNER']);
+            const y = await kiraciAc({
+                ad, eposta, tel, yetkiliAd: o.yetkili_ad,
+                parentOrg: smxId ? 'SofraMix' : null, tier: 'TIER_SOFRAMIX',
+                bitis: yeniBitis(null), moduller: VARSAYILAN_MODULLER,
+            });
+            tenantId = y.tenantId;
             kiraciAcildi = 1;
-            jeton = await aktivasyonJetonu(tenantId, userId);
+            jeton = y.aktivasyonJetonu;
         }
 
         const bitis = (await query(
@@ -281,6 +297,6 @@ async function bekleyenElde() {
 }
 
 module.exports = {
-    odemeIsle, donemOzeti, bekleyenElde, kiraciBul, aktivasyonJetonu, yeniBitis,
+    odemeIsle, donemOzeti, bekleyenElde, kiraciBul, kiraciAc, aktivasyonJetonu, yeniBitis,
     benzersizSlug, slugla, telefonNorm, tarihNormalle, VARSAYILAN_MODULLER, LISANS_GUN,
 };

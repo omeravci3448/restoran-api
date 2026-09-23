@@ -29,29 +29,30 @@ class SofraMixAdapter extends BaseAdapter {
             requiredStoreLinkFields: [
                 { key: 'externalStoreId', label: 'SofraMix isletme no (business_id)', type: 'text', required: true },
             ],
-            // ⚠ SIPARIS YONU BUGUN KAPALI - beyan bilerek false.
-            // SofraMix'in makine anahtari (X-Smx-Anahtar) YALNIZCA
-            // GET /api/business/menu ucunu aciyor; siparis okuma ve durum yazma
-            // uclari panel oturumu istiyor ve auth katmani makine anahtariyla
-            // GET disi her yontemi 403 ile kesiyor. Bunlari true beyan etmek,
-            // arayuzde calismayan dugmeler acmak demekti: kasiyer "Hazir" der,
-            // 403 doner, siparis SofraMix'te oldugu yerde kalir.
-            // SofraMix o uclari anahtara acinca burasi tekrar true'ya cekilir
-            // (metodlar zaten yazili duruyor).
+            // SIPARIS YONU ACIK - ama ISLETMENIN ANAHTARINA BAGLI.
+            // SofraMix'te siparis uclari ayri izinler istiyor (siparis_oku /
+            // siparis_yaz / dukkan_yonet). Isletme anahtari uretirken "sadece
+            // menumu okusun" dediyse bu cagrilar 403 doner; cekici bunu yetki
+            // sorunu olarak isaretleyip geri cekiliyor, arayuz de "yeni anahtar
+            // uretin" diyebiliyor. Yetenegi burada false yapmak yanlis olurdu:
+            // platform DESTEKLIYOR, eksik olan o kiracinin anahtari.
+            //
+            // menuWrite/priceUpdate HALA false ve oyle kalacak: menu ve fiyat
+            // POS'tan SofraMix'e ITILMEZ (SofraMix'te menu_yaz izni de yok).
             capabilities: {
                 ingress: 'polling',
-                acceptReject: false,
-                markPreparing: false,
-                markReady: false,
-                markDispatched: false,
-                markDelivered: false,
+                acceptReject: true,
+                markPreparing: true,
+                markReady: true,
+                markDispatched: true,
+                markDelivered: true,
                 partialCancel: false,
                 prepTimeOnAccept: false,
                 menuRead: true,
                 menuWrite: false,
                 priceUpdate: false,
                 itemAvailability: false,
-                storeOpenClose: false,
+                storeOpenClose: true,
                 settlements: false,
                 asyncJobs: false,
                 sandbox: true,
@@ -105,12 +106,11 @@ class SofraMixAdapter extends BaseAdapter {
         return { ok: true, accountInfo: { urunSayisi: (d && d.products && d.products.length) || 0 } };
     }
 
-    // ⚠ ARTIMLI CEKME YOK. `degisen_sonra` SofraMix'e EKLENMEDI; uc yalnizca
-    // `date` okuyor ve parametresiz cagrida "aktif olanlar VEYA son 12 saat,
-    // en cok 200 kayit" donuyor. Yani imlec ILERLEMEZ: 12 saatten eski kapanmis
-    // siparis hic gorulmez, yogun gunde 200 ustu kayit sessizce duser.
-    // Bu yuzden capabilities'te siparis yonu false - bu metod bugun uretimde
-    // CAGRILMIYOR, SofraMix parametreyi ekleyene kadar oyle kalmali.
+    // ARTIMLI CEKME: `degisen_sonra` SofraMix'e eklendi (migrasyon 045 +
+    // orders.updated_at tetikleyicisi). Imlec ilerledigi icin 12 saat / 200
+    // kayit penceresine sikismiyoruz; yogun gunde siparis dusmuyor.
+    // ⚠ Gecersiz tarih SofraMix'te 400 doner, SESSIZCE tum listeye dusmez -
+    // POS'taki bir bicim hatasi "hic yeni siparis yok" gibi gorunmesin diye.
     async fetchOrders(ctx, opts) {
         const o = opts || {};
         const d = await this._req(ctx, 'GET', '/api/business/orders', {

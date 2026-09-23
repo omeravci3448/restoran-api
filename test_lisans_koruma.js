@@ -55,9 +55,12 @@ async function kiraciAc(x = {}) {
     const { getAdapter } = require('./src/marketplace/registry');
     const c = getAdapter('soframix').capabilities;
     ok('menuRead acik', c.menuRead === true);
-    ok('acceptReject kapali', c.acceptReject === false);
-    ok('markDelivered kapali', c.markDelivered === false);
-    ok('storeOpenClose kapali', c.storeOpenClose === false);
+    // Siparis yonu ACIK: SofraMix siparis_oku/siparis_yaz/dukkan_yonet izinlerini
+    // tanimladi. Isletmenin anahtarinda o izin yoksa cagri 403 doner ve cekici
+    // bunu yetki sorunu olarak isaretler - yetenek beyanini false yapmak yanlis olurdu.
+    ok('acceptReject acik', c.acceptReject === true);
+    ok('markDelivered acik', c.markDelivered === true);
+    ok('storeOpenClose acik', c.storeOpenClose === true);
     ok('menuWrite kapali (fiyat POStan SofraMixe gitmez)', c.menuWrite === false);
 
     // Temizlik

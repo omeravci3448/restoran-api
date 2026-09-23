@@ -63,4 +63,48 @@ async function supheliTalepler({ gun = 30 } = {}) {
     return r.rows;
 }
 
-module.exports = { DENEME_GUN, telefonNormalle, oncekiDeneme, denemeKaydet, supheliTalepler };
+// ——— Denemeyi BASLAT ———
+// Bu servis yazilmisti ama URETIMDE HIC CAGRILMIYORDU: deneme_kayitlari hep bos
+// kaliyor, dolayisiyla "bir kez deneme" korumasi da, provizyondaki "denemeden
+// gecen isletme AYNI kiraciyi surdursun" basamagi da fiilen calismiyordu.
+//
+// Doner: { durum: 'acildi' | 'zaten_alinmis', ... }
+async function denemeBaslat({ isletmeAdi, yetkiliAd, eposta, telefon, soframixBusinessId, kaynak }) {
+    const ad = String(isletmeAdi || '').trim();
+    const mail = String(eposta || '').trim().toLowerCase();
+    if (!ad) return { durum: 'hata', sebep: 'isletme_adi_yok' };
+    // E-posta ZORUNLU: sifre belirleme baglantisi oraya gidiyor. Olmadan kiraci
+    // acmak "lisans basladi ama kimse giremiyor" demek olurdu.
+    if (!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) return { durum: 'hata', sebep: 'eposta_gecersiz' };
+    if (!telefonNormalle(telefon)) return { durum: 'hata', sebep: 'telefon_gecersiz' };
+
+    const onceki = await oncekiDeneme({ telefon, soframixBusinessId });
+    if (onceki) {
+        return { durum: 'zaten_alinmis', tarih: onceki.created_at, tenantId: onceki.tenant_id };
+    }
+    // Ayni e-postayla acilmis bir kiraci varsa yeni kiraci ACMIYORUZ: aksi halde
+    // ayni kisi her seferinde yeni isletme acip suresiz deneme kullanirdi.
+    const mevcut = await query('SELECT id FROM tenants WHERE owner_email = ?', [mail]);
+    if (mevcut.rows.length) return { durum: 'zaten_alinmis', sebep: 'eposta_kayitli', tenantId: mevcut.rows[0].id };
+
+    const bitis = new Date();
+    bitis.setDate(bitis.getDate() + DENEME_GUN);
+
+    const { kiraciAc, VARSAYILAN_MODULLER } = require('./posProvizyon');
+    const y = await kiraciAc({
+        ad, eposta: mail, tel: telefon, yetkiliAd,
+        parentOrg: soframixBusinessId ? 'SofraMix' : null,
+        tier: 'TIER_DENEME',
+        bitis: bitis.toISOString(),
+        moduller: VARSAYILAN_MODULLER,
+    });
+    await denemeKaydet({
+        tenantId: y.tenantId, telefon, soframixBusinessId, isletmeAdi: ad,
+        kaynak: kaynak || (soframixBusinessId ? 'soframix' : 'dogrudan'),
+    });
+    return { durum: 'acildi', bitis, gun: DENEME_GUN, ...y };
+}
+
+module.exports = {
+    DENEME_GUN, telefonNormalle, oncekiDeneme, denemeKaydet, denemeBaslat, supheliTalepler,
+};

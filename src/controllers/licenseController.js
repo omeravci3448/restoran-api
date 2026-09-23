@@ -142,7 +142,44 @@ exports.bankInfo = async (_req, res) => {
 };
 
 // Yeni satın alma talebi gönder — sepeti hub'a iletir
+// Bu kiraci lisansini NEREDEN yeniliyor?
+//
+// SofraMix'ten gelen isletme parayi SofraMix'e oder (bayi modeli): POS icindeki
+// hub satin alma akisi ona ACILMAMALI. Acilsaydi ayni musteri icin iki ayri
+// tahsilat kanali ve iki ayri lisans tarihi kaynagi olusur, SofraMix'e
+// kesilecek fatura da eksik kalirdi - kimse fark etmeden.
+async function yenilemeKanali(tenantId) {
+    const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId])).rows[0];
+    if (!t) return { kanal: 'hub' };
+    if (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX') {
+        return {
+            kanal: 'soframix',
+            url: (process.env.SOFRAMIX_PANEL_URL || 'https://soframix.com.tr').replace(/\/+$/, '') + '/isletme/pos',
+            mesaj: 'POS paketiniz SofraMix uzerinden saglaniyor. Yenilemeyi SofraMix isletme '
+                 + 'panelinizden yapmaniz gerekiyor.',
+        };
+    }
+    if (t.license_tier === 'TIER_DENEME') {
+        return {
+            kanal: 'deneme',
+            mesaj: 'Deneme surumundesiniz. Paketi satin almak icin bizimle iletisime gecin.',
+        };
+    }
+    return { kanal: 'hub' };
+}
+
+// Arayuz hangi odeme yolunu cizecegini buradan ogreniyor.
+exports.yenilemeKanali = async (req, res) => {
+    res.json(await yenilemeKanali(req.user.tenantId));
+};
+
 exports.purchase = async (req, res) => {
+    // Yanlis kanaldan odeme ALINMAZ. Arayuz zaten dogru dugmeyi cizecek ama
+    // kapiyi burada da kapatiyoruz: arayuz hatasi para almakla sonuclanmasin.
+    const yk = await yenilemeKanali(req.user.tenantId);
+    if (yk.kanal !== 'hub') {
+        return res.status(409).json({ code: 'WRONG_CHANNEL', ...yk });
+    }
     const { tier, modules = [], customerNote } = req.body;
     try {
         // Önce quote ile final fiyatı hesapla (güvenlik — istemci tutara güvenilmez)
