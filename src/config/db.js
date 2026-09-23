@@ -162,6 +162,21 @@ const initDb = () => {
         db.run("ALTER TABLE root_users ADD COLUMN totp_enabled INTEGER DEFAULT 0", [], () => {});
         db.run("ALTER TABLE root_users ADD COLUMN totp_last_step INTEGER", [], () => {});
 
+        // — DEMO TALEPLERI (tanitim sayfasindan gelen deneme istekleri) —
+        // Kiraciya bagli DEGIL: henuz musteri olmayan isletmeler dolduruyor.
+        db.run(`CREATE TABLE IF NOT EXISTS demo_talepleri (
+            id TEXT PRIMARY KEY,
+            isletme TEXT NOT NULL,
+            ad_soyad TEXT NOT NULL,
+            telefon TEXT NOT NULL,
+            eposta TEXT,
+            not_metni TEXT,
+            kaynak TEXT,
+            ip TEXT,
+            durum TEXT DEFAULT 'yeni',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,

@@ -21,7 +21,7 @@ class SofraMixAdapter extends BaseAdapter {
             displayName: 'SofraMix',
             requiredCredentialFields: [
                 { key: 'apiBase', label: 'SofraMix adresi', type: 'text', required: true,
-                  hint: 'ornek: https://test.soframix.com.tr' },
+                  hint: 'ornek: https://soframix.com.tr' },
                 { key: 'apiKey', label: 'Isletme API anahtari', type: 'password', required: true,
                   hint: 'SofraMix isletme panelinden uretilir (X-Smx-Anahtar).' },
                 { key: 'webhookSecret', label: 'Webhook imza siri', type: 'password', required: false },
@@ -258,6 +258,8 @@ class SofraMixAdapter extends BaseAdapter {
     }
 
     // — Menu okuma ("SofraMix'ten menuyu cek") —
+    // Sozlesme SofraMix'in GERCEK yanitindan alindi (tahmin degil):
+    //   GET /api/business/menu, baslik X-Smx-Anahtar. YALNIZ GET - yazma yolu YOK.
     // Fiyat BILEREK tasinmaz (Patron karari): isletme salon fiyatini kendi girer.
     // Urunler PASIF gelir ki 0 TL'lik urun kazara satilmasin.
     async pullMenu(ctx) {
@@ -265,18 +267,50 @@ class SofraMixAdapter extends BaseAdapter {
         const kategoriler = ((d && d.categories) || []).map((c) => ({
             externalId: String(c.id), name: c.name, sort: Number(c.sort) || 0,
         }));
-        const urunler = ((d && d.products) || []).map((p) => ({
-            externalId: String(p.id),
-            name: p.name,
-            description: p.description || null,
-            externalCategoryId: p.category_id != null ? String(p.category_id) : null,
-            imageUrl: p.image_url || null,
-            sort: Number(p.sort) || 0,
-            priceKurus: 0,       // BILEREK 0 - salon fiyatini isletme girecek
-            isActive: false,     // BILEREK pasif - fiyat girilene kadar satilamaz
-            platformPriceKurus: Number(p.price_kurus) || 0,  // yalnizca bilgi amacli gosterilir
-        }));
-        return { kategoriler, urunler, raw: d };
+
+        const bilinmeyenKodlar = new Set();
+        let beyansiz = 0;
+
+        const urunler = ((d && d.products) || []).map((p) => {
+            const a = M.alerjenAlanlari(p.alerjen);
+            a.bilinmeyen.forEach((k) => bilinmeyenKodlar.add(k));
+            if (!a.beyanEdildi) beyansiz++;
+
+            // "Iz olarak icerebilir" bilgisi icerdigiyle KARISTIRILMAZ (fazla iddia
+            // olurdu); icindekiler metnine ayri satir olarak ekleniyor.
+            let icindekiler = (p.icindekiler || '').trim() || null;
+            if (a.izMetni && a.izMetni.length) {
+                const izAd = a.izMetni.join(', ');
+                icindekiler = (icindekiler ? icindekiler + ' ' : '') + '(İz olarak içerebilir: ' + izAd + ')';
+            }
+
+            return {
+                externalId: String(p.id),
+                name: p.name,
+                description: (p.description || '').trim() || null,
+                externalCategoryId: p.category_id != null ? String(p.category_id) : null,
+                imageUrl: p.image_url || null,
+                sort: Number(p.sort) || 0,
+                priceKurus: 0,        // BILEREK 0
+                isActive: false,      // BILEREK pasif
+                platformPriceKurus: Number(p.price_kurus) || 0,   // yalnizca bilgi
+                // — Seffaf Menu alanlari (SofraMix 2026-09'da ekledi) —
+                allergens: a.allergens,              // beyan yoksa NULL (bos dizi DEGIL)
+                allergenBeyan: a.beyanEdildi,
+                containsAlcohol: a.containsAlcohol,
+                containsPork: a.containsPork,
+                calories: p.enerji_kcal != null ? Number(p.enerji_kcal) : null,
+                portionGrams: p.porsiyon_gram != null ? Number(p.porsiyon_gram) : null,
+                ingredients: icindekiler,
+            };
+        });
+
+        return {
+            kategoriler, urunler, raw: d,
+            // Cagiran taraf kullaniciya anlamli uyari gosterebilsin diye:
+            beyansizUrun: beyansiz,
+            bilinmeyenAlerjenKodu: [...bilinmeyenKodlar],
+        };
     }
 
     async setStoreStatus(ctx, p) {

@@ -83,3 +83,63 @@ module.exports = {
     iptalEdilebilir, teslimEdilemediBildirilebilir, hazirlaniyorSonrasi,
     zamanaMs, seceneklerMetne,
 };
+
+// ——— ALERJEN KODU ESLEMESI (SofraMix -> MDA) ———
+// DIKKAT: 14 kodun 4'u iki tarafta FARKLI yazilmis. Esleme olmadan bu dordu
+// sessizce kaybolurdu - alerjen bir saglik bilgisi, sessiz kayip kabul edilemez.
+const ALERJEN_ESLEME = {
+    gluten: 'gluten',
+    kabuklu: 'kabuklu_deniz',       // FARKLI
+    yumurta: 'yumurta',
+    balik: 'balik',
+    yerfistigi: 'yer_fistigi',      // FARKLI
+    soya: 'soya',
+    sut: 'sut',
+    sertkabuklu: 'sert_kabuklu',    // FARKLI
+    kereviz: 'kereviz',
+    hardal: 'hardal',
+    susam: 'susam',
+    sulfit: 'sulfit',
+    lupen: 'lupin',                 // FARKLI
+    yumusakca: 'yumusakca',
+};
+
+// Kodlari cevir. Taninmayan kod SESSIZCE ATILMAZ, raporlanir - SofraMix yeni
+// bir kod eklerse haberimiz olsun.
+function alerjenCevir(kodlar) {
+    const cikti = [], bilinmeyen = [];
+    for (const k of Array.isArray(kodlar) ? kodlar : []) {
+        const m = ALERJEN_ESLEME[String(k).toLowerCase().trim()];
+        if (m) cikti.push(m); else bilinmeyen.push(k);
+    }
+    return { kodlar: cikti, bilinmeyen };
+}
+
+// SofraMix alerjen nesnesini MDA urun alanlarina cevirir.
+//
+// ⚠️ beyan=false "alerjen yok" DEMEK DEGIL, "isletme doldurmadi" demek.
+// Bu durumda alerjen alanini NULL birakiyoruz; bos dizi yazsaydik arayuz
+// "kontrol edildi, alerjen yok" gibi okunabilirdi. Hicbir sey iddia etmiyoruz.
+function alerjenAlanlari(a) {
+    const yok = { allergens: null, containsAlcohol: 0, containsPork: 0, izMetni: null, beyanEdildi: false, bilinmeyen: [] };
+    if (!a || typeof a !== 'object') return yok;
+    const alkol = a.alkol ? 1 : 0, domuz = a.domuz ? 1 : 0;
+    if (!a.beyan) return { ...yok, containsAlcohol: alkol, containsPork: domuz };
+
+    const icerir = alerjenCevir(a.icerir);
+    const iz = alerjenCevir(a.iz);
+    return {
+        allergens: JSON.stringify(icerir.kodlar),   // beyan edildi -> bos dizi de anlamlidir
+        containsAlcohol: alkol,
+        containsPork: domuz,
+        // "iz" ayri bir alanimiz yok. Icerdigi ile KARISTIRMAK yanlis olurdu
+        // (fazla iddia), bu yuzden icindekiler metnine not olarak ekliyoruz.
+        izMetni: iz.kodlar.length ? iz.kodlar : null,
+        beyanEdildi: true,
+        bilinmeyen: [...icerir.bilinmeyen, ...iz.bilinmeyen],
+    };
+}
+
+module.exports.ALERJEN_ESLEME = ALERJEN_ESLEME;
+module.exports.alerjenCevir = alerjenCevir;
+module.exports.alerjenAlanlari = alerjenAlanlari;

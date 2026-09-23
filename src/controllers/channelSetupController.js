@@ -140,6 +140,8 @@ exports.pullMenu = async (req, res) => {
             kategori: { toplam: menu.kategoriler.length, yeni: yeniKategori.length },
             urun: { toplam: menu.urunler.length, yeni: yeniUrun.length },
             ornekler: yeniUrun.slice(0, 8).map((u) => ({ ad: u.name, gorsel: !!u.imageUrl })),
+            beyansizUrun: menu.beyansizUrun || 0,
+            bilinmeyenAlerjenKodu: menu.bilinmeyenAlerjenKodu || [],
         });
     }
 
@@ -165,12 +167,19 @@ exports.pullMenu = async (req, res) => {
         // FIYAT 0 + PASIF: isletme fiyatini girene kadar satilamaz (Patron karari).
         // Gorsel pazaryerindeki mutlak adresle baglaniyor; qr-menu 'http' ile
         // baslayan adresi oldugu gibi kullaniyor, ek isleme gerekmiyor.
+        // Seffaf Menu alanlari da tasinir (SofraMix bunlari 2026-09'da ekledi).
+        // allergens NULL geldiyse "isletme doldurmadi" demektir - bos dizi YAZMIYORUZ,
+        // cunku bos dizi "kontrol edildi, alerjen yok" gibi okunur.
         await query(
             `INSERT INTO products (id, tenant_id, category_id, name, description, price, cost,
-                image_url, tracks_stock, is_available, sort_order)
-             VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?)`,
+                image_url, tracks_stock, is_available, sort_order,
+                allergens, ingredients, calories, portion_grams, contains_alcohol, contains_pork)
+             VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
             [id, req.user.tenantId, katEsle.get(u.externalCategoryId) || null, u.name,
-                u.description || null, u.imageUrl || null, u.sort || 0]);
+                u.description || null, u.imageUrl || null, u.sort || 0,
+                u.allergens ?? null, u.ingredients ?? null,
+                u.calories ?? null, u.portionGrams ?? null,
+                u.containsAlcohol ? 1 : 0, u.containsPork ? 1 : 0]);
         await query(
             `INSERT INTO marketplace_product_map
                 (id, tenant_id, channel_id, store_link_id, kind, external_id, external_name, external_price, pos_ref_id, match_source)
@@ -180,11 +189,21 @@ exports.pullMenu = async (req, res) => {
         urunSayi++;
     }
 
+    // Alerjen beyani olmayan urunleri AYRICA uyariyoruz: "alerjen yok" ile
+    // "isletme doldurmadi" karistirilirsa gercek bir saglik riski dogar.
+    const beyansiz = menu.urunler.filter((u) => !u.allergenBeyan).length;
     res.json({
         ok: true, kategoriEklendi: katSayi, urunEklendi: urunSayi,
+        beyansizUrun: beyansiz,
+        bilinmeyenAlerjenKodu: menu.bilinmeyenAlerjenKodu || [],
         uyari: 'Menü ' + (ch.name || 'pazaryeri') + " üzerinden alındı. Fiyat ve maliyet bilgileri "
              + 'aktarılmaz; ürünler fiyatlarını girene kadar PASİF durumdadır. '
              + 'Fiyatları girip "Menüde aktif" kutusunu işaretleyin.',
+        alerjenUyari: beyansiz > 0
+            ? beyansiz + ' üründe alerjen bilgisi işletme tarafından doldurulmamış. '
+              + 'Bu "alerjen içermiyor" anlamına GELMEZ - ilgili ürünlerin alerjen '
+              + 'bilgisini kendiniz girmelisiniz.'
+            : null,
     });
 };
 
