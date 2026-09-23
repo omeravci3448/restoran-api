@@ -196,6 +196,42 @@ const initDb = () => {
                 ON deneme_kayitlari(soframix_business_id)
                 WHERE soframix_business_id IS NOT NULL`);
 
+        // — POS PROVIZYON (SofraMix'ten gelen POS paketi odemeleri) —
+        // odeme_id BENZERSIZ: ayni odeme iki kez lisans acamaz. Bu tablo ayni zamanda
+        // Patron'un SofraMix'e kesecegi faturanin BAGIMSIZ dayanagidir - SofraMix'in
+        // beyanini kendi kaydimizla dogrulayabiliriz.
+        db.run(`CREATE TABLE IF NOT EXISTS pos_provizyon (
+            id TEXT PRIMARY KEY,
+            odeme_id TEXT NOT NULL UNIQUE,
+            kaynak TEXT NOT NULL DEFAULT 'soframix',
+            soframix_business_id TEXT,
+            tenant_id TEXT,
+            isletme_adi TEXT,
+            yetkili_eposta TEXT,
+            yetkili_tel TEXT,
+            tutar_kurus INTEGER,
+            kdv_kurus INTEGER,
+            yontem TEXT,
+            onay_tarihi TEXT,
+            donem_bitis TEXT,
+            kiraci_acildi INTEGER DEFAULT 0,
+            durum TEXT DEFAULT 'islendi',
+            hata TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_provizyon_donem ON pos_provizyon(onay_tarihi)`);
+
+        // — TEK KULLANIMLIK GIRIS/SIFRE BELIRLEME JETONLARI —
+        db.run(`CREATE TABLE IF NOT EXISTS aktivasyon_jetonlari (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            jeton_ozet TEXT NOT NULL UNIQUE,
+            son_gecerlilik TEXT NOT NULL,
+            kullanildi_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
         // — USERS (kasiyer, garson, yönetici) —
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,

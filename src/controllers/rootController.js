@@ -283,3 +283,36 @@ exports.resetOwnerPassword = async (req, res) => {
 };
 
 module.exports.ensureRootUser = ensureRootUser;
+
+// ——— POS provizyon (SofraMix odemeleri) ———
+// Bu ekran Patron'un "SofraMix bana ne borclu" sorusunun tek dogru cevabidir:
+// lisans SADECE burada bir satir olusunca uzar, fatura da ayni satirlara dayanir.
+
+exports.provizyonListe = async (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const r = await query(
+        `SELECT p.*, t.business_name AS kiraci_adi, t.business_code AS isyeri_kodu
+           FROM pos_provizyon p
+           LEFT JOIN tenants t ON t.id = p.tenant_id
+          ORDER BY p.created_at DESC
+          LIMIT ?`, [limit]);
+    res.json(r.rows);
+};
+
+exports.provizyonOzet = async (req, res) => {
+    const { donemOzeti } = require('../services/posProvizyon');
+    const bas = req.query.baslangic || new Date(Date.now() - 30 * 86400000).toISOString();
+    const bit = req.query.bitis || new Date().toISOString();
+    res.json({ baslangic: bas, bitis: bit, ...(await donemOzeti({ baslangic: bas, bitis: bit })) });
+};
+
+// Elle tetikleme: "para gitti ama POS acilmadi" diyen bir isletme icin
+// periyodu beklemeden hemen sorgular.
+exports.provizyonCek = async (_req, res) => {
+    const cekici = require('../services/posOdemeCekici');
+    if (!cekici.acikMi()) {
+        return res.status(503).json({ message: 'SofraMix baglantisi tanimli degil (SOFRAMIX_PLATFORM_URL/ANAHTAR).' });
+    }
+    try { res.json(await cekici.birTur()); }
+    catch (e) { res.status(502).json({ message: `SofraMix'e ulasilamadi: ${e.message}` }); }
+};

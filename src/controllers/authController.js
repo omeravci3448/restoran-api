@@ -294,7 +294,12 @@ exports.me = async (req, res) => {
         tenantId: req.user.tenantId,
         businessName: req.user.businessName,
         licenseTier: req.user.licenseTier,
-        modules: req.user.modules
+        modules: req.user.modules,
+        // Lisans durumu - arayuz serit gostersin diye (bkz services/lisansDurumu.js)
+        lisansDurum: req.user.lisansDurum,            // AKTIF | SALT_OKUNUR
+        lisansBitis: req.user.lisansBitis,
+        lisansKalanGun: req.user.lisansKalanGun,
+        lisansToleransBitis: req.user.lisansToleransBitis,
     });
 };
 

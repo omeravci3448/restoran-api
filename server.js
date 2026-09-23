@@ -91,6 +91,7 @@ app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
+app.use('/api/aktivasyon', require('./src/routes/aktivasyonRoutes')); // ilk sifre belirleme (jeton = kimlik)
 app.use('/api/root', require('./src/routes/rootRoutes'));     // ekosistem yönetimi (işletme aç/yönet)
 
 // 404
@@ -122,4 +123,7 @@ app.listen(PORT, () => {
                 : `[root] panel kapalı (${r.sebep})`);
         } catch (e) { console.error('[root] kurulum hatası:', e.message); }
     }, 5000);
+
+    // SofraMix POS ödemelerini çekme döngüsü — env yoksa sessizce kapalı kalır.
+    require('./src/services/posOdemeCekici').baslat();
 });
