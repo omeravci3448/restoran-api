@@ -65,6 +65,25 @@ const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
     console.log('\n=== 7) Bilinmeyen satir guncellenemez ===');
     ok('yok olan id null doner', (await K.guncelle('YOK-123', { fiyat: 1 })) === null);
 
+    console.log('\n=== 8) Musteriye gosterilen kanal listesi ===');
+    // Kasa ekraninda "Trendyol GO" ve "Test Pazaryeri (sahte)" gorunuyordu.
+    // Ikisi de yanlisti: pazaryeri satista degil, sahte kanal hic gosterilmemeli.
+    const { listAdapters } = require('./src/marketplace/registry');
+    const suz = async (uretim) => {
+        const acik = await K.modulGorunurMu('MARKETPLACE');
+        return listAdapters().filter((a) => a.code === 'sandbox' ? !uretim
+            : a.code === 'soframix' ? true : acik).map((a) => a.code);
+    };
+    const uretimde = await suz(true);
+    ok('SofraMix her zaman gorunur', uretimde.includes('soframix'), uretimde);
+    ok('sahte kanal uretimde GIZLI', !uretimde.includes('sandbox'), uretimde);
+    ok('trendyol satista degilken GIZLI', !uretimde.includes('trendyolgo'), uretimde);
+
+    await K.guncelle(mp.id, { gorunur: 1 });
+    const acikken = await suz(true);
+    ok('pazaryeri acilinca trendyol gorunur', acikken.includes('trendyolgo'), acikken);
+    await K.guncelle(mp.id, { gorunur: 0 });
+
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi ===`);
     process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

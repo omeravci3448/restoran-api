@@ -17,8 +17,25 @@ function ctxKur(tenantId, credentials, storeLink) {
 }
 
 // --- Bağlanabilir kanallar (arayuz listeyi buradan cizer) ---
+// Musteriye YALNIZCA satisa acik kanallar gosterilir.
+//
+// Once ham liste doniyordu; kasa ekraninda "Trendyol GO" ve "Test Pazaryeri
+// (sahte)" gorunuyordu. Ikisi de yanlisti: pazaryeri entegrasyonu henuz
+// satista degil (katalogda MARKETPLACE gizli) ve sahte kanal gercek bir
+// isletmeye hic gosterilmemeli.
+//
+// SofraMix HER ZAMAN listede: musteri paketi zaten SofraMix uzerinden aldi ve
+// menusunu cekebilmesi icin bu kanala ihtiyaci var. Yani "pazaryeri modulu
+// satista mi" sorusu ile "SofraMix baglantisi kurulabilir mi" sorusu ayri.
 exports.adapters = async (_req, res) => {
-    res.json(listAdapters());
+    const K = require('../services/lisansKatalog');
+    const pazaryeriSatista = await K.modulGorunurMu('MARKETPLACE');
+    const uretim = process.env.NODE_ENV === 'production';
+    res.json(listAdapters().filter((a) => {
+        if (a.code === 'sandbox') return !uretim;
+        if (a.code === 'soframix') return true;
+        return pazaryeriSatista;
+    }));
 };
 
 // --- Kanalin kurulum durumu ---
