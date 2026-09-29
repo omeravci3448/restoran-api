@@ -92,7 +92,16 @@ async function pingActivity(customerEmail) {
 // authMiddleware her istegi 403 ile keserdi. O zaman lisansDurumu'nun kademeli
 // kapanmasi (3 gun salt-okunur + odeme yapabilme) hic devreye giremezdi.
 // Yani "musteri parasini yatirmis ama kasayi hic acamiyor" durumu.
+// Lisans artik POS'un KENDI veritabaninda yonetiliyor (katalog + odeme
+// bildirimleri + root paneli). Hub senkronu bu yuzden VARSAYILAN OLARAK
+// KAPALI: acik kalsaydi, root panelinden uzatilan bir lisansi hub bir
+// sonraki giriste "abonelik yok" deyip kapatabilirdi - yani panelde yazan
+// ile musterinin yasadigi birbirini tutmazdi.
+// Eski hub-yonetimli kiracilar icin HUB_LISANS_SENKRON=1 ile acilabilir.
+const HUB_SENKRON = process.env.HUB_LISANS_SENKRON === '1';
+
 async function hubDisiMi(tenantId) {
+    if (!HUB_SENKRON) return true;
     const r = await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId]);
     const t = r.rows[0];
     if (!t) return false;

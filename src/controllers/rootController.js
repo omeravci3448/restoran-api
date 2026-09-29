@@ -151,20 +151,88 @@ exports.me = async (req, res) => {
 exports.listTenants = async (_req, res) => {
     const r = await query(
         `SELECT t.id, t.business_code, t.business_name, t.parent_org, t.slug,
-                t.owner_email, t.phone, t.license_modules,
+                t.owner_email, t.phone, t.license_modules, t.license_tier,
                 t.license_end_date, t.license_table_limit, t.is_active, t.created_at,
                 (SELECT COUNT(*) FROM tables   x WHERE x.tenant_id = t.id AND x.is_active = 1)    AS masa_sayisi,
                 (SELECT COUNT(*) FROM products x WHERE x.tenant_id = t.id AND x.is_available = 1) AS urun_sayisi,
                 (SELECT COUNT(*) FROM users    x WHERE x.tenant_id = t.id AND x.is_active = 1)    AS kullanici_sayisi,
-                (SELECT COUNT(*) FROM orders   x WHERE x.tenant_id = t.id AND x.status = 'OPEN')  AS acik_siparis
+                (SELECT COUNT(*) FROM orders   x WHERE x.tenant_id = t.id AND x.status = 'OPEN')  AS acik_siparis,
+                -- Deneme kaydi kiraci SILINSE BILE duruyor; "bu isletme denemeden
+                -- mi geldi, ne zaman bitiyor" sorusunun cevabi burada.
+                (SELECT d.bitis  FROM deneme_kayitlari d WHERE d.tenant_id = t.id ORDER BY d.created_at DESC LIMIT 1) AS deneme_bitis,
+                (SELECT d.kaynak FROM deneme_kayitlari d WHERE d.tenant_id = t.id ORDER BY d.created_at DESC LIMIT 1) AS deneme_kaynak,
+                -- Odeme gecmisi: "lisans almis mi, ne zaman, ne kadar".
+                (SELECT COUNT(*)      FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi') AS odeme_adedi,
+                (SELECT v.onay_tarihi FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi' ORDER BY v.onay_tarihi DESC LIMIT 1) AS son_odeme_tarihi,
+                (SELECT v.tutar_kurus FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi' ORDER BY v.onay_tarihi DESC LIMIT 1) AS son_odeme_kurus
            FROM tenants t
           ORDER BY t.is_active DESC, t.business_name`);
+
+    const L = require('../services/lisansDurumu');
     res.json(r.rows.map(t => {
         let mods = [];
         try { mods = t.license_modules ? JSON.parse(t.license_modules) : []; } catch (_) {}
-        return { ...t, license_modules: mods };
+        // Durum BURADA hesaplaniyor, arayuzde degil: musterinin yasadigi kural
+        // (bitis -> 3 gun salt-okunur -> kapali) tek yerde dursun. Iki ayri yerde
+        // hesaplansaydi panel "aktif" derken kasa kapanmis olabilirdi.
+        const d = L.hesapla(t.license_end_date);
+        const odemeYapmis = Number(t.odeme_adedi || 0) > 0;
+        return {
+            ...t,
+            license_modules: mods,
+            lisans_durum: d.durum,
+            lisans_kalan_gun: d.kalanGun,
+            // Odemesi olan kiraci artik deneme DEGILDIR; tier guncellenmemis olsa
+            // bile panelde musteri olarak gorunmeli.
+            deneme_mi: t.license_tier === 'TIER_DENEME' && !odemeYapmis,
+            odeme_yapmis: odemeYapmis,
+            kaynak_etiket: t.parent_org === 'SofraMix' ? 'SofraMix'
+                : (t.deneme_kaynak ? 'Tanıtım sayfası' : (t.parent_org || null)),
+        };
     }));
 };
+
+// --- Lisans uzatma (root) ---
+//
+// "Duzenle" ekranindan tarih yazmak da mumkun ama gunluk is bu degil: gelen
+// para karsiligi "+1 yil" demek. Tarihi elle hesaplatmak hata kaynagi -
+// ozellikle lisansi henuz BITMEMIS bir kiracide, bugunden baslatmak musterinin
+// odedigi gunleri sessizce silerdi.
+exports.lisansUzat = async (req, res) => {
+    const { yeniBitis } = require('../services/posProvizyon');
+    const t = (await query(
+        'SELECT id, business_name, license_end_date, license_tier FROM tenants WHERE id = ?',
+        [req.params.id])).rows[0];
+    if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+
+    const b = req.body || {};
+    let bitis;
+    if (b.bitis) {
+        const d = new Date(b.bitis);
+        if (Number.isNaN(d.getTime())) return res.status(400).json({ message: 'Tarih geçersiz.' });
+        bitis = d.toISOString();
+    } else {
+        const gun = Number(b.gun);
+        if (!Number.isFinite(gun) || gun <= 0 || gun > 3650) {
+            return res.status(400).json({ message: 'Gün sayısı 1-3650 arasında olmalı.' });
+        }
+        // Mevcut lisans ileri tarihliyse UZERINE ekler, gecmisse bugunden baslar.
+        bitis = yeniBitis(t.license_end_date, gun);
+    }
+
+    // Deneme kiracisi para odeyince artik musteridir. Tier'i burada cevirmezsek
+    // hub disi sayilmaya devam eder ama panelde hala "Deneme" gorunur.
+    const tier = b.tier ? String(b.tier).slice(0, 40)
+        : (t.license_tier === 'TIER_DENEME' ? 'TIER_MUSTERI' : t.license_tier);
+
+    await query(
+        'UPDATE tenants SET license_end_date = ?, license_tier = ?, is_active = 1 WHERE id = ?',
+        [bitis, tier, t.id]);
+
+    res.json({ ok: true, id: t.id, license_end_date: bitis, license_tier: tier,
+        message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });
+};
+
 
 // --- Yardımcılar ---
 const slugify = (s) => String(s || '').toLowerCase()
@@ -373,4 +441,91 @@ exports.provizyonCek = async (_req, res) => {
     }
     try { res.json(await cekici.birTur()); }
     catch (e) { res.status(502).json({ message: `SofraMix'e ulasilamadi: ${e.message}` }); }
+};
+
+// --- Katalog + ayarlar + odeme bildirimleri (root) ---
+//
+// Fiyatlar ve paketler artik hub'dan degil BURADAN tanimlaniyor.
+
+exports.katalogListe = async (_req, res) => {
+    const K = require('../services/lisansKatalog');
+    const A = require('../services/sistemAyar');
+    res.json({
+        katalog: await K.tamKatalog(),
+        ayarlar: await A.hepsi(['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama']),
+    });
+};
+
+exports.katalogGuncelle = async (req, res) => {
+    const K = require('../services/lisansKatalog');
+    const satir = await K.guncelle(req.params.id, req.body || {});
+    if (!satir) return res.status(404).json({ message: 'Satır bulunamadı.' });
+    res.json(satir);
+};
+
+exports.ayarGuncelle = async (req, res) => {
+    const A = require('../services/sistemAyar');
+    const IZINLI = ['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama'];
+    // Beyaz liste: gelen gövdedeki her anahtarı yazmak, bir gün başka bir
+    // ayarın (örn. bir bayrak) buradan ezilmesine kapı açardı.
+    for (const k of IZINLI) {
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, k)) await A.yaz(k, req.body[k]);
+    }
+    res.json(await A.hepsi(IZINLI));
+};
+
+exports.lisansOdemeleri = async (req, res) => {
+    const durum = req.query.durum;
+    const r = await query(
+        `SELECT o.*, t.business_name, t.business_code, t.license_end_date
+           FROM lisans_odemeleri o JOIN tenants t ON t.id = o.tenant_id
+          ${durum ? 'WHERE o.durum = ?' : ''}
+          ORDER BY CASE o.durum WHEN 'beklemede' THEN 0 ELSE 1 END, o.created_at DESC
+          LIMIT 200`, durum ? [durum] : []);
+    res.json(r.rows.map(x => {
+        let m = []; try { m = JSON.parse(x.moduller || '[]'); } catch (_) {}
+        return { ...x, moduller: m };
+    }));
+};
+
+// Onay = LISANSIN UZADIGI TEK AN. Bildirimin kendisi lisansa dokunmuyordu.
+exports.lisansOdemeOnayla = async (req, res) => {
+    const { yeniBitis } = require('../services/posProvizyon');
+    const o = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [req.params.id])).rows[0];
+    if (!o) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
+    if (o.durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
+    const t = (await query('SELECT * FROM tenants WHERE id = ?', [o.tenant_id])).rows[0];
+    if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+
+    const gun = Number(req.body?.gun) > 0 ? Number(req.body.gun) : 365;
+    const bitis = yeniBitis(t.license_end_date, gun);
+
+    // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse
+    // "aldim ama yok" der ve sebebi gorunmez.
+    let moduller = [];
+    try { moduller = JSON.parse(o.moduller || '[]'); } catch (_) {}
+
+    await query(
+        `UPDATE tenants SET license_end_date = ?, is_active = 1,
+                            license_tier = COALESCE(?, license_tier),
+                            license_modules = ?
+          WHERE id = ?`,
+        [bitis, o.tier || null, JSON.stringify(moduller), t.id]);
+    await query(
+        `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?,
+                                     islenen_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [String(req.body?.not || '').slice(0, 300), bitis, o.id]);
+
+    res.json({ ok: true, license_end_date: bitis,
+        message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });
+};
+
+exports.lisansOdemeReddet = async (req, res) => {
+    const not = String(req.body?.not || '').trim();
+    if (not.length < 3) return res.status(400).json({ message: 'Red sebebi yazın (müşteri bunu görecek).' });
+    const r = await query(
+        `UPDATE lisans_odemeleri SET durum = 'reddedildi', admin_note = ?, islenen_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND durum = 'beklemede'`, [not.slice(0, 300), req.params.id]);
+    if (!r.changes) return res.status(409).json({ message: 'Bekleyen bir ödeme bulunamadı.' });
+    res.json({ ok: true });
 };

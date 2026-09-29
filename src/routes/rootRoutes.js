@@ -36,6 +36,7 @@ router.get('/tenants', protectRoot, ctrl.listTenants);
 router.post('/tenants', protectRoot, ctrl.createTenant);
 router.patch('/tenants/:id', protectRoot, ctrl.updateTenant);
 router.post('/tenants/:id/owner-password', protectRoot, ctrl.resetOwnerPassword);
+router.post('/tenants/:id/lisans-uzat', protectRoot, ctrl.lisansUzat);
 
 // SofraMix POS ödemeleri — lisansın nereden uzadığının ve faturanın dayanağı
 router.get('/provizyon', protectRoot, ctrl.provizyonListe);
@@ -43,5 +44,13 @@ router.get('/provizyon/ozet', protectRoot, ctrl.provizyonOzet);
 router.post('/provizyon/cek', protectRoot, ctrl.provizyonCek);
 router.post('/provizyon/:odemeId/tekrar', protectRoot, ctrl.provizyonTekrarDene);
 router.post('/provizyon/tenant/:tenantId/posta', protectRoot, ctrl.provizyonPostaYenile);
+
+// Paketler, fiyatlar ve odeme bildirimleri - hub kaldirildi, kaynak burasi
+router.get('/katalog', protectRoot, ctrl.katalogListe);
+router.patch('/katalog/:id', protectRoot, ctrl.katalogGuncelle);
+router.put('/ayarlar', protectRoot, ctrl.ayarGuncelle);
+router.get('/lisans-odemeleri', protectRoot, ctrl.lisansOdemeleri);
+router.post('/lisans-odemeleri/:id/onayla', protectRoot, ctrl.lisansOdemeOnayla);
+router.post('/lisans-odemeleri/:id/reddet', protectRoot, ctrl.lisansOdemeReddet);
 
 module.exports = router;

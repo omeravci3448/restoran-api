@@ -229,6 +229,81 @@ const initDb = () => {
                     SET onay_tarihi = replace(onay_tarihi, ' ', 'T') || 'Z'
                   WHERE onay_tarihi LIKE '____-__-__ __:__:__'`, [], () => {});
 
+        // — SISTEM AYARLARI (root paneli tanimlar) —
+        // IBAN, unvan gibi tek-deger ayarlar. Eskiden banka bilgisi hub'dan
+        // geliyordu; hub bagimliligi kaldirildi.
+        db.run(`CREATE TABLE IF NOT EXISTS sistem_ayarlari (
+            anahtar TEXT PRIMARY KEY,
+            deger TEXT,
+            guncellendi_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // — LISANS ODEME BILDIRIMLERI (havale/EFT) —
+        //
+        // Musteri "odemeyi yaptim" der, root panelinden onaylanir, lisans uzar.
+        // Onaydan ONCE lisansa DOKUNULMAZ: bildirim tek basina para demek degil.
+        //
+        // donem_bitis onay aninda yazilir - "bu odemeyle lisans nereye kadar
+        // uzadi" sorusunun cevabi sonradan hesaplanamaz, kaydedilmeli.
+        db.run(`CREATE TABLE IF NOT EXISTS lisans_odemeleri (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            tier TEXT,
+            moduller TEXT,
+            tutar REAL NOT NULL DEFAULT 0,
+            durum TEXT NOT NULL DEFAULT 'beklemede',   -- beklemede | onaylandi | reddedildi
+            aciklama TEXT,
+            admin_note TEXT,
+            donem_bitis TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            islenen_at TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_lisans_odeme_durum ON lisans_odemeleri(durum, created_at)`);
+
+        // — LISANS KATALOGU (paketler + moduller, fiyatlariyla) —
+        //
+        // Katalog eskiden MDA Hub'dan geliyordu. Artik POS hub'a bagli degil:
+        // fiyatlari ve paketleri root paneli tanimliyor. Hub'dan okumak, POS'u
+        // baska bir servisin ayakta olmasina bagimli kiliyordu - hub kapaliyken
+        // musteri fiyat listesini bos goruyordu.
+        //
+        // gorunur=0 olan satir MUSTERIYE HIC gosterilmez ama kayitli kalir:
+        // henuz satisa acmadigimiz bir modulu silmek yerine gizliyoruz, boylece
+        // acilacagi gun fiyati ve adi yerinde duruyor.
+        db.run(`CREATE TABLE IF NOT EXISTS lisans_katalog (
+            id TEXT PRIMARY KEY,
+            tur TEXT NOT NULL,                 -- TIER | MODUL
+            kod TEXT NOT NULL,
+            ad TEXT NOT NULL,
+            aciklama TEXT,
+            fiyat REAL NOT NULL DEFAULT 0,
+            masa_limiti INTEGER,               -- yalniz TIER icin; bos = sinirsiz
+            gorunur INTEGER NOT NULL DEFAULT 1,
+            sira INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(tur, kod)
+        )`);
+
+        // Ilk kurulum tohumu. INSERT OR IGNORE: var olan satirin fiyatini ya da
+        // gorunurlugunu EZMEZ - Patron panelden ne ayarladiysa o kalir.
+        const katalogTohum = [
+            ['TIER', 'TIER_1_5', '1-5 Masa', 0, 5, 1, 10],
+            ['TIER', 'TIER_6_10', '6-10 Masa', 0, 10, 1, 20],
+            ['TIER', 'TIER_11_20', '11-20 Masa', 0, 20, 1, 30],
+            ['TIER', 'TIER_20_PLUS', '20+ Masa (Sınırsız)', 0, null, 1, 40],
+            ['MODUL', 'BASE', 'Temel (dahil)', 0, null, 1, 10],
+            ['MODUL', 'MENU_DIGITAL', 'Dijital QR Menü', 0, null, 1, 20],
+            ['MODUL', 'GARSON', 'Garson Mobil Uygulaması', 0, null, 1, 30],
+            ['MODUL', 'STOK', 'Stok + Tedarikçi', 0, null, 1, 40],
+            // ⚠ PAZARYERI VARSAYILAN OLARAK GIZLI (Patron karari): entegrasyon
+            // henuz tamamlanmadi, musteriye satilmiyor. Root panelinden acilir.
+            ['MODUL', 'MARKETPLACE', 'Pazaryeri Entegrasyonu', 0, null, 0, 50],
+        ];
+        for (const [tur, kod, ad, fiyat, limit, gorunur, sira] of katalogTohum) {
+            db.run(`INSERT OR IGNORE INTO lisans_katalog (id, tur, kod, ad, fiyat, masa_limiti, gorunur, sira)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [`${tur}-${kod}`, tur, kod, ad, fiyat, limit, gorunur, sira], () => {});
+        }
+
         // — TEK KULLANIMLIK GIRIS/SIFRE BELIRLEME JETONLARI —
         db.run(`CREATE TABLE IF NOT EXISTS aktivasyon_jetonlari (
             id TEXT PRIMARY KEY,

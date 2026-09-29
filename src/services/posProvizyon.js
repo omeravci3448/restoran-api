@@ -62,11 +62,11 @@ async function aktivasyonJetonu(tenantId, userId, saat = 72) {
 
 // Lisans bitisini hesapla: mevcut lisans ileri tarihliyse UZERINE ekle
 // (erken yenileyen musteri gun kaybetmesin), degilse bugunden basla.
-function yeniBitis(mevcutBitis) {
+function yeniBitis(mevcutBitis, gun = LISANS_GUN) {
     const simdi = Date.now();
     const taban = mevcutBitis && new Date(mevcutBitis).getTime() > simdi
         ? new Date(mevcutBitis).getTime() : simdi;
-    return new Date(taban + LISANS_GUN * 86400000).toISOString();
+    return new Date(taban + gun * 86400000).toISOString();
 }
 
 function telefonNorm(tel) {

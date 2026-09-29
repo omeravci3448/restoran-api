@@ -6,7 +6,7 @@ const { protect, requireManagerPin, requireRole } = require('../middleware/authM
 router.get('/catalog', ctrl.catalog);
 router.post('/quote', ctrl.quote);
 router.get('/bank-info', ctrl.bankInfo);
-router.get('/hub-status', ctrl.hubStatus); // teşhis: hub bağlantısı sağlıklı mı (tarayıcıdan açılır)
+
 
 // NOT: Hub webhook'u (POST /webhook/purchase) 2026-09-23'te KALDIRILDI.
 // Kimlik dogrulamiyordu: gecerli bir tenantId bilen herkes kendine sinirsiz
@@ -19,7 +19,7 @@ router.get('/hub-status', ctrl.hubStatus); // teşhis: hub bağlantısı sağlı
 
 // Auth + rol + yönetici şifresi — lisans işlemleri kasiyere kapalı
 const mgr = [protect, requireRole('OWNER', 'MANAGER'), requireManagerPin];
-router.post('/refresh', ...mgr, ctrl.refresh);
+
 // Yalnizca oturum yeterli: yonetici sifresi ISTENMIYOR, cunku bu uc sadece
 // 'odemeyi nereden yapacaksiniz' sorusunu cevapliyor ve lisans sayfasi daha
 // ManagerGate'i gecmeden once cizilebilmeli.

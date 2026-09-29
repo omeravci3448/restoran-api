@@ -56,18 +56,15 @@ exports.hubStatus = async (_req, res) => {
 
 // Hub'dan tüm modül + tier fiyatlarını çek. Hub erişilemezse yedek katalog
 // döndür (kayıt akışı asla paketsiz kalmasın). fromHub=false → frontend isterse uyarabilir.
+// Katalog ARTIK HUBDAN GELMIYOR. POS kendi veritabanindaki katalogu doner;
+// fiyatlari ve paketleri root paneli tanimlar. Hubdan okundugu surece POS,
+// baska bir servisin ayakta olmasina bagimliydi: hub kapaliyken musteri fiyat
+// listesini bos goruyor ve sebebini anlayamiyordu.
+//
+// ⚠ Gizli (gorunur=0) satirlar BURADAN DONMEZ - bkz. lisansKatalog servisi.
 exports.catalog = async (_req, res) => {
-    try {
-        const data = await hub.getModulesAndTiers();
-        if (data && Array.isArray(data.tiers) && data.tiers.length) {
-            return res.json({ ...data, fromHub: true });
-        }
-        // Hub döndü ama boş → yedek
-        return res.json({ ...FALLBACK_CATALOG, fromHub: false });
-    } catch (e) {
-        // Hub erişilemedi → yedek katalog (kayıt yine çalışsın)
-        return res.json({ ...FALLBACK_CATALOG, fromHub: false });
-    }
+    const K = require('../services/lisansKatalog');
+    res.json(await K.musteriKatalogu());
 };
 
 // Mevcut tenant'ın lisansını hub'dan tekrar çek
@@ -91,54 +88,50 @@ exports.refresh = async (req, res) => {
 };
 
 // Sepet hesabı: { tier, modules:[...] } → toplam tutar (mevcut tenant indirimi uygulanır)
+// Fiyat hesabi da YEREL katalogdan. Istemciden gelen tutara asla guvenilmez.
+//
+// ⚠ GIZLI MODUL FIYATA GIRMEZ. Gizlemek yalnizca "listede gorunmesin" olsaydi,
+// istegi elle gonderen biri kapatilmis bir modulu yine satin alabilirdi.
+// Katalog gizli satirlari hic dondurmedigi icin burada da bulunamaz.
 exports.quote = async (req, res) => {
     const { tier, modules = [] } = req.body;
-    try {
-        const [data, tenantRow] = await Promise.all([
-            hub.getModulesAndTiers(),
-            query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])
-        ]);
-        const tierRow = data.tiers.find(t => t.name === tier);
-        if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
+    const K = require('../services/lisansKatalog');
+    const data = await K.musteriKatalogu();
+    const tenantRow = await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId]);
 
-        const breakdown = [{ name: tier, displayName: tierRow.displayName, type: 'TIER', price: tierRow.price }];
-        let subtotal = Number(tierRow.price);
+    const tierRow = data.tiers.find(t => t.name === tier);
+    if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
 
-        // Default modülleri otomatik ekle (fiyatı 0 olan)
-        const moduleNames = Array.from(new Set([
-            ...modules,
-            ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name)
-        ]));
+    const breakdown = [{ name: tier, displayName: tierRow.displayName, type: 'TIER', price: tierRow.price }];
+    let subtotal = Number(tierRow.price);
 
-        for (const m of moduleNames) {
-            const row = data.modules.find(x => x.name === m);
-            if (!row) continue;
-            breakdown.push({ name: row.name, displayName: row.displayName, type: 'MODULE', price: row.price });
-            subtotal += Number(row.price);
-        }
+    // Ucretsiz moduller otomatik ekleniyor (musteri secmese de dahil).
+    const moduleNames = Array.from(new Set([
+        ...modules,
+        ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name),
+    ]));
 
-        const discountRate = Number(tenantRow.rows[0]?.discount_rate || 0);
-        const discountAmount = Math.round((subtotal * discountRate / 100) * 100) / 100;
-        const total = Math.max(0, subtotal - discountAmount);
-
-        res.json({
-            currency: 'TRY', tier, modules: moduleNames,
-            subtotal, discountRate, discountAmount, total,
-            breakdown
-        });
-    } catch (e) {
-        res.status(502).json({ message: 'Fiyat hesaplanamadı.', error: e.message });
+    const bilinmeyen = [];
+    for (const m of moduleNames) {
+        const row = data.modules.find(x => x.name === m);
+        if (!row) { bilinmeyen.push(m); continue; }
+        breakdown.push({ name: row.name, displayName: row.displayName, type: 'MODULE', price: row.price });
+        subtotal += Number(row.price);
     }
-};
-
-// Banka bilgisi (hub'dan canlı çekilir)
-exports.bankInfo = async (_req, res) => {
-    try {
-        const data = await hub.getBankInfo();
-        res.json(data);
-    } catch (e) {
-        res.status(502).json({ message: 'Banka bilgisi alınamadı.', error: e.message });
+    // Sessizce dusurmuyoruz: musteri sectigini sandigi bir seyin hesaba
+    // girmedigini bilmeli.
+    if (bilinmeyen.length) {
+        return res.status(400).json({ message: 'Şu an satışta olmayan bir seçenek var: ' + bilinmeyen.join(', ') });
     }
+
+    const discountRate = Number(tenantRow.rows[0]?.discount_rate || 0);
+    const discountAmount = Math.round((subtotal * discountRate / 100) * 100) / 100;
+    const total = Math.max(0, subtotal - discountAmount);
+
+    res.json({
+        currency: 'TRY', tier, modules: moduleNames,
+        subtotal, discountRate, discountAmount, total, breakdown,
+    });
 };
 
 // Yeni satın alma talebi gönder — sepeti hub'a iletir
@@ -150,7 +143,7 @@ exports.bankInfo = async (_req, res) => {
 // kesilecek fatura da eksik kalirdi - kimse fark etmeden.
 async function yenilemeKanali(tenantId) {
     const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId])).rows[0];
-    if (!t) return { kanal: 'hub' };
+    if (!t) return { kanal: 'yerel' };
     if (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX') {
         return {
             kanal: 'soframix',
@@ -165,7 +158,7 @@ async function yenilemeKanali(tenantId) {
             mesaj: 'Deneme surumundesiniz. Paketi satin almak icin bizimle iletisime gecin.',
         };
     }
-    return { kanal: 'hub' };
+    return { kanal: 'yerel' };
 }
 
 // Arayuz hangi odeme yolunu cizecegini buradan ogreniyor.
@@ -173,94 +166,101 @@ exports.yenilemeKanali = async (req, res) => {
     res.json(await yenilemeKanali(req.user.tenantId));
 };
 
+
+
+// Banka bilgisi ARTIK YEREL. Root panelinden tanimlaniyor.
+exports.bankInfo = async (_req, res) => {
+    const A = require('../services/sistemAyar');
+    res.json({
+        iban: await A.oku('iban', ''),
+        hesapSahibi: await A.oku('iban_sahibi', ''),
+        banka: await A.oku('banka_adi', ''),
+        aciklama: await A.oku('odeme_aciklama', ''),
+    });
+};
+
+// Satin alma: YEREL bildirim kaydi. Hub'a hicbir cagri yapilmiyor.
+//
+// ⚠ BU KAYIT LISANSI UZATMAZ. Bildirim tek basina para demek degil; lisans
+// yalnizca root panelinde onaylaninca uzuyor. Aksi halde "odedim" diyen herkes
+// kendine lisans yazdirabilirdi.
 exports.purchase = async (req, res) => {
-    // Yanlis kanaldan odeme ALINMAZ. Arayuz zaten dogru dugmeyi cizecek ama
-    // kapiyi burada da kapatiyoruz: arayuz hatasi para almakla sonuclanmasin.
     const yk = await yenilemeKanali(req.user.tenantId);
-    if (yk.kanal !== 'hub') {
+    if (yk.kanal !== 'yerel') {
         return res.status(409).json({ code: 'WRONG_CHANNEL', ...yk });
     }
-    const { tier, modules = [], customerNote } = req.body;
-    try {
-        // Önce quote ile final fiyatı hesapla (güvenlik — istemci tutara güvenilmez)
-        const [data, tenantRow] = await Promise.all([
-            hub.getModulesAndTiers(),
-            query('SELECT business_name, owner_email, discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])
-        ]);
-        const tierRow = data.tiers.find(t => t.name === tier);
-        if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
+    const { tier, modules = [], customerNote } = req.body || {};
+    const K = require('../services/lisansKatalog');
+    const data = await K.musteriKatalogu();
+    const tierRow = data.tiers.find(t => t.name === tier);
+    if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
 
-        const allModules = Array.from(new Set([
-            ...modules,
-            ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name)
-        ]));
-
-        let subtotal = Number(tierRow.price);
-        for (const m of allModules) {
-            const row = data.modules.find(x => x.name === m);
-            if (row) subtotal += Number(row.price);
-        }
-        const discountRate = Number(tenantRow.rows[0]?.discount_rate || 0);
-        const total = Math.max(0, subtotal - subtotal * discountRate / 100);
-
-        const tenant = tenantRow.rows[0];
-        // NOT: Bu adres artik 404 doner - webhook ucu 2026-09-23'te guvenlik nedeniyle
-        // kaldirildi (bkz. licenseRoutes.js). Alan hub'in istek semasinda zorunlu
-        // olabilecegi icin gonderilmeye devam ediyor; hub cagirirsa nazikce 404 alir
-        // ve lisans kullanicinin bir sonraki girisinde zaten yansir.
-        const webhookBase = process.env.PUBLIC_BACKEND_URL || `http://localhost:${process.env.PORT || 5400}`;
-
-        const hubResp = await hub.createPurchase({
-            customerEmail: tenant.owner_email,
-            businessName: tenant.business_name,
-            tier,
-            modules: allModules,
-            amount: total,
-            discountRate,
-            paymentMethod: 'BANK_TRANSFER',
-            externalTenantId: req.user.tenantId,
-            webhookUrl: `${webhookBase}/api/license/webhook/purchase`,
-            customerNote
-        });
-
-        res.status(201).json({
-            purchaseId: hubResp.id,
-            status: hubResp.status,
-            tier, modules: allModules, total, discountRate
-        });
-    } catch (e) {
-        res.status(502).json({ message: 'Satın alma talebi oluşturulamadı.', error: e.response?.data?.message || e.message });
+    const modulAdlari = Array.from(new Set([
+        ...modules,
+        ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name),
+    ]));
+    let toplam = Number(tierRow.price);
+    for (const m of modulAdlari) {
+        const row = data.modules.find(x => x.name === m);
+        if (!row) return res.status(400).json({ message: 'Şu an satışta olmayan bir seçenek var: ' + m });
+        toplam += Number(row.price);
     }
+    const t = (await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])).rows[0];
+    const indirim = Number(t?.discount_rate || 0);
+    toplam = Math.max(0, Math.round((toplam - (toplam * indirim / 100)) * 100) / 100);
+
+    // Ayni kiracinin bekleyen bildirimi varsa ikincisi acilmiyor: iki bildirim
+    // onaylanirsa lisans iki kez uzar.
+    const bekleyen = await query(
+        "SELECT id FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede'", [req.user.tenantId]);
+    if (bekleyen.rows.length) {
+        return res.status(409).json({ message: 'Onay bekleyen bir ödeme bildiriminiz var.', id: bekleyen.rows[0].id });
+    }
+
+    const id = uuidv4();
+    await query(
+        `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama)
+         VALUES (?, ?, ?, ?, ?, 'beklemede', ?)`,
+        [id, req.user.tenantId, tier, JSON.stringify(modulAdlari), toplam,
+            String(customerNote || '').slice(0, 300)]);
+
+    const A = require('../services/sistemAyar');
+    res.status(201).json({
+        id, tier, modules: modulAdlari, total: toplam, status: 'PENDING_PAYMENT',
+        iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
+        message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',
+    });
 };
 
-// "Ödedim" beyanı — hub'a iletilir, Patron onaya kadar bekler
 exports.markPaid = async (req, res) => {
-    const { paymentRef } = req.body || {};
-    try {
-        const r = await hub.declarePaid(req.params.id, paymentRef);
-        res.json(r);
-    } catch (e) {
-        res.status(502).json({ message: 'Ödeme bildirimi gönderilemedi.', error: e.response?.data?.message || e.message });
-    }
+    const r = await query(
+        "SELECT * FROM lisans_odemeleri WHERE id = ? AND tenant_id = ?",
+        [req.params.id, req.user.tenantId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
+    if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
+    await query('UPDATE lisans_odemeleri SET aciklama = ? WHERE id = ?',
+        [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
+    res.json({ ok: true, status: 'PAID_DECLARED',
+        message: 'Bildiriminiz alındı. Onaylandığında lisansınız uzayacak.' });
 };
 
-// Bu tenant'ın satın alma geçmişi (hub'dan)
 exports.purchases = async (req, res) => {
-    try {
-        const data = await hub.listPurchases(req.user.tenantId);
-        res.json(data);
-    } catch (e) {
-        res.status(502).json({ message: 'Geçmiş alınamadı.', error: e.message });
-    }
+    const r = await query(
+        `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at
+           FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 50`,
+        [req.user.tenantId]);
+    res.json(r.rows.map(x => ({ ...x, moduller: guvenliJson(x.moduller) })));
 };
 
-// Tek bir purchase status'u (polling için)
 exports.purchaseStatus = async (req, res) => {
-    try {
-        const data = await hub.getPurchase(req.params.id);
-        res.json(data);
-    } catch (e) {
-        res.status(502).json({ message: 'Durum alınamadı.', error: e.message });
-    }
+    const r = await query('SELECT * FROM lisans_odemeleri WHERE id = ? AND tenant_id = ?',
+        [req.params.id, req.user.tenantId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Bulunamadı.' });
+    const x = r.rows[0];
+    res.json({ ...x, moduller: guvenliJson(x.moduller),
+        status: x.durum === 'onaylandi' ? 'CONFIRMED' : x.durum === 'reddedildi' ? 'REJECTED' : 'PENDING_PAYMENT' });
 };
 
+function guvenliJson(s) {
+    try { return JSON.parse(s || '[]'); } catch (_) { return []; }
+}
