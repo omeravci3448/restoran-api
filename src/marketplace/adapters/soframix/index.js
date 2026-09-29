@@ -20,11 +20,13 @@ class SofraMixAdapter extends BaseAdapter {
             code: 'soframix',
             displayName: 'SofraMix',
             requiredCredentialFields: [
-                { key: 'apiBase', label: 'SofraMix adresi', type: 'text', required: true,
-                  hint: 'ornek: https://soframix.com.tr' },
+                // Adres ISTENMIYOR: restoran sahibi 'soframix.com.tr' diye https'siz yazinca
+                // new URL() 'Invalid URL' atiyordu. Varsayilan sunucudan (SOFRAMIX_PLATFORM_URL)
+                // ya da canli adresten geliyor; yalniz test sunucusu icin doldurulur.
+                { key: 'apiBase', label: 'SofraMix adresi (bos birakin)', type: 'text', required: false,
+                  hint: 'Bos birakin - otomatik. Yalniz test sunucusu icin doldurun.' },
                 { key: 'apiKey', label: 'Isletme API anahtari', type: 'password', required: true,
                   hint: 'SofraMix isletme panelinden uretilir (X-Smx-Anahtar).' },
-                { key: 'webhookSecret', label: 'Webhook imza siri', type: 'password', required: false },
             ],
             requiredStoreLinkFields: [
                 { key: 'externalStoreId', label: 'SofraMix isletme no (business_id)', type: 'text', required: true },
@@ -62,8 +64,10 @@ class SofraMixAdapter extends BaseAdapter {
     }
 
     _base(ctx) {
-        const b = String((ctx.credentials && ctx.credentials.apiBase) || '').replace(/\/+$/, '');
-        if (!b) throw new AdapterError(KIND.VALIDATION, 'SofraMix adresi tanimli degil.');
+        let b = String((ctx.credentials && ctx.credentials.apiBase) || process.env.SOFRAMIX_PLATFORM_URL || 'https://soframix.com.tr')
+            .trim().replace(/\/+$/, '');
+        // Sema yoksa https ekle: 'soframix.com.tr' yazan restoran 'Invalid URL' gormesin.
+        if (!/^https?:\/\//i.test(b)) b = 'https://' + b;
         return b;
     }
 
@@ -117,7 +121,7 @@ class SofraMixAdapter extends BaseAdapter {
             query: { degisen_sonra: o.cursor || o.since || '' },
         });
         const list = (d && d.orders) || [];
-        const damgalar = list.map((x) => x.guncellendi_at || x.created_at).filter(Boolean).sort();
+        const damgalar = list.map((x) => x.updated_at || x.guncellendi_at || x.created_at).filter(Boolean).sort();
         return {
             events: list.map((x) => this._toRawEvent(x)),
             nextCursor: damgalar.length ? damgalar[damgalar.length - 1] : (o.cursor || null),
@@ -136,8 +140,8 @@ class SofraMixAdapter extends BaseAdapter {
         return {
             externalOrderId: String(o.id),
             platformStatus: o.status,
-            eventKey: String(o.id) + ':' + o.status + ':' + (o.son_olay_id || o.guncellendi_at || ''),
-            occurredAt: M.zamanaMs(o.guncellendi_at || o.created_at),
+            eventKey: String(o.id) + ':' + o.status + ':' + (o.son_olay_id || o.updated_at || o.guncellendi_at || ''),
+            occurredAt: M.zamanaMs(o.updated_at || o.guncellendi_at || o.created_at),
             payload: o,
         };
     }
@@ -156,11 +160,13 @@ class SofraMixAdapter extends BaseAdapter {
         // Adres KVKK imhasiyla anonimlestirilmis olabilir - cokmeden gecmeli.
         let adres = null;
         try {
-            adres = typeof o.address_json === 'string' ? JSON.parse(o.address_json) : o.address_json;
+            // SofraMix orderWithItems address_json'i COZUP 'address' olarak veriyor (address_json: undefined).
+            const hamAdres = o.address !== undefined ? o.address : o.address_json;
+            adres = typeof hamAdres === 'string' ? JSON.parse(hamAdres) : hamAdres;
         } catch (_) { adres = null; }
 
         const items = (o.items || []).map((it) => {
-            const secMetin = M.seceneklerMetne(it.options_json);
+            const secMetin = M.seceneklerMetne(it.options !== undefined ? it.options : it.options_json);
             // Secenekler POS'ta modellenmedigi icin kalem NOTUNA donduruluyor:
             // mutfak "buyuk boy, acili" bilgisini boyle gorur.
             const not = [secMetin, it.note].filter(Boolean).join(' | ') || null;
@@ -189,7 +195,7 @@ class SofraMixAdapter extends BaseAdapter {
                 isTest: 0,
                 isAddressMasked: adres && adres.silindi ? 1 : 0,
                 placedAt: M.zamanaMs(o.created_at),
-                platformModifiedAt: M.zamanaMs(o.guncellendi_at || o.confirmed_at || o.created_at),
+                platformModifiedAt: M.zamanaMs(o.updated_at || o.guncellendi_at || o.confirmed_at || o.created_at),
                 prepTimeMinutes: null,
                 customer: { name: o.customer_name || null, phone: o.customer_phone || null, isMasked: 0 },
                 address: adres ? {

@@ -129,6 +129,7 @@ app.listen(PORT, () => {
     }, 5000);
 
     // SofraMix POS ödemelerini çekme döngüsü — env yoksa sessizce kapalı kalır.
+    if (!process.env.MARKETPLACE_KEK) console.error('[EKSIK YAPILANDIRMA] MARKETPLACE_KEK tanimli degil - pazaryeri/SofraMix kanali BAGLANAMAZ (Bagla 503 doner).');
     require('./src/services/posOdemeCekici').baslat();
 
     // Pazaryeri siparislerini cekme dongusu. Bagli kanal yoksa hicbir sey yapmaz.

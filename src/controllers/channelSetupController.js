@@ -93,9 +93,17 @@ exports.saveCredentials = async (req, res) => {
         return res.status(400).json({ message: 'Bağlantı doğrulanamadı: ' + (e.message || 'bilinmeyen hata') });
     }
 
-    const kayit = await cred.saveCredentials({
+    // MARKETPLACE_KEK yoksa credentialStore firlatir. Eskiden bu try DISINDAYDI:
+    // restoran "Bagla" deyince 500 ve gelistirici hata metni goruyordu.
+    let kayit;
+    try {
+        kayit = await cred.saveCredentials({
         tenantId: req.user.tenantId, channelId: ch.id, scope: 'store', scopeRef: magazaId, fields: alanlar,
     });
+    } catch (e) {
+        console.error("[kanal] kimlik bilgisi kaydedilemedi:", e.message);
+        return res.status(503).json({ message: "Bağlantı şu an kurulamıyor (sunucu yapılandırması eksik). Lütfen bize yazın." });
+    }
 
     // Magaza baglantisi (kiraci izolasyonunun bekcisi)
     const varOlan = (await query('SELECT id FROM marketplace_store_links WHERE channel_id = ? AND external_store_id = ?',

@@ -77,6 +77,26 @@ const kopya = (o) => JSON.parse(JSON.stringify(o));
     ok('menuWrite KAPALI (fiyat POStan itilmez)', c.menuWrite === false);
     ok('priceUpdate KAPALI', c.priceUpdate === false);
 
+    console.log('\n=== 1b) Denetim bulgulari: Bagla formu + adres + alan adlari ===');
+    const alanlar = smx.describe().requiredCredentialFields;
+    ok('apiBase ZORUNLU DEGIL (semasiz yazan restoran Invalid URL gormesin)', alanlar.find(f => f.key === 'apiBase')?.required === false, alanlar);
+    ok('webhookSecret alani YOK (SofraMix webhook kullanmiyor)', !alanlar.some(f => f.key === 'webhookSecret'), alanlar.map(f => f.key));
+    ok('apiKey zorunlu', alanlar.find(f => f.key === 'apiKey')?.required === true);
+    ok('semasiz adres https alir', smx._base({ credentials: { apiBase: 'soframix.com.tr/' } }) === 'https://soframix.com.tr');
+    ok('bos adres varsayilana duser', /^https:/.test(smx._base({ credentials: {} })));
+    // SofraMix orderWithItems address_json'i COZUP 'address', options_json'i 'options' diye veriyor
+    // ve 045 sonrasi guncellendi_at degil updated_at var. Adaptor bunlari okumali.
+    const gercek = { id: 9, code: 'SMX-X', status: 'yeni', delivery_type: 'isletme_kurye', payment_method: 'kapida_nakit',
+        total_kurus: 21000, items_total_kurus: 20000, delivery_fee_kurus: 1000, created_at: '2026-09-29 10:00:00',
+        updated_at: '2026-09-29 10:05:00', customer_name: 'Ali', customer_phone: '05551112233',
+        address: { district: 'Merkez', full_address: 'Test Mah. 1' }, address_json: undefined,
+        items: [{ product_id: 1, name: 'Adana', qty: 1, unit_price_kurus: 20000, total_kurus: 20000, options: [{ name: 'Boy', value: 'Buyuk' }], options_json: undefined }] };
+    const ev2 = smx._toRawEvent(gercek);
+    ok('olay anahtari updated_at ile degisiyor (durum degisikligi mukerrer sayilmasin)', ev2.eventKey.includes('2026-09-29 10:05:00'), ev2.eventKey);
+    const nz = await smx.normalizeOrder({ tenantId: 't', storeLink: { externalStoreId: '1' } }, ev2);
+    ok('adres okundu (address alanindan)', JSON.stringify(nz.order).includes('Test Mah'), nz.order.deliveryAddress || nz.order.customer);
+    ok('secenek metni okundu (options alanindan, options_json degil)', JSON.stringify(nz.order.items || nz.order.lines).includes('Boy'), nz.order.items || nz.order.lines);
+
     console.log('\n=== 2) Siparis normalize ===');
     const ev = smx._toRawEvent(SIPARIS);
     const { order: n, unmapped } = await smx.normalizeOrder(ctx, ev);

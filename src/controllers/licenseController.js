@@ -1,5 +1,6 @@
 const { query } = require('../config/db');
 const hub = require('../services/hubService');
+const { v4: uuidv4 } = require('uuid');
 
 // Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
 // Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların

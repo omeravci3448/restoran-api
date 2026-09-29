@@ -79,6 +79,16 @@ const cagir = async (fn, req) => { const r = res(); await fn(req, r); return r; 
     await query('DELETE FROM marketplace_credentials WHERE tenant_id=?', [tid]);
     await query('DELETE FROM products WHERE tenant_id=?', [tid]);
     await query('DELETE FROM categories WHERE tenant_id=?', [tid]);
+    console.log('\n=== Denetim bulgusu: kanal listesi is_api_enabled donmeli ===');
+    // Menu.jsx "SofraMix'ten cek" dugmesini k.is_api_enabled && k.adapter_code ile ciziyor.
+    // Liste ucu bu alani dondurmeyince dugme HIC gorunmuyordu.
+    {
+        const mc = require('./src/controllers/marketplaceController');
+        const rows = await new Promise((resolve) => mc.listChannels({ user }, { json: resolve }));
+        ok('is_api_enabled alani listede var', rows.length > 0 && rows.every(r => 'is_api_enabled' in r), rows[0]);
+        ok('bagli kanal is_api_enabled=1', rows.some(r => r.is_api_enabled === 1), rows.map(r => [r.name, r.is_api_enabled]));
+    }
+
     await query('DELETE FROM marketplace_channels WHERE tenant_id=?', [tid]);
     await query('DELETE FROM tenants WHERE id=?', [tid]);
     console.log('\nSONUC: ' + pass + ' gecti, ' + fail + ' kaldi (temizlendi)');

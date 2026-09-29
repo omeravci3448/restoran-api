@@ -10,7 +10,9 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100; // 2 ondalık
 // ——————————————————————————————————————————————————————————
 exports.listChannels = async (req, res) => {
     const r = await query(
-        `SELECT id, name, adapter_code, commission_rate, fixed_fee, is_active
+        // is_api_enabled SART: Menu.jsx "SofraMix'ten cek" dugmesini bu alana bakip ciziyor;
+        // alan donmeyince dugme HIC gorunmuyordu (denetim bulgusu).
+        `SELECT id, name, adapter_code, commission_rate, fixed_fee, is_active, is_api_enabled, capabilities_json
            FROM marketplace_channels WHERE tenant_id = ? ORDER BY name`,
         [req.user.tenantId]);
     res.json(r.rows);
