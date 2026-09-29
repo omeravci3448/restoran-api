@@ -76,6 +76,31 @@ async function kur(adapterCode) {
     ok('son basarili tur yazildi', !!(im2 && im2.last_ok_at), im2 && im2.last_ok_at);
     ok('hata sayaci sifir', im2 && im2.consecutive_errors === 0, im2 && im2.consecutive_errors);
 
+    console.log('\n=== 4b) Kasadan platforma durum yazma (yeni uc) ===');
+    // Provada ortaya cikti: adaptor yazabiliyordu ama POS'ta tetikleyen uc yoktu.
+    const ctrl = require('./src/controllers/marketplaceController');
+    const { getAdapter } = require('./src/marketplace/registry');
+    const sbx = getAdapter('sandbox'); sbx._sent.length = 0;
+    const sip = (await query("SELECT id, external_ref, channel_status_raw FROM orders WHERE tenant_id = ? AND channel = 'sandbox' LIMIT 1", [tenantId])).rows[0];
+    const cagir = (govde, params) => new Promise((resolve) => {
+        const res = { status(c) { this.c = c; return this; }, json(d) { resolve({ status: this.c || 200, data: d }); } };
+        ctrl.siparisAksiyon({ params: { id: params }, body: govde, user: { tenantId } }, res).catch(e => resolve({ status: 500, data: { message: e.message } }));
+    });
+    const a1 = await cagir({ aksiyon: 'kabul' }, sip.id);
+    ok('kabul et -> adaptor cagrildi', a1.status === 200 && sbx._sent.some(x => x.action === 'accept'), { a1, sent: sbx._sent });
+    const d1 = (await query('SELECT channel_status_raw FROM orders WHERE id = ?', [sip.id])).rows[0];
+    ok('yerel durum guncellendi', d1.channel_status_raw === 'onaylandi', d1);
+    const a2 = await cagir({ aksiyon: 'hazir' }, sip.id);
+    ok('hazir -> markReady cagrildi', a2.status === 200 && sbx._sent.some(x => x.action === 'ready'), a2);
+    const a3 = await cagir({ aksiyon: 'iptal' }, sip.id);
+    ok('iptal SEBEPSIZ reddedilir', a3.status === 400, a3);
+    const a4 = await cagir({ aksiyon: 'ucmus_aksiyon' }, sip.id);
+    ok('gecersiz aksiyon 400', a4.status === 400, a4);
+    const a5 = await cagir({ aksiyon: 'kabul' }, 'yok-boyle-siparis');
+    ok('baska/olmayan siparis 404', a5.status === 404, a5);
+    const a6 = await cagir({ aksiyon: 'hazirlaniyor' }, sip.id);
+    ok('adaptor desteklemeyen aksiyon 400 (sandbox markPreparing yok)', a6.status === 400, a6);
+
     console.log('\n=== 5) Adaptorsuz kanal TARANMIYOR ===');
     // adapter_code bos olan kanal yalnizca muhasebe etiketidir; taranirsa her
     // turda "bilinmeyen adaptor" hatasi uretirdi.

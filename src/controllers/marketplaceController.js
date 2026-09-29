@@ -211,3 +211,86 @@ exports.list = async (req, res) => {
     });
     res.json(rows);
 };
+
+// ——— Pazaryeri siparisine KASADAN durum yazma ———
+//
+// Provada ortaya cikti: adaptor SofraMix'e "hazirlaniyor/yolda/teslim" yazabiliyor,
+// SofraMix kabul ediyor, ama POS'ta bunu tetikleyen NE bir uc NE bir dugme vardi.
+// Kasiyer siparisi goruyor, mutfak hazirliyor, musteri SofraMix'te hala "yeni"
+// goruyordu. Bu uc o boslugu kapatiyor.
+//
+// Kural: POS kendi kafasina gore durum ilerletmez. Ne yazilacagi adaptorun
+// yetenegine, gecis kurali ise PLATFORMA birakilir (SofraMix yanlis gecise
+// 400 doner, biz o mesaji aynen kasiyere gosteririz). Iki yerde ayri kural
+// tutmak, bir gun birinin sessizce sapmasi demekti.
+const AKSIYONLAR = {
+    kabul:            { metod: 'acceptOrder',        yetenek: 'acceptReject' },
+    hazirlaniyor:     { metod: 'markPreparing',      yetenek: 'markPreparing' },
+    hazir:            { metod: 'markReady',          yetenek: 'markReady' },
+    yolda:            { metod: 'markDispatched',     yetenek: 'markDispatched' },
+    teslim:           { metod: 'markDelivered',      yetenek: 'markDelivered' },
+    iptal:            { metod: 'cancelOrder',        yetenek: 'acceptReject', sebepGerekli: true },
+    teslim_edilemedi: { metod: 'reportUndeliverable', yetenek: 'markDelivered', sebepGerekli: true },
+};
+
+exports.siparisAksiyon = async (req, res) => {
+    const { getAdapter } = require('../marketplace/registry');
+    const { withCredentials } = require('../marketplace/core/credentialStore');
+    const aksiyon = AKSIYONLAR[String(req.body?.aksiyon || '')];
+    if (!aksiyon) return res.status(400).json({ message: 'Geçersiz işlem.' });
+    const sebep = String(req.body?.sebep || '').trim();
+    if (aksiyon.sebepGerekli && sebep.length < 10) {
+        return res.status(400).json({ message: 'Sebep yazın (en az 10 karakter) - müşteri ve platform bunu görecek.' });
+    }
+
+    const o = (await query(
+        'SELECT id, channel, external_ref, channel_status_raw, delivery_mode FROM orders WHERE id = ? AND tenant_id = ?',
+        [req.params.id, req.user.tenantId])).rows[0];
+    if (!o) return res.status(404).json({ message: 'Sipariş bulunamadı.' });
+    if (!o.external_ref) return res.status(400).json({ message: 'Bu sipariş elle girilmiş; platformda karşılığı yok.' });
+
+    // Kanal: siparisin channel'i = adaptor kodu (ingest boyle yaziyor).
+    const ch = (await query(
+        `SELECT c.id, c.adapter_code, l.external_store_id
+           FROM marketplace_channels c
+           JOIN marketplace_store_links l ON l.channel_id = c.id AND l.is_active = 1
+          WHERE c.tenant_id = ? AND c.adapter_code = ? AND c.is_active = 1 LIMIT 1`,
+        [req.user.tenantId, o.channel])).rows[0];
+    if (!ch) return res.status(400).json({ message: 'Bu kanal bağlı değil. Ayarlar > Satış kanalları > Bağla.' });
+
+    let adaptor;
+    try { adaptor = getAdapter(ch.adapter_code); } catch (_) { return res.status(400).json({ message: 'Adaptör yok.' }); }
+    if (!adaptor.capabilities[aksiyon.yetenek] || typeof adaptor[aksiyon.metod] !== 'function') {
+        return res.status(400).json({ message: 'Bu kanal bu işlemi desteklemiyor.' });
+    }
+
+    try {
+        await withCredentials(req.user.tenantId, ch.id, async (creds) => {
+            const ctx = { tenantId: req.user.tenantId, credentials: creds,
+                storeLink: { externalStoreId: ch.external_store_id, id: null }, env: 'prod',
+                http: (u, opts) => fetch(u, opts) };
+            await adaptor[aksiyon.metod](ctx, {
+                externalOrderId: o.external_ref, platformStatus: o.channel_status_raw,
+                reason: sebep || undefined, note: sebep || undefined,
+            });
+        });
+    } catch (e) {
+        // Platformun mesajini AYNEN gosteriyoruz ("Bu asamada iptal edilemez" gibi):
+        // kasiyerin neden olmadigini bilmesi, "program bozuk" demesinden iyidir.
+        const m = (e && e.details && e.details.raw && (e.details.raw.error || e.details.raw.hata)) || e.message;
+        return res.status(e && e.details && e.details.httpStatus === 403 ? 403 : 409).json({
+            message: String(m || 'Platform kabul etmedi.'),
+            yetkiSorunu: !!(e && e.details && (e.details.httpStatus === 401 || e.details.httpStatus === 403)),
+        });
+    }
+
+    // Yerel gorunumu hemen guncelle; bir sonraki cekme turu zaten platformdan
+    // dogrulayacak (updated_at tetikleyicisi sayesinde degisiklik geri okunur).
+    const yeniHam = { kabul: 'onaylandi', hazirlaniyor: 'hazirlaniyor', hazir: 'hazir', yolda: 'yolda',
+        teslim: 'teslim', iptal: 'iptal', teslim_edilemedi: 'teslim_edilemedi' }[req.body.aksiyon];
+    await query(
+        `UPDATE orders SET channel_status_raw = ?,
+                status = CASE WHEN ? IN ('teslim') THEN 'CLOSED' WHEN ? IN ('iptal') THEN 'CANCELLED' ELSE status END
+          WHERE id = ?`, [yeniHam, yeniHam, yeniHam, o.id]);
+    res.json({ ok: true, durum: yeniHam });
+};

@@ -9,6 +9,8 @@ router.use(requireModule('MARKETPLACE'));
 // Sipariş — kasiyer de girebilir
 router.get('/orders', ctrl.list);
 router.post('/ingest', ctrl.ingest);
+// Kasadan platforma durum yazma (hazirlaniyor/yolda/teslim...) - kasiyer de yapabilir
+router.post('/orders/:id/aksiyon', ctrl.siparisAksiyon);
 
 // Kanal config — okuma herkese (sipariş girişinde dropdown), değiştirme yöneticiye
 router.get('/channels', ctrl.listChannels);
