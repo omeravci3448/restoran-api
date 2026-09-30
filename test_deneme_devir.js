@@ -35,13 +35,13 @@ async function git(url) {
     return { status: r.status, yer: r.headers.get('location') || '', govde: await r.text().catch(() => '') };
 }
 async function temizle() {
-    const t = await query("SELECT id FROM tenants WHERE business_name IN ('Devir Test Lokanta', 'Devir Iki Lokanta')");
+    const t = await query("SELECT id FROM tenants WHERE business_name IN ('Devir Test Lokanta', 'Devir Iki Lokanta', 'Devir Uc Lokanta')");
     for (const r of t.rows) {
         for (const tb of ['users', 'aktivasyon_jetonlari', 'deneme_kayitlari', 'deneme_giris_jetonlari']) await query(`DELETE FROM ${tb} WHERE tenant_id = ?`, [r.id]).catch(() => {});
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
-    await query("DELETE FROM deneme_kayitlari WHERE soframix_business_id IN ('777001','777002')");
-    await query("DELETE FROM deneme_devir_nonce WHERE isletme_no IN ('777001','777002')");
+    await query("DELETE FROM deneme_kayitlari WHERE soframix_business_id IN ('777001','777002','777003')");
+    await query("DELETE FROM deneme_devir_nonce WHERE isletme_no IN ('777001','777002','777003')");
 }
 
 (async () => {
@@ -74,7 +74,10 @@ async function temizle() {
     const me = await fetch(TABAN + '/api/auth/me', { headers: { Authorization: 'Bearer ' + dj.token } });
     ok('JWT ile /me calisiyor (oturum kuruldu)', me.status === 200);
     const d2 = await fetch(TABAN + '/api/public/deneme-giris/' + jeton, { method: 'POST' });
-    ok('giris jetonu TEK KULLANIMLIK (410)', d2.status === 410, d2.status);
+    ok('60 sn icinde ikinci takas AYNI kullaniciya yeniden verir (ucusta F5)', d2.status === 200 && (await d2.json()).tenantId === k1[0].id, d2.status);
+    await query('UPDATE deneme_giris_jetonlari SET kullanildi_at = ? WHERE tenant_id = ?', [new Date(Date.now() - 120000).toISOString(), k1[0].id]);
+    const d3 = await fetch(TABAN + '/api/public/deneme-giris/' + jeton, { method: 'POST' });
+    ok('60 sn sonra jeton KESIN tukenmis (410)', d3.status === 410, d3.status);
 
     console.log('\n=== 2) AYNI baglanti ikinci kez -> nonce reddi, kiraci ACILMAZ ===');
     const r2 = await git(baglanti(g1));
@@ -85,6 +88,21 @@ async function temizle() {
     const r3 = await git(baglanti(govde({ nonce: crypto.randomBytes(12).toString('hex') })));
     ok('302 (var olana giris)', r3.status === 302, r3.status);
     ok('hala tek kiraci', (await query("SELECT COUNT(*) c FROM tenants WHERE business_name = 'Devir Test Lokanta'")).rows[0].c === 1);
+    const j3 = r3.yer.split('/deneme-giris/')[1];
+    const t3 = await (await fetch(TABAN + '/api/public/deneme-giris/' + j3, { method: 'POST' })).json();
+    const me3 = await (await fetch(TABAN + '/api/auth/me', { headers: { Authorization: 'Bearer ' + t3.token } })).json();
+    ok('AYNI kiraciya, OWNER olarak girdi', me3.tenantId === k1[0].id && me3.role === 'OWNER', me3);
+    const k3 = (await query('SELECT license_end_date FROM tenants WHERE id = ?', [k1[0].id])).rows[0];
+    ok('lisans bitisi DEGISMEDI (ikinci tiklama sure yazmaz)', k3.license_end_date === k1[0].license_end_date, [k3.license_end_date, k1[0].license_end_date]);
+
+    console.log('\n=== 3b) Kiraci KAPATILMIS -> ne yeni kiraci ne jeton, acik sayfa ===');
+    await query('UPDATE tenants SET is_active = 0 WHERE id = ?', [k1[0].id]);
+    const jetonSayisi = (await query('SELECT COUNT(*) c FROM deneme_giris_jetonlari WHERE tenant_id = ?', [k1[0].id])).rows[0].c;
+    const r3b = await git(baglanti(govde({ nonce: crypto.randomBytes(12).toString('hex') })));
+    ok('400 "Hesabiniz kapatilmis" sayfasi (302 DEGIL)', r3b.status === 400 && r3b.govde.includes('kapatılmış'), r3b.status);
+    ok('jeton uretilmedi', (await query('SELECT COUNT(*) c FROM deneme_giris_jetonlari WHERE tenant_id = ?', [k1[0].id])).rows[0].c === jetonSayisi);
+    ok('hala tek kiraci', (await query("SELECT COUNT(*) c FROM tenants WHERE business_name = 'Devir Test Lokanta'")).rows[0].c === 1);
+    await query('UPDATE tenants SET is_active = 1 WHERE id = ?', [k1[0].id]);
 
     console.log('\n=== 4) Imza ve sure kapilari ===');
     const g4 = govde({ isletme_no: 777002, isletme_adi: 'Devir Iki Lokanta', yetkili_email: 'devir2@ornek.test' });
@@ -97,6 +115,12 @@ async function temizle() {
     ok('kaynak farkli 400', (await git(baglanti(govde({ ...g4, kaynak: 'baska' })))).status === 400);
     ok('bozuk imza bicimi 400', (await git(baglanti(g4, GIZLI, { imza: 'zzzz' }))).status === 400);
     ok('hicbiri kiraci acmadi', (await query("SELECT COUNT(*) c FROM tenants WHERE business_name = 'Devir Iki Lokanta'")).rows[0].c === 0);
+
+    console.log('\n=== 4b) Ayni IP\'den 40 imzasiz cop istek gercek isletmeyi KILITLEMEZ ===');
+    const g4b = govde({ isletme_no: 777003, isletme_adi: 'Devir Uc Lokanta', yetkili_email: 'devir3@ornek.test' });
+    for (let i = 0; i < 40; i++) await git(baglanti(g4b, 'cop-anahtar-' + i + '-xxxxxxxxxxxx'));
+    const r4b = await git(baglanti(govde({ ...g4b, nonce: crypto.randomBytes(12).toString('hex') })));
+    ok('40 hatali istekten sonra gecerli baglanti hala 302', r4b.status === 302, r4b.status);
 
     console.log('\n=== 5) deneme_gun ust siniri ===');
     const r5 = await git(baglanti(govde({ ...g4, deneme_gun: 999, nonce: crypto.randomBytes(12).toString('hex') })));

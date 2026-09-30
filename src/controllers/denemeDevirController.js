@@ -34,13 +34,20 @@ const YUK_EN_COK_BAYT = 8 * 1024;
 function acikMi() { return GIZLI.length >= 16; }
 
 // IP basina sinir: uc herkese acik, kaba kuvvete degil DB'yi bos yere yormaya karsi.
+// Iki ayri sayac: imzasi TUTMAYAN istekler gevsek (300/15dk, yalnizca CPU'yu korur),
+// imza+sure kapisini GECEN istekler siki (30/15dk). Tek sayac olsaydi ayni NAT/CGNAT
+// arkasindaki biri anahtari bilmeden gercek isletmeyi 15 dk kilitleyebilirdi.
 const denemeler = new Map();
-function cokMu(ip) {
-    const k = denemeler.get(ip); const simdi = Date.now();
-    if (!k || simdi > k.sifir) { denemeler.set(ip, { sayi: 1, sifir: simdi + 15 * 60000 }); return false; }
-    k.sayi++; if (denemeler.size > 20000) denemeler.clear();
-    return k.sayi > 30;
+const hatalilar = new Map();
+function sayac(harita, ip, sinir) {
+    const k = harita.get(ip); const simdi = Date.now();
+    if (!k || simdi > k.sifir) { harita.set(ip, { sayi: 1, sifir: simdi + 15 * 60000 }); return false; }
+    k.sayi++; if (harita.size > 20000) harita.clear();
+    return k.sayi > sinir;
 }
+const cokMu = (ip) => sayac(denemeler, ip, 30);
+const hataliCokMu = (ip) => sayac(hatalilar, ip, 300);
+const GIRIS_TOLERANS_MS = 60 * 1000;
 
 // Tarayici sekmesine duz, kucuk bir HTML. Ne oldugu anlasilsin, panik yaratmasin.
 function sayfa(res, kod, baslik, metin) {
@@ -75,7 +82,7 @@ exports.devir = async (req, res) => {
         return sayfa(res, 503, 'Deneme şu an başlatılamıyor', 'Sunucu yapılandırması eksik. Lütfen bize yazın, hemen düzeltelim.');
     }
     const ip = req.ip || 'bilinmiyor';
-    if (cokMu(ip)) return sayfa(res, 429, 'Çok fazla deneme', 'Birkaç dakika sonra tekrar deneyin.');
+    if (hataliCokMu(ip)) return sayfa(res, 429, 'Çok fazla deneme', 'Birkaç dakika sonra tekrar deneyin.');
 
     const { v, yuk, imza } = req.query || {};
     if (String(v) !== '1' || typeof yuk !== 'string' || !/^[0-9a-f]{64}$/.test(String(imza || ''))) {
@@ -106,6 +113,8 @@ exports.devir = async (req, res) => {
     }
     const nonce = String(g.nonce || '');
     if (!/^[0-9a-f]{24}$/.test(nonce)) return sayfa(res, 400, 'Bağlantı geçersiz', 'Bağlantı beklenen biçimde değil.');
+    // Siki sayac: yalnizca imzasi ve suresi gecerli istekler (DB'ye dokunacak olanlar).
+    if (cokMu(ip)) return sayfa(res, 429, 'Çok fazla deneme', 'Birkaç dakika sonra tekrar deneyin.');
 
     const smxId = String(g.isletme_no);
     const ad = String(g.isletme_adi || '').trim() || 'İşletme';
@@ -119,6 +128,7 @@ exports.devir = async (req, res) => {
             // 4) NONCE - kiraci acilmadan ONCE, ayni transaction icinde. UNIQUE ihlali =
             //    bu baglanti daha once kullanilmis. Islem yarida kalirsa geri alinir.
             await query("DELETE FROM deneme_devir_nonce WHERE created_at < datetime('now', '-1 day')");
+            await query('DELETE FROM deneme_giris_jetonlari WHERE son_gecerlilik < ?', [new Date(Date.now() - 86400000).toISOString()]);
             try {
                 await query('INSERT INTO deneme_devir_nonce (nonce, isletme_no) VALUES (?, ?)', [nonce, smxId]);
             } catch (e) {
@@ -132,8 +142,12 @@ exports.devir = async (req, res) => {
             // restoranini ilk restoranin hesabina baglardi (her restoran = ayri kiraci).
             const { tenantId: bulunan } = await P.kiraciBul({ smxId });
             if (bulunan) {
+                // Kapatilmis kiraciya giris jetonu uretmek cikmaz sokak olurdu (takas 403).
+                const t = (await query('SELECT is_active FROM tenants WHERE id = ?', [bulunan])).rows[0];
+                if (!t || !t.is_active) return { hata: 'pasif', tenantId: bulunan };
+                // Yalnizca sahip/yonetici: OWNER pasifse kasiyer hesabina dusmesin.
                 const u = (await query(
-                    "SELECT id FROM users WHERE tenant_id = ? AND is_active = 1 ORDER BY CASE role WHEN 'OWNER' THEN 0 ELSE 1 END, created_at LIMIT 1",
+                    "SELECT id FROM users WHERE tenant_id = ? AND is_active = 1 AND role IN ('OWNER', 'MANAGER') ORDER BY CASE role WHEN 'OWNER' THEN 0 ELSE 1 END, created_at LIMIT 1",
                     [bulunan])).rows[0];
                 if (!u) return { hata: 'kullanici_yok', tenantId: bulunan };
                 return { tenantId: bulunan, userId: u.id, yeni: false };
@@ -158,7 +172,8 @@ exports.devir = async (req, res) => {
     }
     if (sonuc.hata === 'nonce') return sayfa(res, 400, 'Bağlantı daha önce kullanılmış', 'Bu bağlantı tek kullanımlıktır. Hesabınız açıldıysa giriş ekranından girebilirsiniz; açılmadıysa SofraMix panelinden yeniden başlatın.');
     if (sonuc.hata === 'eposta_yok') return sayfa(res, 400, 'E-posta gerekli', 'SofraMix hesabınızda yetkili e-postası yok. Önce SofraMix panelinde e-postanızı girin, sonra yeniden deneyin.');
-    if (sonuc.hata === 'kullanici_yok') return sayfa(res, 400, 'Hesap bulunamadı', 'İşletmeniz kayıtlı ama aktif kullanıcısı yok. Lütfen bize yazın.');
+    if (sonuc.hata === 'kullanici_yok') return sayfa(res, 400, 'Hesap bulunamadı', 'İşletmeniz kayıtlı ama aktif yönetici kullanıcısı yok. Lütfen bize yazın.');
+    if (sonuc.hata === 'pasif') return sayfa(res, 400, 'Hesabınız kapatılmış', 'Bu işletme için daha önce açılan hesap kapatılmış. Yeniden açmak için lütfen bize yazın; SofraMix panelinden tekrar denemek yeni hesap açmaz.');
 
     // 6) Yeni isletmeye sifre belirleme postasi (sonraki girisler icin) - best-effort.
     if (sonuc.yeni && sonuc.jeton) {
@@ -186,13 +201,24 @@ exports.girisJetonuKullan = async (req, res) => {
     const ozet = crypto.createHash('sha256').update(ham).digest('hex');
     const j = (await query('SELECT * FROM deneme_giris_jetonlari WHERE jeton_ozet = ?', [ozet])).rows[0];
     if (!j) return res.status(404).json({ message: 'Bağlantı geçersiz.' });
-    if (j.kullanildi_at) return res.status(410).json({ message: 'Bu bağlantı kullanılmış. Giriş ekranından girebilirsiniz.' });
     if (new Date(j.son_gecerlilik).getTime() < Date.now()) return res.status(410).json({ message: 'Bağlantının süresi dolmuş. SofraMix panelinden yeniden başlatın.' });
+    // Ilk kullanimi ATOMIK isaretle (SELECT + UPDATE ayri olsaydi es zamanli iki istek ikisi de gecerdi).
+    const simdi = new Date().toISOString();
+    const isaret = await query('UPDATE deneme_giris_jetonlari SET kullanildi_at = ? WHERE id = ? AND kullanildi_at IS NULL', [simdi, j.id]);
+    if (!isaret.changes) {
+        // Daha once kullanilmis: 60 sn icindeyse AYNI kullaniciya yeniden ver (sayfa POST ucustayken
+        // yenilendi ya da bilesen iki istek atti); sonrasi kesin 410. Jeton adres cubugundan
+        // replace ile siliniyor ve 10 dk omurlu; tolerans penceresi riski buyutmuyor.
+        const son = (await query('SELECT kullanildi_at FROM deneme_giris_jetonlari WHERE id = ?', [j.id])).rows[0];
+        const ne_zaman = son && son.kullanildi_at ? new Date(son.kullanildi_at).getTime() : 0;
+        if (!ne_zaman || Date.now() - ne_zaman > GIRIS_TOLERANS_MS) {
+            return res.status(410).json({ message: 'Bu bağlantı kullanılmış. Giriş ekranından girebilirsiniz.' });
+        }
+    }
     const u = (await query(
         `SELECT u.id, u.role, u.name, u.tenant_id, t.business_code, t.is_active AS tenant_active
            FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = ? AND u.is_active = 1`, [j.user_id])).rows[0];
-    if (!u || !u.tenant_active) return res.status(403).json({ message: 'Hesap aktif değil.' });
-    await query('UPDATE deneme_giris_jetonlari SET kullanildi_at = ? WHERE id = ?', [new Date().toISOString(), j.id]);
+    if (!u || !u.tenant_active) return res.status(403).json({ message: 'Hesap aktif değil. Lütfen bize yazın.' });
     res.json({ token: signToken(u.id), userId: u.id, role: u.role, name: u.name, tenantId: u.tenant_id, businessCode: u.business_code });
 };
 
