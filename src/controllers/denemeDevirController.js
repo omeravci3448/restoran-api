@@ -170,6 +170,7 @@ exports.devir = async (req, res) => {
         console.error('[deneme-devir] hata:', e.message);
         return sayfa(res, 500, 'Bir şeyler ters gitti', 'Deneme açılamadı. Lütfen bize yazın.');
     }
+    if (sonuc.hata) console.warn('[deneme-devir] red: ' + sonuc.hata + ' isletme_no=' + smxId + ' ip=' + ip);
     if (sonuc.hata === 'nonce') return sayfa(res, 400, 'Bağlantı daha önce kullanılmış', 'Bu bağlantı tek kullanımlıktır. Hesabınız açıldıysa giriş ekranından girebilirsiniz; açılmadıysa SofraMix panelinden yeniden başlatın.');
     if (sonuc.hata === 'eposta_yok') return sayfa(res, 400, 'E-posta gerekli', 'SofraMix hesabınızda yetkili e-postası yok. Önce SofraMix panelinde e-postanızı girin, sonra yeniden deneyin.');
     if (sonuc.hata === 'kullanici_yok') return sayfa(res, 400, 'Hesap bulunamadı', 'İşletmeniz kayıtlı ama aktif yönetici kullanıcısı yok. Lütfen bize yazın.');
@@ -191,6 +192,7 @@ exports.devir = async (req, res) => {
     }
     // 7) Tek kullanimlik giris jetonu -> panele yonlendir (JWT adres cubuguna YAZILMAZ).
     const ham = await girisJetonu(sonuc.tenantId, sonuc.userId);
+    console.log('[deneme-devir] OK isletme_no=' + smxId + ' kiraci=' + sonuc.tenantId + ' yeni=' + (sonuc.yeni ? 'evet' : 'hayir') + ' gun=' + gun + ' ip=' + ip);
     res.redirect(302, PANEL + '/deneme-giris/' + ham);
 };
 
