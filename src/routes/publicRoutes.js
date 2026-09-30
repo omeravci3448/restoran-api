@@ -12,5 +12,9 @@ router.post('/m/:tenantSlug/:qrToken/waiter', ctrl.callWaiter);
 router.post('/demo-talep', tanitim.talep);
 // 7 gunluk denemeyi ANINDA baslatir: kiraci acilir, sifre belirleme baglantisi gider.
 router.post('/deneme', tanitim.denemeBaslat);
+// SofraMix'ten imzali deneme devri (GET: isletme yeni sekmede buraya gelir) + jeton -> JWT degisimi
+const devir = require('../controllers/denemeDevirController');
+router.get('/soframix-deneme', devir.devir);
+router.post('/deneme-giris/:jeton', devir.girisJetonuKullan);
 
 module.exports = router;

@@ -304,6 +304,27 @@ const initDb = () => {
                 [`${tur}-${kod}`, tur, kod, ad, fiyat, limit, gorunur, sira], () => {});
         }
 
+        // — SOFRAMIX DENEME DEVRI: tek kullanimlik nonce + kisa omurlu giris jetonu —
+        // Nonce VERITABANINDA: bellekte tutulsaydi yeniden baslatma / ikinci kopya
+        // unutur, kopyalanan baglanti 10 dakika boyunca tekrar tekrar kiraci acardi.
+        db.run(`CREATE TABLE IF NOT EXISTS deneme_devir_nonce (
+            nonce TEXT PRIMARY KEY,
+            isletme_no TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // Devir sonrasi tarayiciya JWT yerine 10 dakikalik, tek kullanimlik jeton
+        // verilir; SPA bunu /api/public/deneme-giris/:jeton ile JWT'ye cevirir.
+        // JWT adres cubuguna yazilsaydi gecmis/referrer uzerinden sizardi.
+        db.run(`CREATE TABLE IF NOT EXISTS deneme_giris_jetonlari (
+            id TEXT PRIMARY KEY,
+            jeton_ozet TEXT NOT NULL UNIQUE,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            son_gecerlilik TEXT NOT NULL,
+            kullanildi_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
         // — TEK KULLANIMLIK GIRIS/SIFRE BELIRLEME JETONLARI —
         db.run(`CREATE TABLE IF NOT EXISTS aktivasyon_jetonlari (
             id TEXT PRIMARY KEY,
