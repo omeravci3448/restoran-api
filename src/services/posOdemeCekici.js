@@ -131,7 +131,11 @@ async function birTur({ genis } = {}) {
         durumu.ustUsteHata = 0;
         durumu.sonBasarili = new Date().toISOString();
         durumu.uyariGonderildi = false;
-        if (genisMi) durumu.sonGenisTur = Date.now();
+        if (genisMi) {
+            durumu.sonGenisTur = Date.now();
+            // Odemeli kiracida baglanti provizyon aninda kurulamadiysa saatte bir yeniden dene.
+            require('./soframixOtoBaglanti').onarimTuru().catch(() => {});
+        }
     } catch (e) {
         durumu.ustUsteHata++;
         durumu.sonHata = e.message;
@@ -159,6 +163,13 @@ async function birTur({ genis } = {}) {
             if (s.durum === 'elde') { ozet.elde++; continue; }
             if (s.durum !== 'islendi') { ozet.hata++; continue; }
             ozet.islenen++;
+            // SofraMix kanalini otomatik bagla + menuyu cek (best-effort, arka planda; anahtar
+            // sunucudan sunucuya). Zaten bagliysa dokunmaz.
+            if (o.business_id != null && o.business_id !== '') {
+                require('./soframixOtoBaglanti')
+                    .otoBagla({ tenantId: s.tenantId, isletmeNo: String(o.business_id), sebep: 'provizyon' })
+                    .catch(() => {});
+            }
 
             const alici = s.eposta || o.yetkili_email;
             if (s.kiraciAcildi && s.aktivasyonJetonu && alici) {

@@ -12,8 +12,11 @@ exports.listChannels = async (req, res) => {
     const r = await query(
         // is_api_enabled SART: Menu.jsx "SofraMix'ten cek" dugmesini bu alana bakip ciziyor;
         // alan donmeyince dugme HIC gorunmuyordu (denetim bulgusu).
-        `SELECT id, name, adapter_code, commission_rate, fixed_fee, is_active, is_api_enabled, capabilities_json
-           FROM marketplace_channels WHERE tenant_id = ? ORDER BY name`,
+        `SELECT c.id, c.name, c.adapter_code, c.commission_rate, c.fixed_fee, c.is_active, c.is_api_enabled, c.capabilities_json,
+                (SELECT k.status FROM marketplace_credentials k
+                  WHERE k.tenant_id = c.tenant_id AND k.channel_id = c.id AND k.env = 'prod'
+                  ORDER BY k.updated_at DESC, k.created_at DESC LIMIT 1) AS kimlik_durum
+           FROM marketplace_channels c WHERE c.tenant_id = ? ORDER BY c.name`,
         [req.user.tenantId]);
     res.json(r.rows);
 };

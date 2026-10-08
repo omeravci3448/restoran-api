@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const { getAdapter } = require('../marketplace/registry');
-const { withCredentials } = require('../marketplace/core/credentialStore');
+const { withCredentials, markInvalidForChannel } = require('../marketplace/core/credentialStore');
 const { ingestBatch } = require('../marketplace/core/ingest');
 
 // ——— Pazaryeri siparislerini CEKME dongusu ———
@@ -112,6 +112,11 @@ async function kanalTuru(k) {
             // ucu 403 doner. Bu kendiliginden duzelmez; kanalin durumuna
             // yaziyoruz ki arayuzde "yeni anahtar uretin" diyebilelim.
             const yetkiSorunu = e && (e.kind === 'AUTH' || /40[13]/.test(String(e.httpStatus || '')));
+            // 401 = anahtar iptal/gecersiz: kimligi 'invalid' yap ki arayuz "baglanti koptu"
+            // desin ve bu kanal her turda bos yere denenmesin. 403 (izin eksik) kimligi bozmaz.
+            if (e && String(e.httpStatus) === '401') {
+                await markInvalidForChannel(k.tenant_id, k.channel_id).catch(() => {});
+            }
             await imlecYaz(anahtar, { cursor: null, hata: String(e.message).slice(0, 300) });
             return { hata: e.message, yetkiSorunu: Boolean(yetkiSorunu) };
         }

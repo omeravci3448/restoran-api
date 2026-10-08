@@ -95,6 +95,15 @@ async function listCredentialsMasked(tenantId) {
     return r.rows;
 }
 
+// Anahtar 401 dondu (SofraMix'te iptal edilmis / gecersiz): o kanalin aktif kimligini
+// 'invalid' yap. Arayuz "baglanti koptu" gosterir; oto-baglanti bir sonraki devirde yeniden
+// anahtar ister (kendiliginden ISTEMEZ). 403 icin CAGRILMAZ: izin eksikligi anahtari bozmaz.
+async function markInvalidForChannel(tenantId, channelId, env = 'prod') {
+    const r = await query(
+        `UPDATE marketplace_credentials SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+          WHERE tenant_id = ? AND channel_id = ? AND env = ? AND status = 'active'`, [tenantId, channelId, env]);
+    return r.changes || 0;
+}
 async function markInvalid(id) {
     await query("UPDATE marketplace_credentials SET status = 'invalid', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
 }
@@ -117,6 +126,7 @@ function redact(obj) {
 }
 
 module.exports = {
+    markInvalidForChannel,
     saveCredentials, withCredentials, listCredentialsMasked,
     markInvalid, markVerified, fingerprint, redact,
     encryptJson, decryptJson, REDACT_KEYS,

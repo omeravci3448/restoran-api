@@ -44,6 +44,7 @@ router.get('/provizyon/ozet', protectRoot, ctrl.provizyonOzet);
 router.post('/provizyon/cek', protectRoot, ctrl.provizyonCek);
 router.post('/provizyon/:odemeId/tekrar', protectRoot, ctrl.provizyonTekrarDene);
 router.post('/provizyon/tenant/:tenantId/posta', protectRoot, ctrl.provizyonPostaYenile);
+router.post('/tenants/:tenantId/soframix-bagla', protectRoot, ctrl.soframixBagla);
 
 // Paketler, fiyatlar ve odeme bildirimleri - hub kaldirildi, kaynak burasi
 router.get('/katalog', protectRoot, ctrl.katalogListe);

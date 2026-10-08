@@ -398,6 +398,23 @@ exports.provizyonTekrarDene = async (req, res) => {
 
 // Aktivasyon postasini yeniden gonder. SMTP gecici olarak calismadiysa ya da
 // jetonun 72 saati dolduysa tek cikis yolu buydu - eskiden hic yoktu.
+// Root: isletmenin SofraMix kanalini elle tetikleyerek bagla (anahtar sunucudan sunucuya).
+// Provizyon/devir aninda baglanamamis ya da isletme kanali bozmus olabilir.
+exports.soframixBagla = async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const t = (await query('SELECT id, business_name FROM tenants WHERE id = ?', [tenantId])).rows[0];
+    if (!t) return res.status(404).json({ message: 'Isletme bulunamadi.' });
+    const no = (await query(
+        `SELECT soframix_business_id AS no FROM pos_provizyon WHERE tenant_id = ? AND soframix_business_id IS NOT NULL
+          UNION SELECT soframix_business_id FROM deneme_kayitlari WHERE tenant_id = ? AND soframix_business_id IS NOT NULL LIMIT 1`,
+        [tenantId, tenantId])).rows[0];
+    if (!no) return res.status(400).json({ message: 'Bu isletmenin SofraMix numarasi kayitli degil (SofraMix uzerinden gelmemis).' });
+    const oto = require('../services/soframixOtoBaglanti');
+    if (!oto.acikMi()) return res.status(503).json({ message: 'Sunucuda SOFRAMIX_PLATFORM_URL/ANAHTAR ya da MARKETPLACE_KEK eksik.' });
+    const s = await oto.otoBagla({ tenantId, isletmeNo: no.no, sebep: 'root' });
+    res.json({ ...s, isletmeNo: no.no });
+};
+
 exports.provizyonPostaYenile = async (req, res) => {
     const { aktivasyonJetonu } = require('../services/posProvizyon');
     const tenantId = req.params.tenantId;

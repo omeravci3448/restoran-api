@@ -141,6 +141,10 @@ exports.devir = async (req, res) => {
             // YALNIZCA isletme_no ile eslestir: telefon/e-posta eslesmesi ayni sahibin IKINCI
             // restoranini ilk restoranin hesabina baglardi (her restoran = ayri kiraci).
             const { tenantId: bulunan } = await P.kiraciBul({ smxId });
+            // Acik adres (SofraMix 'adres' alani) + ilce/il. Fatura adresi de aynisi: isletme
+            // isterse Ayarlar > Isletme Bilgileri'nden duzeltir.
+            const ilIlce = [g.ilce, g.il].filter(Boolean).join(' / ');
+            const adresMetni = [String(g.adres || '').trim(), ilIlce].filter(Boolean).join(', ').slice(0, 240);
             if (bulunan) {
                 // Kapatilmis kiraciya giris jetonu uretmek cikmaz sokak olurdu (takas 403).
                 const t = (await query('SELECT is_active FROM tenants WHERE id = ?', [bulunan])).rows[0];
@@ -150,6 +154,17 @@ exports.devir = async (req, res) => {
                     "SELECT id FROM users WHERE tenant_id = ? AND is_active = 1 AND role IN ('OWNER', 'MANAGER') ORDER BY CASE role WHEN 'OWNER' THEN 0 ELSE 1 END, created_at LIMIT 1",
                     [bulunan])).rows[0];
                 if (!u) return { hata: 'kullanici_yok', tenantId: bulunan };
+                // Bu yamadan ONCE acilmis kiracilarda fatura alanlari bos kaldi: yalniz BOS olanlari
+                // doldur (isletmenin elle duzelttigini ezme).
+                await query(
+                    `UPDATE tenants SET billing_name = COALESCE(NULLIF(billing_name, ''), NULLIF(?, '')),
+                                        billing_tax_office = COALESCE(NULLIF(billing_tax_office, ''), NULLIF(?, '')),
+                                        billing_tax_id = COALESCE(NULLIF(billing_tax_id, ''), NULLIF(?, '')),
+                                        address = COALESCE(NULLIF(address, ''), NULLIF(?, '')),
+                                        billing_address = COALESCE(NULLIF(billing_address, ''), NULLIF(?, ''))
+                      WHERE id = ?`,
+                    [String(g.unvan || '').slice(0, 160), String(g.vergi_dairesi || '').slice(0, 80),
+                        String(g.vergi_no || '').slice(0, 20), adresMetni, adresMetni, bulunan]);
                 return { tenantId: bulunan, userId: u.id, yeni: false };
             }
             if (!eposta) return { hata: 'eposta_yok' };
@@ -159,10 +174,11 @@ exports.devir = async (req, res) => {
             // Fatura bilgileri bos olabilir - isletme SofraMix'te girmemis olabilir.
             await query(
                 `UPDATE tenants SET billing_name = COALESCE(NULLIF(?, ''), billing_name),
-                                    billing_tax_office = NULLIF(?, ''), billing_tax_id = NULLIF(?, ''), address = NULLIF(?, '')
+                                    billing_tax_office = NULLIF(?, ''), billing_tax_id = NULLIF(?, ''),
+                                    address = NULLIF(?, ''), billing_address = NULLIF(?, '')
                   WHERE id = ?`,
                 [String(g.unvan || '').slice(0, 160), String(g.vergi_dairesi || '').slice(0, 80),
-                    String(g.vergi_no || '').slice(0, 20), [g.ilce, g.il].filter(Boolean).join(' / ').slice(0, 120), y.tenantId]);
+                    String(g.vergi_no || '').slice(0, 20), adresMetni, adresMetni, y.tenantId]);
             await D.denemeKaydet({ tenantId: y.tenantId, telefon: tel, soframixBusinessId: smxId, isletmeAdi: ad, kaynak: 'soframix-devir' });
             return { tenantId: y.tenantId, userId: y.userId, yeni: true, jeton: y.aktivasyonJetonu, isyeriKodu: y.isyeriKodu, bitis };
         });
@@ -190,6 +206,17 @@ exports.devir = async (req, res) => {
                 sonuc.tenantId).catch(() => {});
         } catch (_) { /* posta gitmese de devir tamam */ }
     }
+    // 6b) SofraMix kanalini OTOMATIK bagla + menuyu cek (anahtar sunucudan sunucuya alinir,
+    //     isletmenin eline gecmez). Best-effort: 403/429/ag hatasi devri durdurmaz. Isletme
+    //     panele dustugunde menusu hazir olsun diye en fazla 12 sn bekliyoruz; gecerse islem
+    //     arka planda tamamlanir, menu birkac saniye sonra gorunur.
+    try {
+        const oto = require('../services/soframixOtoBaglanti');
+        await Promise.race([
+            oto.otoBagla({ tenantId: sonuc.tenantId, isletmeNo: smxId, sebep: sonuc.yeni ? 'devir-yeni' : 'devir-tekrar' }),
+            new Promise((coz) => setTimeout(coz, 12000)),
+        ]);
+    } catch (_) { /* loglandi */ }
     // 7) Tek kullanimlik giris jetonu -> panele yonlendir (JWT adres cubuguna YAZILMAZ).
     const ham = await girisJetonu(sonuc.tenantId, sonuc.userId);
     console.log('[deneme-devir] OK isletme_no=' + smxId + ' kiraci=' + sonuc.tenantId + ' yeni=' + (sonuc.yeni ? 'evet' : 'hayir') + ' gun=' + gun + ' ip=' + ip);

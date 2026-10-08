@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const { getAdapter, listAdapters } = require('../marketplace/registry');
 const cred = require('../marketplace/core/credentialStore');
+const { menuCek } = require('../services/menuAktarim');
 
 // ——— Pazaryeri kanal kurulumu ve menu aktarimi ———
 // Isletme buradan bir pazaryerine baglanir (anahtar girer) ve ilk kurulumda
@@ -127,109 +128,12 @@ exports.saveCredentials = async (req, res) => {
 // --- Menuyu pazaryerinden CEK (ilk kurulum) ---
 // Onizleme: ne gelecegini once gosterir, yazmaz.  ?uygula=1 ile yazar.
 exports.pullMenu = async (req, res) => {
-    const uygula = String(req.query.uygula || '') === '1';
-    const ch = (await query('SELECT * FROM marketplace_channels WHERE id = ? AND tenant_id = ?',
-        [req.params.id, req.user.tenantId])).rows[0];
-    if (!ch) return res.status(404).json({ message: 'Kanal yok.' });
-
-    let adaptor;
-    try { adaptor = getAdapter(ch.adapter_code); } catch (e) { return res.status(400).json({ message: e.message }); }
-    if (!adaptor.capabilities.menuRead) {
-        return res.status(400).json({ message: 'Bu kanaldan menü okunamıyor.' });
-    }
-
-    const link = (await query('SELECT * FROM marketplace_store_links WHERE tenant_id = ? AND channel_id = ? AND is_active = 1',
-        [req.user.tenantId, ch.id])).rows[0];
-    if (!link) return res.status(400).json({ message: 'Önce bağlantı kurun.' });
-
-    let menu;
-    try {
-        menu = await cred.withCredentials(req.user.tenantId, ch.id, (c) =>
-            adaptor.pullMenu(ctxKur(req.user.tenantId, c, { externalStoreId: link.external_store_id })));
-    } catch (e) {
-        return res.status(502).json({ message: 'Menü alınamadı: ' + (e.message || 'bilinmeyen hata') });
-    }
-
-    // Zaten eslenmis olanlari bul - ikinci cekiste mukerrer urun olusmasin.
-    const mevcutEsleme = (await query(
-        'SELECT kind, external_id, pos_ref_id FROM marketplace_product_map WHERE tenant_id = ? AND channel_id = ?',
-        [req.user.tenantId, ch.id])).rows;
-    const eslenmis = new Map(mevcutEsleme.map((m) => [m.kind + ':' + m.external_id, m.pos_ref_id]));
-
-    const yeniKategori = menu.kategoriler.filter((k) => !eslenmis.has('category:' + k.externalId));
-    const yeniUrun = menu.urunler.filter((u) => !eslenmis.has('product:' + u.externalId));
-
-    if (!uygula) {
-        return res.json({
-            onizleme: true,
-            kategori: { toplam: menu.kategoriler.length, yeni: yeniKategori.length },
-            urun: { toplam: menu.urunler.length, yeni: yeniUrun.length },
-            ornekler: yeniUrun.slice(0, 8).map((u) => ({ ad: u.name, gorsel: !!u.imageUrl })),
-            beyansizUrun: menu.beyansizUrun || 0,
-            bilinmeyenAlerjenKodu: menu.bilinmeyenAlerjenKodu || [],
-        });
-    }
-
-    // --- Yazma ---
-    let katSayi = 0, urunSayi = 0;
-    const katEsle = new Map(mevcutEsleme.filter((m) => m.kind === 'category')
-        .map((m) => [m.external_id, m.pos_ref_id]));
-
-    for (const k of yeniKategori) {
-        const id = uuidv4();
-        await query('INSERT INTO categories (id, tenant_id, name, sort_order) VALUES (?, ?, ?, ?)',
-            [id, req.user.tenantId, k.name, k.sort || 0]);
-        await query(
-            `INSERT INTO marketplace_product_map (id, tenant_id, channel_id, kind, external_id, external_name, pos_ref_id, match_source)
-             VALUES (?, ?, ?, 'category', ?, ?, ?, 'pull')`,
-            [uuidv4(), req.user.tenantId, ch.id, k.externalId, k.name, id]);
-        katEsle.set(k.externalId, id);
-        katSayi++;
-    }
-
-    for (const u of yeniUrun) {
-        const id = uuidv4();
-        // FIYAT 0 + PASIF: isletme fiyatini girene kadar satilamaz (Patron karari).
-        // Gorsel pazaryerindeki mutlak adresle baglaniyor; qr-menu 'http' ile
-        // baslayan adresi oldugu gibi kullaniyor, ek isleme gerekmiyor.
-        // Seffaf Menu alanlari da tasinir (SofraMix bunlari 2026-09'da ekledi).
-        // allergens NULL geldiyse "isletme doldurmadi" demektir - bos dizi YAZMIYORUZ,
-        // cunku bos dizi "kontrol edildi, alerjen yok" gibi okunur.
-        await query(
-            `INSERT INTO products (id, tenant_id, category_id, name, description, price, cost,
-                image_url, tracks_stock, is_available, sort_order,
-                allergens, ingredients, calories, portion_grams, contains_alcohol, contains_pork)
-             VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, req.user.tenantId, katEsle.get(u.externalCategoryId) || null, u.name,
-                u.description || null, u.imageUrl || null, u.sort || 0,
-                u.allergens ?? null, u.ingredients ?? null,
-                u.calories ?? null, u.portionGrams ?? null,
-                u.containsAlcohol ? 1 : 0, u.containsPork ? 1 : 0]);
-        await query(
-            `INSERT INTO marketplace_product_map
-                (id, tenant_id, channel_id, store_link_id, kind, external_id, external_name, external_price, pos_ref_id, match_source)
-             VALUES (?, ?, ?, ?, 'product', ?, ?, ?, ?, 'pull')`,
-            [uuidv4(), req.user.tenantId, ch.id, link.id, u.externalId, u.name,
-                u.platformPriceKurus || 0, id]);
-        urunSayi++;
-    }
-
-    // Alerjen beyani olmayan urunleri AYRICA uyariyoruz: "alerjen yok" ile
-    // "isletme doldurmadi" karistirilirsa gercek bir saglik riski dogar.
-    const beyansiz = menu.urunler.filter((u) => !u.allergenBeyan).length;
-    res.json({
-        ok: true, kategoriEklendi: katSayi, urunEklendi: urunSayi,
-        beyansizUrun: beyansiz,
-        bilinmeyenAlerjenKodu: menu.bilinmeyenAlerjenKodu || [],
-        uyari: 'Menü ' + (ch.name || 'pazaryeri') + " üzerinden alındı. Fiyat ve maliyet bilgileri "
-             + 'aktarılmaz; ürünler fiyatlarını girene kadar PASİF durumdadır. '
-             + 'Fiyatları girip "Menüde aktif" kutusunu işaretleyin.',
-        alerjenUyari: beyansiz > 0
-            ? beyansiz + ' üründe alerjen bilgisi işletme tarafından doldurulmamış. '
-              + 'Bu "alerjen içermiyor" anlamına GELMEZ - ilgili ürünlerin alerjen '
-              + 'bilgisini kendiniz girmelisiniz.'
-            : null,
+    // Govde src/services/menuAktarim.js'e tasindi: SofraMix oto-baglantisi da ayni kodu kullaniyor.
+    const r = await menuCek({
+        tenantId: req.user.tenantId, kanalId: req.params.id,
+        uygula: String(req.query.uygula || '') === '1',
     });
+    res.status(r.kod).json(r.govde);
 };
 
 // --- Bu urun bir pazaryerine bagli mi? (fiyat degisince hatirlatma icin) ---
