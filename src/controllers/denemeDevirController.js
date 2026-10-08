@@ -144,7 +144,9 @@ exports.devir = async (req, res) => {
             // Acik adres (SofraMix 'adres' alani) + ilce/il. Fatura adresi de aynisi: isletme
             // isterse Ayarlar > Isletme Bilgileri'nden duzeltir.
             const ilIlce = [g.ilce, g.il].filter(Boolean).join(' / ');
-            const adresMetni = [String(g.adres || '').trim(), ilIlce].filter(Boolean).join(', ').slice(0, 240);
+            const adresMetni = [String(g.adres || '').trim(), ilIlce].filter(Boolean).join(', ').slice(0, 400);
+            // SofraMix ayri fatura adresi gonderiyorsa (fatura_adres, en cok 400 kr) onu kullan; yoksa isletme adresi.
+            const faturaAdresi = String(g.fatura_adres || '').trim().slice(0, 400) || adresMetni;
             if (bulunan) {
                 // Kapatilmis kiraciya giris jetonu uretmek cikmaz sokak olurdu (takas 403).
                 const t = (await query('SELECT is_active FROM tenants WHERE id = ?', [bulunan])).rows[0];
@@ -164,7 +166,7 @@ exports.devir = async (req, res) => {
                                         billing_address = COALESCE(NULLIF(billing_address, ''), NULLIF(?, ''))
                       WHERE id = ?`,
                     [String(g.unvan || '').slice(0, 160), String(g.vergi_dairesi || '').slice(0, 80),
-                        String(g.vergi_no || '').slice(0, 20), adresMetni, adresMetni, bulunan]);
+                        String(g.vergi_no || '').slice(0, 20), adresMetni, faturaAdresi, bulunan]);
                 return { tenantId: bulunan, userId: u.id, yeni: false };
             }
             if (!eposta) return { hata: 'eposta_yok' };
@@ -178,7 +180,7 @@ exports.devir = async (req, res) => {
                                     address = NULLIF(?, ''), billing_address = NULLIF(?, '')
                   WHERE id = ?`,
                 [String(g.unvan || '').slice(0, 160), String(g.vergi_dairesi || '').slice(0, 80),
-                    String(g.vergi_no || '').slice(0, 20), adresMetni, adresMetni, y.tenantId]);
+                    String(g.vergi_no || '').slice(0, 20), adresMetni, faturaAdresi, y.tenantId]);
             await D.denemeKaydet({ tenantId: y.tenantId, telefon: tel, soframixBusinessId: smxId, isletmeAdi: ad, kaynak: 'soframix-devir' });
             return { tenantId: y.tenantId, userId: y.userId, yeni: true, jeton: y.aktivasyonJetonu, isyeriKodu: y.isyeriKodu, bitis };
         });

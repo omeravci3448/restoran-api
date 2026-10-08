@@ -17,7 +17,7 @@ const uyu = (ms) => new Promise(r => setTimeout(r, ms));
 function govde(x = {}) {
     return {
         kaynak: 'soframix', surum: 1, isletme_no: 778001, isletme_slug: 'oto-test', isletme_adi: 'Oto Baglanti Lokanta',
-        il: 'Afyonkarahisar', ilce: 'Merkez', adres: 'Kurtulus Cad. No: 12', unvan: 'Oto Gida Ltd.', vergi_dairesi: 'Kocatepe', vergi_no: '9876543210',
+        il: 'Afyonkarahisar', ilce: 'Merkez', adres: 'Kurtulus Cad. No: 12', fatura_adres: 'Fatura Mah. 5. Sok. No: 3 Merkez/Afyonkarahisar', unvan: 'Oto Gida Ltd.', vergi_dairesi: 'Kocatepe', vergi_no: '9876543210',
         yetkili_ad: 'Oto Sahibi', yetkili_email: 'oto-sahibi@ornek.test', yetkili_tel: '05329876543',
         deneme_gun: 7, damga_ms: Date.now(), gecerli_sn: 600, nonce: crypto.randomBytes(12).toString('hex'), ...x,
     };
@@ -102,7 +102,8 @@ const smx = http.createServer(async (req, res) => {
     await uyu(800);
     const k1 = (await query("SELECT * FROM tenants WHERE business_name = 'Oto Baglanti Lokanta'")).rows[0];
     ok('kiraci acildi', !!k1);
-    ok('fatura adresi = acik adres + ilce/il', k1 && k1.billing_address === 'Kurtulus Cad. No: 12, Merkez / Afyonkarahisar', k1 && k1.billing_address);
+    ok('fatura adresi = SofraMix fatura_adres', k1 && k1.billing_address === 'Fatura Mah. 5. Sok. No: 3 Merkez/Afyonkarahisar', k1 && k1.billing_address);
+    ok('isletme adresi = acik adres + ilce/il', k1 && k1.address === 'Kurtulus Cad. No: 12, Merkez / Afyonkarahisar', k1 && k1.address);
     const kanal = (await query("SELECT * FROM marketplace_channels WHERE tenant_id = ? AND adapter_code = 'soframix'", [k1.id])).rows;
     ok('TEK SofraMix kanali, API acik', kanal.length === 1 && kanal[0].is_api_enabled === 1, kanal.map(c => c.is_api_enabled));
     const bag = (await query('SELECT l.*, c.status FROM marketplace_store_links l JOIN marketplace_credentials c ON c.id = l.credential_id WHERE l.tenant_id = ?', [k1.id])).rows;
@@ -185,7 +186,7 @@ const smx = http.createServer(async (req, res) => {
     const r8 = await git(baglanti(govde({ nonce: crypto.randomBytes(12).toString('hex') })));
     ok('302', r8.status === 302, r8.status);
     const k8 = (await query('SELECT billing_address, address, billing_tax_office FROM tenants WHERE id = ?', [k1.id])).rows[0];
-    ok('bos fatura adresi dolduruldu', k8.billing_address === 'Kurtulus Cad. No: 12, Merkez / Afyonkarahisar', k8);
+    ok('bos fatura adresi dolduruldu', k8.billing_address === 'Fatura Mah. 5. Sok. No: 3 Merkez/Afyonkarahisar' && k8.address === 'Kurtulus Cad. No: 12, Merkez / Afyonkarahisar', k8);
     ok('elle girilen vergi dairesi KORUNDU', k8.billing_tax_office === 'Elle Girilen VD', k8);
 
     console.log('\n=== 9) Yarim kayit onarimi: is_api_enabled=0 kalmissa sonraki devir 1 yapar ===');
