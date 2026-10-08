@@ -91,7 +91,7 @@ const YANIT = {
     ok('bos icindekiler null oldu', kasarli.ingredients === null, kasarli.ingredients);
     ok('alkol isaretlendi', sarap.containsAlcohol === 1);
     ok('domuz isaretlenmedi', sarap.containsPork === 0);
-    ok('gorsel tasindi ve MUTLAK adrese cevrildi (goreli /uploads POS API'sine baglanirdi)', /^https?:[/][/]/.test(pide.imageUrl || '') && pide.imageUrl.endsWith('/uploads/b1-abc.webp'), pide.imageUrl);
+    ok('gorsel tasindi ve MUTLAK adrese cevrildi (goreli /uploads POS API adresine baglanirdi)', /^https?:[/][/]/.test(pide.imageUrl || '') && pide.imageUrl.endsWith('/uploads/b1-abc.webp'), pide.imageUrl);
 
     console.log('\n=== 8) BILINMEYEN KOD sessizce atilmiyor, raporlaniyor ===');
     ok('bilinmeyen kod yakalandi', menu.bilinmeyenAlerjenKodu.includes('YENI_KOD_X'),
