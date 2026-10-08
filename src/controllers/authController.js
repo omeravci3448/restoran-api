@@ -153,9 +153,9 @@ exports.verifyRegistration = async (req, res) => {
                 new Date().toISOString(), form.kvkkConsentVersion || '1.0']
         );
         await query(
-            `INSERT INTO users (id, tenant_id, email, password_hash, name, role)
-             VALUES (?, ?, ?, ?, ?, 'OWNER')`,
-            [userId, tenantId, form.email, hash, form.businessName]
+            `INSERT INTO users (id, tenant_id, email, password_hash, name, role, password_set_at)
+             VALUES (?, ?, ?, ?, ?, 'OWNER', ?)`,
+            [userId, tenantId, form.email, hash, form.businessName, new Date().toISOString()]
         );
         await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
     });
@@ -294,6 +294,11 @@ exports.login = async (req, res) => {
 };
 
 exports.me = async (req, res) => {
+    // Giris bilgileri karti icin: isyeri kodu, kaynak (SofraMix mi) ve sifrenin
+    // kullanici tarafindan belirlenip belirlenmedigi.
+    const ek = (await query(
+        `SELECT t.business_code, t.parent_org, u.password_set_at
+           FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = ?`, [req.user.id])).rows[0] || {};
     res.json({
         id: req.user.id,
         email: req.user.email,
@@ -301,6 +306,9 @@ exports.me = async (req, res) => {
         role: req.user.role,
         tenantId: req.user.tenantId,
         businessName: req.user.businessName,
+        businessCode: ek.business_code || null,
+        parentOrg: ek.parent_org || null,
+        passwordSet: !!ek.password_set_at,
         licenseTier: req.user.licenseTier,
         modules: req.user.modules,
         // Lisans durumu - arayuz serit gostersin diye (bkz services/lisansDurumu.js)
@@ -309,6 +317,63 @@ exports.me = async (req, res) => {
         lisansKalanGun: req.user.lisansKalanGun,
         lisansToleransBitis: req.user.lisansToleransBitis,
     });
+};
+
+// ——— Giris sifresi (Ayarlar > Giris Bilgileri) ———
+// Kullanici sifresini daha once hic belirlemediyse (SofraMix'ten acilan hesap, password_set_at
+// NULL) mevcut sifre istenmez: oturum zaten kurulu, gecici sifreyi hic bilmiyor. Belirlenmisse
+// mevcut sifre sart. Kullanici basina 10 deneme / 15 dk.
+const sifreDenemeleri = new Map();
+function sifreCokMu(userId) {
+    const k = sifreDenemeleri.get(userId); const simdi = Date.now();
+    if (!k || simdi > k.sifir) { sifreDenemeleri.set(userId, { sayi: 1, sifir: simdi + 15 * 60000 }); return false; }
+    k.sayi++; if (sifreDenemeleri.size > 10000) sifreDenemeleri.clear();
+    return k.sayi > 10;
+}
+exports.sifreDegistir = async (req, res) => {
+    if (sifreCokMu(req.user.id)) return res.status(429).json({ message: 'Çok fazla deneme. Birkaç dakika sonra tekrar deneyin.' });
+    const yeni = String((req.body || {}).yeni || '');
+    const mevcut = String((req.body || {}).mevcut || '');
+    if (yeni.length < 8) return res.status(400).json({ message: 'Yeni şifre en az 8 karakter olmalı.' });
+    if (yeni.length > 128) return res.status(400).json({ message: 'Şifre çok uzun.' });
+    const u = (await query('SELECT password_hash, password_set_at FROM users WHERE id = ?', [req.user.id])).rows[0];
+    if (!u) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+    if (u.password_set_at) {
+        if (!mevcut) return res.status(400).json({ message: 'Mevcut şifrenizi girin.' });
+        const ok = await bcrypt.compare(mevcut, u.password_hash);
+        if (!ok) return res.status(400).json({ message: 'Mevcut şifre yanlış.' });
+    }
+    await query('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?',
+        [await bcrypt.hash(yeni, 10), new Date().toISOString(), req.user.id]);
+    // Bekleyen sifre belirleme baglantilari artik gereksiz; kapat.
+    await query('UPDATE aktivasyon_jetonlari SET kullanildi_at = ? WHERE user_id = ? AND kullanildi_at IS NULL',
+        [new Date().toISOString(), req.user.id]).catch(() => {});
+    res.json({ ok: true, passwordSet: true });
+};
+
+// Kendi e-postasina sifre belirleme baglantisi gonder (SMTP yoksa baglantiyi doner).
+exports.sifreBaglantisi = async (req, res) => {
+    if (sifreCokMu(req.user.id)) return res.status(429).json({ message: 'Çok fazla deneme. Birkaç dakika sonra tekrar deneyin.' });
+    const { aktivasyonJetonu } = require('../services/posProvizyon');
+    const { postaDene } = require('../services/posOdemeCekici');
+    const PANEL = (process.env.POS_PANEL_URL || 'https://restoran.mdayazilim.com').replace(/[/]+$/, '');
+    const alici = String(req.user.email || '').trim();
+    if (!alici || alici.endsWith('@ornek.local')) return res.status(400).json({ message: 'Hesapta geçerli bir e-posta yok.' });
+    await query('UPDATE aktivasyon_jetonlari SET kullanildi_at = ? WHERE user_id = ? AND kullanildi_at IS NULL',
+        [new Date().toISOString(), req.user.id]).catch(() => {});
+    const j = await aktivasyonJetonu(req.user.tenantId, req.user.id);
+    const baglanti = PANEL + '/aktivasyon/' + j.ham;
+    let gonderildi = false;
+    try {
+        const r = await postaDene(alici, 'MDA Restoran POS - şifre belirleme',
+            '<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">'
+            + '<h2 style="color:#E2622A;margin:0 0 12px">MDA Restoran POS</h2>'
+            + '<p style="color:#374151">Giriş şifrenizi belirlemek için bağlantıya tıklayın (tek kullanımlık, 72 saat geçerli):</p>'
+            + '<p style="margin:20px 0"><a href="' + baglanti + '" style="background:#E2622A;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:700">Şifremi belirle</a></p>'
+            + '<p style="color:#374151;font-size:.92rem">Giriş e-postanız: <b>' + alici + '</b></p></div>', req.user.tenantId);
+        gonderildi = !!(r && (r.gonderildi || r.ok || r === true));
+    } catch (_) { gonderildi = false; }
+    res.json({ gonderildi, eposta: alici });
 };
 
 exports.createStaff = async (req, res) => {
@@ -320,8 +385,8 @@ exports.createStaff = async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     try {
         await query(
-            'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)',
-            [id, req.user.tenantId, email, hash, name || email, finalRole]
+            'INSERT INTO users (id, tenant_id, email, password_hash, name, role, password_set_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [id, req.user.tenantId, email, hash, name || email, finalRole, new Date().toISOString()]
         );
         res.status(201).json({ id, email, name: name || email, role: finalRole });
     } catch (e) {

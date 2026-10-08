@@ -9,6 +9,9 @@ router.post('/register/resend', ctrl.resendOtp);
 
 router.post('/login', ctrl.login);
 router.get('/me', protect, ctrl.me);
+// Giris bilgileri karti: sifre degistir / sifre belirleme baglantisi e-postala
+router.post('/sifre-degistir', protect, ctrl.sifreDegistir);
+router.post('/sifre-baglantisi', protect, ctrl.sifreBaglantisi);
 router.get('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.listStaff);
 router.post('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.createStaff);
 

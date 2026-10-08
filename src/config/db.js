@@ -350,6 +350,20 @@ const initDb = () => {
             FOREIGN KEY(tenant_id) REFERENCES tenants(id)
         )`);
 
+        // Sifre KULLANICI tarafindan belirlendi mi? SofraMix'ten devir/provizyonla acilan
+        // hesaplar rastgele gecici sifreyle dogar; sahibi sifresini belirleyene kadar NULL kalir ve
+        // arayuz "giris sifrenizi belirleyin" notu gosterir. Kayit formu/personel ekleme/aktivasyon
+        // yollari aninda yazar. Eski satirlar: SofraMix disi kiracilarda created_at, aktivasyon
+        // baglantisini kullanmis olanlarda o an.
+        db.run("ALTER TABLE users ADD COLUMN password_set_at TEXT", [], () => {});
+        db.run(`UPDATE users SET password_set_at = created_at
+                 WHERE password_set_at IS NULL
+                   AND tenant_id IN (SELECT id FROM tenants WHERE COALESCE(parent_org, '') != 'SofraMix')`, [], () => {});
+        db.run(`UPDATE users SET password_set_at = (SELECT MAX(a.kullanildi_at) FROM aktivasyon_jetonlari a
+                                                      WHERE a.user_id = users.id AND a.kullanildi_at IS NOT NULL)
+                 WHERE password_set_at IS NULL
+                   AND EXISTS (SELECT 1 FROM aktivasyon_jetonlari a WHERE a.user_id = users.id AND a.kullanildi_at IS NOT NULL)`, [], () => {});
+
         // — TABLES (masalar) —
         db.run(`CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,

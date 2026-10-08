@@ -346,7 +346,8 @@ exports.resetOwnerPassword = async (req, res) => {
     const u = await query("SELECT id FROM users WHERE tenant_id = ? AND role = 'OWNER' ORDER BY created_at LIMIT 1",
         [req.params.id]);
     if (!u.rows.length) return res.status(404).json({ message: 'Bu işletmede yönetici hesabı yok.' });
-    await query('UPDATE users SET password_hash = ? WHERE id = ?', [await bcrypt.hash(yeni, 10), u.rows[0].id]);
+    await query('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?',
+        [await bcrypt.hash(yeni, 10), new Date().toISOString(), u.rows[0].id]);
     res.json({ ok: true, message: 'Yönetici şifresi güncellendi.', email: t.rows[0].owner_email });
 };
 

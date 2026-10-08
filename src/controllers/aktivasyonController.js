@@ -85,7 +85,8 @@ exports.belirle = async (req, res) => {
     if (!j) return res.status(404).json({ message: 'Baglanti gecersiz.' });
     if (j.gecersiz) return res.status(410).json({ message: 'Baglanti artik gecerli degil.' });
 
-    await query('UPDATE users SET password_hash = ? WHERE id = ?', [await bcrypt.hash(sifre, 10), j.user_id]);
+    await query('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?',
+        [await bcrypt.hash(sifre, 10), new Date().toISOString(), j.user_id]);
     // Tek kullanimlik: once isaretle, sonra ayni kiracinin bekleyen diger
     // jetonlarini da kapat (ikinci posta gitmisse eskisi ise yaramasin).
     await query('UPDATE aktivasyon_jetonlari SET kullanildi_at = ? WHERE id = ?', [new Date().toISOString(), j.id]);
