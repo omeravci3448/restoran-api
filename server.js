@@ -135,4 +135,8 @@ app.listen(PORT, () => {
 
     // Pazaryeri siparislerini cekme dongusu. Bagli kanal yoksa hicbir sey yapmaz.
     require('./src/services/siparisCekici').baslat();
+
+    // Eski aktarimlardan kalan goreli SofraMix gorsel adreslerini bir kez onar (idempotent).
+    setTimeout(() => require('./src/services/menuAktarim').gorselAdresleriniOnar()
+        .catch((e) => console.error('[menu] gorsel onarimi:', e.message)), 8000);
 });

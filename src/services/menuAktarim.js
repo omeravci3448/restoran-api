@@ -132,4 +132,20 @@ async function menuCek({ tenantId, kanalId, uygula }) {
     } };
 }
 
-module.exports = { menuCek };
+// Daha once GORELI ('/uploads/..') saklanmis SofraMix gorsellerini mutlaklastir. Yalniz SofraMix
+// kanalindan eslenmis urunlere dokunur: POS'un KENDI yuklemeleri de '/uploads/..' kullanir ve
+// onlar POS API'sinden servis edilir, degismemeli. Idempotent; acilista bir kez calisir.
+async function gorselAdresleriniOnar(taban) {
+    let b = String(taban || process.env.SOFRAMIX_PLATFORM_URL || 'https://soframix.com.tr').trim().replace(/[/]+$/, '');
+    if (!/^https?:[/][/]/i.test(b)) b = 'https://' + b;
+    const r = await query(
+        `UPDATE products SET image_url = ? || image_url
+          WHERE image_url LIKE '/%' AND image_url NOT LIKE '//%'
+            AND id IN (SELECT m.pos_ref_id FROM marketplace_product_map m
+                         JOIN marketplace_channels c ON c.id = m.channel_id
+                        WHERE m.kind = 'product' AND c.adapter_code = 'soframix')`, [b]);
+    if (r.changes) console.log('[menu] ' + r.changes + ' SofraMix gorsel adresi mutlaklastirildi (' + b + ')');
+    return r.changes || 0;
+}
+
+module.exports = { menuCek, gorselAdresleriniOnar };

@@ -75,7 +75,7 @@ const smx = http.createServer(async (req, res) => {
         return json(200, {
             categories: [{ id: 1, name: 'Çorbalar', sort: 1 }, { id: 2, name: 'Ana Yemek', sort: 2 }],
             products: [
-                { id: 11, name: 'Mercimek Çorbası', category_id: 1, price_kurus: 9000, sort: 1, image_url: null, alerjen: null },
+                { id: 11, name: 'Mercimek Çorbası', category_id: 1, price_kurus: 9000, sort: 1, image_url: '/uploads/mercimek.jpg', alerjen: null },
                 { id: 12, name: 'Ezogelin', category_id: 1, price_kurus: 9500, sort: 2, image_url: null, alerjen: null },
                 { id: 21, name: 'Kuru Fasulye', category_id: 2, price_kurus: 18000, sort: 1, image_url: null, alerjen: null },
             ],
@@ -113,6 +113,17 @@ const smx = http.createServer(async (req, res) => {
     ok('3 urun geldi', urun.length === 3, urun.length);
     ok('urunler 0 TL ve PASIF (Patron karari)', urun.every(u => Number(u.price) === 0 && u.is_available === 0), urun);
     ok('2 kategori geldi', (await query('SELECT COUNT(*) c FROM categories WHERE tenant_id = ?', [k1.id])).rows[0].c === 2);
+    const gorsel = (await query("SELECT image_url FROM products WHERE tenant_id = ? AND name = 'Mercimek Çorbası'", [k1.id])).rows[0];
+    ok('goreli SofraMix gorseli MUTLAK saklandi', gorsel && gorsel.image_url === SMX + '/uploads/mercimek.jpg', gorsel);
+    // Onarim: eski aktarimdan kalma goreli adres duzelir, POS'un KENDI yuklemesi degismez
+    await query("UPDATE products SET image_url = '/uploads/mercimek.jpg' WHERE tenant_id = ? AND name = 'Mercimek Çorbası'", [k1.id]);
+    const kendiId = crypto.randomUUID();
+    await query("INSERT INTO products (id, tenant_id, name, price, image_url) VALUES (?, ?, 'POS Kendi Urunu', 10, '/uploads/kendi.jpg')", [kendiId, k1.id]);
+    const onarildi = await require('./src/services/menuAktarim').gorselAdresleriniOnar(SMX);
+    ok('onarim 1 satir duzeltti', onarildi === 1, onarildi);
+    ok('SofraMix gorseli mutlak oldu', (await query("SELECT image_url u FROM products WHERE tenant_id = ? AND name = 'Mercimek Çorbası'", [k1.id])).rows[0].u === SMX + '/uploads/mercimek.jpg');
+    ok("POS'un kendi gorseli DEGISMEDI", (await query('SELECT image_url u FROM products WHERE id = ?', [kendiId])).rows[0].u === '/uploads/kendi.jpg');
+    await query('DELETE FROM products WHERE id = ?', [kendiId]);
     const sifreli = (await query('SELECT cipher_blob, fingerprint FROM marketplace_credentials WHERE tenant_id = ?', [k1.id])).rows[0];
     ok('anahtar DUZ metin olarak DB de yok (sifreli blob)', sifreli && !String(sifreli.cipher_blob).includes('smx_') && !String(sifreli.fingerprint || '').includes([...verilen][0]), sifreli && sifreli.fingerprint);
 

@@ -196,7 +196,7 @@ const kopya = (o) => JSON.parse(JSON.stringify(o));
     const menu = await smx.pullMenu(menuCtx);
     ok('kategori geldi', menu.kategoriler[0].name === 'Kebaplar');
     ok('urun geldi', menu.urunler[0].name === 'Adana Kebap');
-    ok('GORSEL geldi', menu.urunler[0].imageUrl === '/uploads/b7-abc.webp');
+    ok('GORSEL geldi ve MUTLAK adres', /^https?:[/][/]/.test(menu.urunler[0].imageUrl || '') && menu.urunler[0].imageUrl.endsWith('/uploads/b7-abc.webp'), menu.urunler[0].imageUrl);
     ok('FIYAT 0 geldi (isletme salon fiyatini girecek)', menu.urunler[0].priceKurus === 0);
     ok('urun PASIF geldi (0 TL kazara satilmasin)', menu.urunler[0].isActive === false);
     ok('SofraMix fiyati bilgi olarak duruyor', menu.urunler[0].platformPriceKurus === 22000);

@@ -71,6 +71,13 @@ class SofraMixAdapter extends BaseAdapter {
         return b;
     }
 
+    _mutlakGorsel(ctx, u) {
+        const s = String(u || '').trim();
+        if (!s) return null;
+        if (/^https?:\/\//i.test(s) || s.startsWith('data:')) return s;
+        return this._base(ctx) + (s.startsWith('/') ? s : '/' + s);
+    }
+
     _headers(ctx) {
         const k = ctx.credentials && ctx.credentials.apiKey;
         if (!k) throw new AdapterError(KIND.AUTH, 'SofraMix API anahtari tanimli degil.');
@@ -308,7 +315,10 @@ class SofraMixAdapter extends BaseAdapter {
                 name: p.name,
                 description: (p.description || '').trim() || null,
                 externalCategoryId: p.category_id != null ? String(p.category_id) : null,
-                imageUrl: p.image_url || null,
+                // SofraMix gorseli '/uploads/<ad>' GORELI yoluyla doner (kendi sunucusundan servis
+                // edilir). Oldugu gibi saklansaydi POS arayuzu kendi API adresine baglar ve 404 alirdi
+                // (ilk gercek isletmede yasandi, 2026-10-08). Burada SofraMix tabaniyla mutlaklastiriyoruz.
+                imageUrl: this._mutlakGorsel(ctx, p.image_url),
                 sort: Number(p.sort) || 0,
                 priceKurus: 0,        // BILEREK 0
                 isActive: false,      // BILEREK pasif
