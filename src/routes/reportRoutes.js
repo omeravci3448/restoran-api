@@ -8,5 +8,6 @@ router.use(requireManagerPin);                // + yönetici şifresi katmanı
 router.get('/day', ctrl.daySummary);     // ?date=YYYY-MM-DD (default: bugün)
 router.get('/month', ctrl.monthSummary); // ?month=YYYY-MM (default: bu ay)
 router.get('/z', ctrl.zReport);
+router.get('/islem-gunlugu', ctrl.islemGunlugu); // ?gun=YYYY-MM-DD (bos: son 200 kayit)
 
 module.exports = router;

@@ -2,6 +2,12 @@ const { query } = require('../config/db');
 
 // SQLite CURRENT_TIMESTAMP "YYYY-MM-DD HH:MM:SS" formatı kullandığı için
 // karşılaştırmayı substr ile günlük bazda yapıyoruz
+exports.islemGunlugu = async (req, res) => {
+    const gun = String(req.query.gun || '').trim();
+    const rows = await require('../services/islemGunlugu').listele(req.user.tenantId, { gun: /^\d{4}-\d{2}-\d{2}$/.test(gun) ? gun : null });
+    res.json(rows);
+};
+
 exports.daySummary = async (req, res) => {
     const day = req.query.date || new Date().toISOString().slice(0, 10);
     const t = req.user.tenantId;

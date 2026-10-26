@@ -96,7 +96,7 @@ exports.listForOrder = async (req, res) => {
 exports.remove = async (req, res) => {
     // Önce ödemeyi al (kalem dökümü varsa paid_qty'yi geri almak için)
     const p = await query(
-        `SELECT p.id, p.ref, p.order_id
+        `SELECT p.id, p.ref, p.order_id, p.amount, p.method, o.table_id
            FROM payments p JOIN orders o ON o.id = p.order_id
           WHERE p.id = ? AND p.tenant_id = ? AND o.status = 'OPEN'`,
         [req.params.id, req.user.tenantId]);
@@ -117,6 +117,11 @@ exports.remove = async (req, res) => {
                     [Number(b.qty) || 0, b.itemId, p.rows[0].order_id]);
             }
         }
+    });
+    const masa = p.rows[0].table_id ? (await query('SELECT name FROM tables WHERE id = ?', [p.rows[0].table_id])).rows[0] : null;
+    await require('../services/islemGunlugu').kaydet({
+        tenantId: req.user.tenantId, user: req.user, islem: 'odeme_sil', hedefTur: 'payment', hedefId: p.rows[0].id,
+        detay: (masa ? masa.name + ' - ' : '') + Number(p.rows[0].amount || 0).toLocaleString('tr-TR') + ' TL ' + (p.rows[0].method || ''),
     });
     res.json({ message: 'Silindi.' });
 };

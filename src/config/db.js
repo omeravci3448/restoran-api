@@ -364,6 +364,22 @@ const initDb = () => {
                  WHERE password_set_at IS NULL
                    AND EXISTS (SELECT 1 FROM aktivasyon_jetonlari a WHERE a.user_id = users.id AND a.kullanildi_at IS NOT NULL)`, [], () => {});
 
+        // Islem gunlugu: iptal / odeme silme gibi "kim yapti" sorusu sorulan islemler.
+        // Isletmeci "kasadan para kacmasin" diye sorar; raporlarda yonetici gorur.
+        db.run(`CREATE TABLE IF NOT EXISTS islem_gunlugu (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT,
+            user_name TEXT,
+            islem TEXT NOT NULL,          -- siparis_iptal | odeme_sil | ...
+            hedef_tur TEXT,               -- order | payment
+            hedef_id TEXT,
+            detay TEXT,                   -- kisa metin (masa, tutar, yontem)
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_islem_gunlugu_tenant ON islem_gunlugu(tenant_id, created_at)", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN cancelled_by TEXT", [], () => {});
+
         // — TABLES (masalar) —
         db.run(`CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,

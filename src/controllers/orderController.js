@@ -62,6 +62,31 @@ exports.open = async (req, res) => {
     res.status(201).json({ id, tableId, channel, status: 'OPEN' });
 };
 
+// Garson telefonundan gelen kalemleri kasaya SESLI bildirim olarak dusur. Garson urunleri tek tek
+// gonderir; her kalemde ayri uyari cikmasin diye siparis basina 2,5 sn toplanip tek olay yayinlanir.
+// Kasiyerin kendi ekledigi kalemler (OWNER/MANAGER/CASHIER) bildirim uretmez.
+const bus = require('../services/eventBus');
+const garsonBirikim = new Map(); // orderId -> { zamanlayici, adet, tutar, tenantId, tableId, by }
+function garsonBildirimiTopla({ tenantId, orderId, tableId, adet, tutar, by }) {
+    const k = garsonBirikim.get(orderId) || { adet: 0, tutar: 0 };
+    k.adet += Number(adet) || 0; k.tutar += Number(tutar) || 0;
+    k.tenantId = tenantId; k.tableId = tableId; k.by = by;
+    if (k.zamanlayici) clearTimeout(k.zamanlayici);
+    k.zamanlayici = setTimeout(async () => {
+        garsonBirikim.delete(orderId);
+        try {
+            const t = tableId ? (await query('SELECT name, code, section FROM tables WHERE id = ?', [tableId])).rows[0] : null;
+            const o = (await query('SELECT total FROM orders WHERE id = ?', [orderId])).rows[0];
+            bus.emit(tenantId, 'new_order', {
+                orderId, tableId, tableName: t && t.name, tableCode: t && t.code, section: t && t.section,
+                addedItems: k.adet, addedSubtotal: k.tutar, orderTotal: o ? Number(o.total) : undefined,
+                source: 'WAITER', by,
+            });
+        } catch (e) { console.error('[garson-bildirim]', e.message); }
+    }, 2500);
+    garsonBirikim.set(orderId, k);
+}
+
 exports.addItem = async (req, res) => {
     const { productId, qty = 1, note, unitPriceOverride } = req.body;
     const o = await query("SELECT * FROM orders WHERE id = ? AND tenant_id = ?",
@@ -97,6 +122,10 @@ exports.addItem = async (req, res) => {
         [itemId, req.params.id, prod.id, prod.name, qty, prod.stock_unit || null, unit, total, note || null, req.body.source || 'STAFF']);
 
     await recomputeTotals(req.params.id);
+    if (req.user.role === 'WAITER') {
+        garsonBildirimiTopla({ tenantId: req.user.tenantId, orderId: req.params.id, tableId: o.rows[0].table_id,
+            adet: qty, tutar: total, by: req.user.name || req.user.email });
+    }
     res.status(201).json({ id: itemId, productId, qty, unit, total });
 };
 
@@ -180,8 +209,14 @@ exports.cancel = async (req, res) => {
         [id, req.user.tenantId]);
     if (!o.rows.length) return res.status(404).json({ message: 'Sipariş yok.' });
     if (o.rows[0].status === 'CLOSED') return res.status(409).json({ message: 'Kapalı sipariş iptal edilemez.' });
-    await query("UPDATE orders SET status = 'CANCELLED', closed_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+    await query("UPDATE orders SET status = 'CANCELLED', closed_at = CURRENT_TIMESTAMP, cancelled_by = ? WHERE id = ?", [req.user.id, id]);
     if (o.rows[0].table_id) await query("UPDATE tables SET status = 'EMPTY' WHERE id = ?", [o.rows[0].table_id]);
+    // Kim iptal etti: islem gunlugu (raporlarda yonetici gorur)
+    const masa = o.rows[0].table_id ? (await query('SELECT name FROM tables WHERE id = ?', [o.rows[0].table_id])).rows[0] : null;
+    await require('../services/islemGunlugu').kaydet({
+        tenantId: req.user.tenantId, user: req.user, islem: 'siparis_iptal', hedefTur: 'order', hedefId: id,
+        detay: (masa ? masa.name + ' - ' : '') + Number(o.rows[0].total || 0).toLocaleString('tr-TR') + ' TL',
+    });
     res.json({ message: 'İptal edildi.' });
 };
 
