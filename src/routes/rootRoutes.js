@@ -25,6 +25,7 @@ async function protectRoot(req, res, next) {
     const r = await query('SELECT id, email, name FROM root_users WHERE id = ? AND is_active = 1', [p.rootId]);
     if (!r.rows.length) return res.status(401).json({ message: 'Yetki geçersiz.' });
     req.root = r.rows[0];
+    req.rootCihazId = p.cihazId || null;   // oturum cihaz jetonuyla acildiysa (APK) hangi cihaz
     next();
 }
 
@@ -32,6 +33,11 @@ router.post('/login', ctrl.login);
 router.post('/totp/kurulum', ctrl.totpKur);   // authenticator ilk kurulum (kisa omurlu jetonla)
 
 router.get('/me', protectRoot, ctrl.me);
+// Yonetim APK'si (parmak izi): cihaz jetonu kaydet / jetonla giris / liste / unut
+router.post('/cihaz/giris', ctrl.cihazGiris);                 // acik uc: jeton + IP sinirlayici
+router.post('/cihaz/kaydet', protectRoot, ctrl.cihazKaydet);
+router.get('/cihaz', protectRoot, ctrl.cihazListe);
+router.post('/cihaz/unut', protectRoot, ctrl.cihazUnut);
 router.get('/tenants', protectRoot, ctrl.listTenants);
 router.post('/tenants', protectRoot, ctrl.createTenant);
 router.patch('/tenants/:id', protectRoot, ctrl.updateTenant);

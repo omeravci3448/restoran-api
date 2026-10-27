@@ -118,6 +118,58 @@ exports.login = async (req, res) => {
     res.json({ token, email: u.email, name: u.name });
 };
 
+// ——— Yonetim APK'si: cihaz jetonu ———
+// Parola + authenticator ile BIR kez girilir; sonra telefon icin uzun omurlu rastgele bir jeton
+// uretilir. Ham jeton yalniz telefonda (Keystore ile sifreli, parmak iziyle acilir) saklanir;
+// sunucuda SHA-256 ozeti durur. Jetonla giris normal 8 saatlik root oturumu verir (cihazId ile).
+const cihazDenemeleri = new Map(); // ip -> { sayi, sifirlanma }
+function cihazKisitliMi(ip) { const k = cihazDenemeleri.get(ip); return !!(k && Date.now() < k.sifirlanma && k.sayi >= 10); }
+function cihazBasarisiz(ip) {
+    const k = cihazDenemeleri.get(ip);
+    if (!k || Date.now() >= k.sifirlanma) cihazDenemeleri.set(ip, { sayi: 1, sifirlanma: Date.now() + 15 * 60 * 1000 });
+    else k.sayi++;
+}
+const ozet = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+
+exports.cihazKaydet = async (req, res) => {
+    const ad = String((req.body || {}).ad || 'Telefon').slice(0, 80);
+    const ham = crypto.randomBytes(48).toString('base64url');
+    const id = uuidv4();
+    await query('INSERT INTO root_cihazlar (id, root_id, ad, token_hash) VALUES (?, ?, ?, ?)', [id, req.root.id, ad, ozet(ham)]);
+    res.status(201).json({ id, ad, cihazJetonu: ham });
+};
+
+exports.cihazGiris = async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || '?';
+    if (cihazKisitliMi(ip)) return res.status(429).json({ message: 'Çok fazla deneme. 15 dakika sonra tekrar deneyin.' });
+    const ham = String((req.body || {}).cihazJetonu || '');
+    if (ham.length < 32) { cihazBasarisiz(ip); return res.status(401).json({ message: 'Cihaz jetonu geçersiz.' }); }
+    const r = await query(
+        `SELECT c.id, c.root_id, u.email, u.name FROM root_cihazlar c JOIN root_users u ON u.id = c.root_id
+          WHERE c.token_hash = ? AND c.revoked_at IS NULL AND u.is_active = 1`, [ozet(ham)]);
+    if (!r.rows.length) { cihazBasarisiz(ip); return res.status(401).json({ message: 'Cihaz jetonu geçersiz ya da iptal edilmiş.' }); }
+    const c = r.rows[0];
+    cihazDenemeleri.delete(ip);
+    await query('UPDATE root_cihazlar SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?', [c.id]);
+    await query('UPDATE root_users SET last_login_at = ? WHERE id = ?', [new Date().toISOString(), c.root_id]);
+    const token = jwt.sign({ rootId: c.root_id, scope: 'root', cihazId: c.id }, JWT_SECRET, { expiresIn: TOKEN_OMRU });
+    res.json({ token, email: c.email, name: c.name, cihazId: c.id });
+};
+
+exports.cihazListe = async (req, res) => {
+    const r = await query('SELECT id, ad, created_at, last_used_at, revoked_at FROM root_cihazlar WHERE root_id = ? ORDER BY created_at DESC', [req.root.id]);
+    res.json(r.rows.map(x => ({ ...x, buCihaz: x.id === req.rootCihazId })));
+};
+
+// Belirli cihazi (body.id) ya da bu oturumun cihazini iptal eder.
+exports.cihazUnut = async (req, res) => {
+    const id = String((req.body || {}).id || req.rootCihazId || '');
+    if (!id) return res.status(400).json({ message: 'Cihaz belirtilmedi.' });
+    const r = await query('UPDATE root_cihazlar SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND root_id = ? AND revoked_at IS NULL', [id, req.root.id]);
+    if (!r.changes) return res.status(404).json({ message: 'Cihaz bulunamadı ya da zaten iptal.' });
+    res.json({ ok: true });
+};
+
 // --- Authenticator kurulumunu tamamla ---
 // Kurulum jetonu + uygulamanin urettigi kod dogrulanirsa TOTP acilir ve
 // gercek oturum jetonu verilir.
@@ -470,7 +522,7 @@ exports.katalogListe = async (_req, res) => {
     const A = require('../services/sistemAyar');
     res.json({
         katalog: await K.tamKatalog(),
-        ayarlar: await A.hepsi(['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama']),
+        ayarlar: await A.hepsi(['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta']),
     });
 };
 
@@ -483,7 +535,7 @@ exports.katalogGuncelle = async (req, res) => {
 
 exports.ayarGuncelle = async (req, res) => {
     const A = require('../services/sistemAyar');
-    const IZINLI = ['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama'];
+    const IZINLI = ['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
     // Beyaz liste: gelen gövdedeki her anahtarı yazmak, bir gün başka bir
     // ayarın (örn. bir bayrak) buradan ezilmesine kapı açardı.
     for (const k of IZINLI) {

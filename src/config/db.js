@@ -162,6 +162,17 @@ const initDb = () => {
         db.run("ALTER TABLE root_users ADD COLUMN totp_secret TEXT", [], () => {});
         db.run("ALTER TABLE root_users ADD COLUMN totp_enabled INTEGER DEFAULT 0", [], () => {});
         db.run("ALTER TABLE root_users ADD COLUMN totp_last_step INTEGER", [], () => {});
+        // Root cihaz jetonlari: yonetim APK'si parmak iziyle oturum acar. Ham jeton yalniz telefonda
+        // (Android Keystore ile sifreli) durur; burada SHA-256 ozeti tutulur. Iptal = revoked_at.
+        db.run(`CREATE TABLE IF NOT EXISTS root_cihazlar (
+            id TEXT PRIMARY KEY,
+            root_id TEXT NOT NULL,
+            ad TEXT,
+            token_hash TEXT UNIQUE NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_used_at TEXT,
+            revoked_at TEXT
+        )`);
 
         // — DEMO TALEPLERI (tanitim sayfasindan gelen deneme istekleri) —
         // Kiraciya bagli DEGIL: henuz musteri olmayan isletmeler dolduruyor.

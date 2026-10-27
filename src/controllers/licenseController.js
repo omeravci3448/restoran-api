@@ -249,6 +249,10 @@ exports.purchase = async (req, res) => {
             String(customerNote || '').slice(0, 300)]);
 
     const A = require('../services/sistemAyar');
+    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni ödeme bildirimi: ' + i.ad, [
+        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['E-posta', i.eposta], ['Telefon', i.tel],
+        ['Paket', tier], ['Modüller', modulAdlari.join(', ')], ['Tutar', Number(toplam).toLocaleString('tr-TR') + ' TL (yıllık)'],
+    ])).catch(() => {});
     res.status(201).json({
         id, tier, modules: modulAdlari, total: toplam, status: 'PENDING_PAYMENT',
         iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
@@ -264,6 +268,11 @@ exports.markPaid = async (req, res) => {
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
     await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = CURRENT_TIMESTAMP WHERE id = ?',
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
+    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Müşteri "ödemeyi yaptım" dedi: ' + i.ad, [
+        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Paket', r.rows[0].tier],
+        ['Tutar', Number(r.rows[0].tutar).toLocaleString('tr-TR') + ' TL'], ['Referans', String(req.body?.paymentRef || '-')],
+        ['Yapılacak', 'Hesabı kontrol edip root panelinden onayla; lisans otomatik uzar.'],
+    ])).catch(() => {});
     res.json({ ok: true, status: 'PAID_DECLARED',
         message: 'Bildiriminiz alındı. Onaylandığında lisansınız uzayacak.' });
 };
@@ -278,6 +287,27 @@ function kaydiHazirla(x) {
         : (x.odeme_bildirildi_at ? 'PAID_DECLARED' : 'PENDING_PAYMENT');
     return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null };
 }
+// Yeni odeme bildirimi / "odemeyi yaptim" geldiginde Patron'a e-posta (root ayari bildirim_eposta,
+// yoksa ROOT_EMAIL). Best-effort: posta gitmese de musteri akisi bozulmaz; root panelinde zaten gorunur.
+async function rootaBildir(konu, satirlar) {
+    try {
+        const A = require('../services/sistemAyar');
+        const alici = (await A.oku('bildirim_eposta', '')) || process.env.ROOT_EMAIL || '';
+        if (!alici) return;
+        const { sendMail } = require('../services/emailService');
+        const panel = (process.env.POS_PANEL_URL || 'https://restoran.mdayazilim.com').replace(/\/+$/, '');
+        const html = '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:520px;padding:16px;border:1px solid #e5e7eb;border-radius:12px">'
+            + '<h2 style="color:#E2622A;margin:0 0 10px">' + konu + '</h2>'
+            + satirlar.map(([k, v]) => '<div style="margin:2px 0"><b>' + k + ':</b> ' + String(v == null ? '' : v) + '</div>').join('')
+            + '<p style="margin-top:14px"><a href="' + panel + '/1453" style="background:#E2622A;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none">Root paneli &gt; Ödeme Bildirimleri</a></p></div>';
+        sendMail({ to: alici, subject: '[MDA POS] ' + konu, html }).catch(() => {});
+    } catch (_) { /* bildirim yan is */ }
+}
+async function isletmeAdi(tenantId) {
+    const t = (await query('SELECT business_name, business_code, owner_email, phone FROM tenants WHERE id = ?', [tenantId])).rows[0] || {};
+    return { ad: t.business_name || tenantId, kod: t.business_code || '-', eposta: t.owner_email || '-', tel: t.phone || '-' };
+}
+
 // Bekleyen bildirimi musteri iptal eder: secimi/tutari degistirmek icin tek yol (ayni anda tek bekleyen kurali).
 // Onaylanmis/reddedilmis kayit iptal edilemez. Kayit silinmez, root panelinde 'iptal' olarak gorunur.
 exports.cancelPurchase = async (req, res) => {
