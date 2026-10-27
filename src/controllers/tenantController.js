@@ -1,8 +1,11 @@
+const fs = require('fs');
+const path = require('path');
 const { query } = require('../config/db');
+const { saveDataUrl, UPLOADS_DIR } = require('../services/imageService');
 
 exports.getProfile = async (req, res) => {
     const r = await query(
-        `SELECT id, slug, business_code, business_name, owner_email, phone, address,
+        `SELECT id, slug, business_code, business_name, owner_email, phone, address, logo_url,
                 billing_name, billing_address, billing_tax_id, billing_tax_office,
                 referral_code, referred_by, discount_rate,
                 currency, tax_rate,
@@ -40,8 +43,33 @@ exports.requestClosure = async (req, res) => {
     res.json({ ok: true, message: 'Hesap kapatma talebiniz alındı ve erişim durduruldu.' });
 };
 
+// Logo: Ayarlar > Logo'dan data URL gelir, urun gorselleri gibi diske yazilir (base64 DB'de degil).
+// logoUrl alani hic gelmezse dokunulmaz, '' gelirse kaldirilir. Eski dosya best-effort silinir.
+async function logoHazirla(tenantId, logoUrl) {
+    if (logoUrl === undefined) return { degis: 0, yol: null };
+    if (!logoUrl) return { degis: 1, yol: null };
+    if (typeof logoUrl !== 'string' || !/^data:image\/(png|jpe?g|webp);base64,/i.test(logoUrl)) {
+        const e = new Error('Logo PNG, JPG veya WebP dosyası olmalı.'); e.status = 400; throw e;
+    }
+    return { degis: 1, yol: await saveDataUrl(tenantId, logoUrl) };
+}
+function eskiLogoyuSil(tenantId, eski, yeni) {
+    const onek = `/uploads/${tenantId}/`;
+    if (!eski || eski === yeni || !eski.startsWith(onek)) return;
+    const dosya = path.join(UPLOADS_DIR, tenantId, path.basename(eski));
+    fs.promises.unlink(dosya).catch(() => {});
+}
+
 exports.updateProfile = async (req, res) => {
-    const f = req.body;
+    const f = req.body || {};
+    let logo;
+    try { logo = await logoHazirla(req.user.tenantId, f.logoUrl); }
+    catch (e) { return res.status(e.status || 500).json({ message: e.message || 'Logo kaydedilemedi.' }); }
+    let eskiLogo = null;
+    if (logo.degis) {
+        const e = await query('SELECT logo_url FROM tenants WHERE id = ?', [req.user.tenantId]);
+        eskiLogo = e.rows[0] ? e.rows[0].logo_url : null;
+    }
     await query(
         `UPDATE tenants
             SET business_name = COALESCE(?, business_name),
@@ -55,7 +83,8 @@ exports.updateProfile = async (req, res) => {
                 tax_rate = COALESCE(?, tax_rate),
                 show_cost_analytics = COALESCE(?, show_cost_analytics),
                 stock_module_on = COALESCE(?, stock_module_on),
-                stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale)
+                stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale),
+                logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END
           WHERE id = ?`,
         [f.businessName, f.phone, f.address,
             f.billingName, f.billingAddress, f.billingTaxId, f.billingTaxOffice,
@@ -63,7 +92,9 @@ exports.updateProfile = async (req, res) => {
             f.showCostAnalytics == null ? null : (f.showCostAnalytics ? 1 : 0),
             f.stockModuleOn == null ? null : (f.stockModuleOn ? 1 : 0),
             f.stockOutBlocksSale == null ? null : (f.stockOutBlocksSale ? 1 : 0),
+            logo.degis, logo.yol,
             req.user.tenantId]
     );
-    res.json({ message: 'Güncellendi.' });
+    if (logo.degis) eskiLogoyuSil(req.user.tenantId, eskiLogo, logo.yol);
+    res.json({ message: 'Güncellendi.', logoUrl: logo.degis ? logo.yol : undefined });
 };

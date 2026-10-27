@@ -5,7 +5,7 @@ const bus = require('../services/eventBus');
 // QR'dan gelen müşteri için bu masanın bağlamını döndür
 async function loadTableContext(tenantSlug, qrToken) {
     const r = await query(
-        `SELECT te.id AS tenant_id, te.business_name, te.slug, te.license_modules,
+        `SELECT te.id AS tenant_id, te.business_name, te.slug, te.license_modules, te.logo_url,
                 tb.id AS table_id, tb.code AS table_code, tb.name AS table_name, tb.section
            FROM tenants te JOIN tables tb ON tb.tenant_id = te.id
           WHERE te.slug = ? AND tb.qr_token = ? AND te.is_active = 1 AND tb.is_active = 1`,
@@ -39,7 +39,7 @@ exports.menu = async (req, res) => {
           ORDER BY sort_order, name`,
         [ctx.tenant_id]);
     res.json({
-        business: { name: ctx.business_name, slug: ctx.slug },
+        business: { name: ctx.business_name, slug: ctx.slug, logo_url: ctx.logo_url || null },
         table: { code: ctx.table_code, name: ctx.table_name, section: ctx.section },
         categories: cats.rows,
         products: prods.rows

@@ -37,6 +37,9 @@ async function temizle(query) {
     for (const r of t.rows) {
         await query('DELETE FROM users WHERE tenant_id = ?', [r.id]);
         await query('DELETE FROM aktivasyon_jetonlari WHERE tenant_id = ?', [r.id]);
+        // Provizyon sonrasi otomatik SofraMix baglantisi kanal/kimlik satiri birakir; FK icin once onlar silinir.
+        for (const tb of ['marketplace_credentials', 'marketplace_store_links', 'marketplace_channels', 'license_cache', 'islem_gunlugu', 'deneme_giris_jetonlari', 'deneme_kayitlari'])
+            await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
     await query("DELETE FROM pos_provizyon WHERE odeme_id LIKE 'UC-%'");
