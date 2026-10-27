@@ -93,6 +93,7 @@ app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
 app.use('/api/marketplace', require('./src/routes/marketplaceRoutes'));
 app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
+app.use('/api/mutfak', require('./src/routes/mutfakRoutes'));   // mutfak ekrani (KDS)
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
 app.use('/api/aktivasyon', require('./src/routes/aktivasyonRoutes')); // ilk sifre belirleme (jeton = kimlik)

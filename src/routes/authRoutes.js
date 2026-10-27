@@ -14,6 +14,7 @@ router.post('/sifre-degistir', protect, ctrl.sifreDegistir);
 router.post('/sifre-baglantisi', protect, ctrl.sifreBaglantisi);
 router.get('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.listStaff);
 router.post('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.createStaff);
+router.patch('/staff/:id', protect, requireRole('OWNER', 'MANAGER'), ctrl.updateStaff);
 
 // Yönetici şifresi (manager PIN) — rapor/ayar/lisans kilidi.
 // Sadece OWNER/MANAGER belirleyip doğrulayabilir → kasiyer ilk PIN'i kurup

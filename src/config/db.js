@@ -399,6 +399,13 @@ const initDb = () => {
         db.run("CREATE INDEX IF NOT EXISTS idx_qr_bekleyen ON qr_bekleyen_siparisler(tenant_id, durum, created_at)", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN qr_onay_gerekli INTEGER DEFAULT 0", [], () => {}); // QR siparisi kasa onayi bekler mi
         db.run("ALTER TABLE order_items ADD COLUMN added_by TEXT", [], () => {});               // kalemi ekleyen personel (gunluk)
+        // Mutfak ekrani (KDS): kategori istasyonu, kalem zamanlari, isletme anahtari
+        db.run("ALTER TABLE categories ADD COLUMN istasyon TEXT DEFAULT 'MUTFAK'", [], () => {});  // MUTFAK | BAR | YOK (ekrana dusmez)
+        db.run("ALTER TABLE tenants ADD COLUMN mutfak_ekrani INTEGER DEFAULT 0", [], () => {});     // mutfak ekrani kullaniliyor mu
+        db.run("ALTER TABLE order_items ADD COLUMN prep_started_at TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN ready_at TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN served_at TEXT", [], () => {});
+        db.run("CREATE INDEX IF NOT EXISTS idx_order_items_order_status ON order_items(order_id, status)", [], () => {});
         db.run("ALTER TABLE orders ADD COLUMN cancelled_by TEXT", [], () => {});
 
         // — TABLES (masalar) —

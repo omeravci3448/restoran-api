@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const ISTASYONLAR = ['MUTFAK', 'BAR', 'YOK']; // mutfak ekrani istasyonu (YOK = ekrana dusmez)
 
 exports.list = async (req, res) => {
     const r = await query(
@@ -9,23 +10,26 @@ exports.list = async (req, res) => {
 };
 
 exports.create = async (req, res) => {
-    const { name, sortOrder } = req.body;
+    const { name, sortOrder, istasyon } = req.body;
     if (!name) return res.status(400).json({ message: 'Ad zorunlu.' });
+    if (istasyon != null && !ISTASYONLAR.includes(istasyon)) return res.status(400).json({ message: 'İstasyon MUTFAK, BAR ya da YOK olmalı.' });
     const id = uuidv4();
-    await query('INSERT INTO categories (id, tenant_id, name, sort_order) VALUES (?, ?, ?, ?)',
-        [id, req.user.tenantId, name, sortOrder || 0]);
+    await query('INSERT INTO categories (id, tenant_id, name, sort_order, istasyon) VALUES (?, ?, ?, ?, ?)',
+        [id, req.user.tenantId, name, sortOrder || 0, istasyon || 'MUTFAK']);
     res.status(201).json({ id, name });
 };
 
 exports.update = async (req, res) => {
-    const { name, sortOrder, isActive } = req.body;
+    const { name, sortOrder, isActive, istasyon } = req.body;
+    if (istasyon != null && !ISTASYONLAR.includes(istasyon)) return res.status(400).json({ message: 'İstasyon MUTFAK, BAR ya da YOK olmalı.' });
     await query(
         `UPDATE categories SET
             name = COALESCE(?, name),
             sort_order = COALESCE(?, sort_order),
-            is_active = COALESCE(?, is_active)
+            is_active = COALESCE(?, is_active),
+            istasyon = COALESCE(?, istasyon)
          WHERE id = ? AND tenant_id = ?`,
-        [name, sortOrder, isActive, req.params.id, req.user.tenantId]);
+        [name, sortOrder, isActive, istasyon, req.params.id, req.user.tenantId]);
     res.json({ message: 'Güncellendi.' });
 };
 

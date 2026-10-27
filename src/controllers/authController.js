@@ -297,7 +297,7 @@ exports.me = async (req, res) => {
     // Giris bilgileri karti icin: isyeri kodu, kaynak (SofraMix mi) ve sifrenin
     // kullanici tarafindan belirlenip belirlenmedigi.
     const ek = (await query(
-        `SELECT t.business_code, t.parent_org, u.password_set_at
+        `SELECT t.business_code, t.parent_org, t.mutfak_ekrani, u.password_set_at
            FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = ?`, [req.user.id])).rows[0] || {};
     res.json({
         id: req.user.id,
@@ -309,6 +309,7 @@ exports.me = async (req, res) => {
         businessCode: ek.business_code || null,
         parentOrg: ek.parent_org || null,
         passwordSet: !!ek.password_set_at,
+        mutfakEkrani: !!ek.mutfak_ekrani,   // kenar cubugunda "Mutfak Ekrani" baglantisi
         licenseTier: req.user.licenseTier,
         modules: req.user.modules,
         // Lisans durumu - arayuz serit gostersin diye (bkz services/lisansDurumu.js)
@@ -379,8 +380,9 @@ exports.sifreBaglantisi = async (req, res) => {
 exports.createStaff = async (req, res) => {
     const { email, password, name, role } = req.body;
     if (!email || !password) return res.status(400).json({ message: 'E-posta ve şifre gerekli.' });
-    const allowedRoles = ['CASHIER', 'WAITER', 'MANAGER'];
+    const allowedRoles = ['CASHIER', 'WAITER', 'KITCHEN', 'MANAGER'];
     const finalRole = allowedRoles.includes(role) ? role : 'CASHIER';
+    if (finalRole === 'MANAGER' && req.user.role !== 'OWNER') return res.status(403).json({ message: 'Müdür hesabını yalnız işletme sahibi açabilir.' });
     const id = uuidv4();
     const hash = await bcrypt.hash(password, 10);
     try {
@@ -401,6 +403,30 @@ exports.listStaff = async (req, res) => {
         [req.user.tenantId]
     );
     res.json(r.rows);
+};
+
+// Personel duzenleme (Ayarlar > Personel): aktif/pasif, rol, ad, sifre sifirlama.
+// Kendini pasife alamazsin; sahibe yalniz sahip dokunur; mudur yalniz kasiyer/garson/mutfak yonetir.
+const PERSONEL_ROLLER = ['CASHIER', 'WAITER', 'KITCHEN', 'MANAGER'];
+exports.updateStaff = async (req, res) => {
+    const { isActive, role, name, password } = req.body || {};
+    const u = (await query('SELECT id, role FROM users WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId])).rows[0];
+    if (!u) return res.status(404).json({ message: 'Personel yok.' });
+    if (u.id === req.user.id && isActive === false) return res.status(400).json({ message: 'Kendi hesabınızı pasife alamazsınız.' });
+    if (u.role === 'OWNER' && req.user.role !== 'OWNER') return res.status(403).json({ message: 'İşletme sahibini yalnız sahip düzenleyebilir.' });
+    if (req.user.role === 'MANAGER' && u.id !== req.user.id && (u.role === 'MANAGER' || role === 'MANAGER')) {
+        return res.status(403).json({ message: 'Müdür hesaplarını yalnız işletme sahibi düzenleyebilir.' });
+    }
+    if (role != null && (!PERSONEL_ROLLER.includes(role) || u.role === 'OWNER')) return res.status(400).json({ message: 'Geçersiz rol.' });
+    if (password != null && String(password).length < 6) return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
+    const hash = password != null ? await bcrypt.hash(String(password), 10) : null;
+    await query(
+        `UPDATE users SET is_active = COALESCE(?, is_active), role = COALESCE(?, role), name = COALESCE(?, name),
+                          password_hash = COALESCE(?, password_hash),
+                          password_set_at = CASE WHEN ? IS NULL THEN password_set_at ELSE ? END
+          WHERE id = ?`,
+        [isActive == null ? null : (isActive ? 1 : 0), role || null, name || null, hash, hash, new Date().toISOString(), u.id]);
+    res.json({ message: 'Güncellendi.' });
 };
 
 // ——— YÖNETİCİ ŞİFRESİ (manager PIN) ———
