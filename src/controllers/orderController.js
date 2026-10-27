@@ -1,5 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../config/db');
+const gunluk = require('../services/islemGunlugu');
+const { hesabaYazIc } = require('../services/qrSiparis');
 
 // Sipariş toplamlarını yeniden hesaplayıp orders satırını günceller
 async function recomputeTotals(orderId) {
@@ -117,9 +119,9 @@ exports.addItem = async (req, res) => {
     const itemId = uuidv4();
 
     await query(
-        `INSERT INTO order_items (id, order_id, product_id, product_name, qty, unit, unit_price, total, note, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [itemId, req.params.id, prod.id, prod.name, qty, prod.stock_unit || null, unit, total, note || null, req.body.source || 'STAFF']);
+        `INSERT INTO order_items (id, order_id, product_id, product_name, qty, unit, unit_price, total, note, source, added_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [itemId, req.params.id, prod.id, prod.name, qty, prod.stock_unit || null, unit, total, note || null, req.body.source || 'STAFF', req.user.id]);
 
     await recomputeTotals(req.params.id);
     if (req.user.role === 'WAITER') {
@@ -129,32 +131,67 @@ exports.addItem = async (req, res) => {
     res.status(201).json({ id: itemId, productId, qty, unit, total });
 };
 
-exports.removeItem = async (req, res) => {
-    const r = await query(
-        `DELETE FROM order_items
-          WHERE id = ? AND order_id IN (SELECT id FROM orders WHERE id = ? AND tenant_id = ?)`,
+// Kalem silme / azaltma izni. Herkes icin: hesap acik olmali. Garson icin ek kural: odeme alinmamis
+// hesapta, son GARSON_DUZELTME_DK dakikada eklenen kalem ("musteri yanlis verdi, hemen fark etti").
+// Daha eskisini kasa duzeltir. Her silme/azaltma islem gunlugune yazilir (kim, masa, urun, tutar).
+const GARSON_DUZELTME_DK = 15;
+const TL = (n) => Number(n || 0).toLocaleString('tr-TR') + ' TL';
+async function kalemDuzeltmeKontrol(req, cur) {
+    const o = (await query(
+        `SELECT o.status, t.name AS table_name, t.code AS table_code
+           FROM orders o LEFT JOIN tables t ON t.id = o.table_id
+          WHERE o.id = ? AND o.tenant_id = ?`, [cur.order_id, req.user.tenantId])).rows[0];
+    if (!o) return { kod: 404, hata: 'Sipariş yok.' };
+    if (o.status !== 'OPEN') return { kod: 409, hata: 'Hesap kapalı, değişiklik yapılamaz.' };
+    if (req.user.role === 'WAITER') {
+        const p = await query('SELECT COUNT(*) AS c FROM payments WHERE order_id = ?', [cur.order_id]);
+        if (Number(p.rows[0].c) > 0) return { kod: 409, hata: 'Bu hesapta ödeme alınmış; düzeltme için kasaya söyleyin.' };
+        const yasDk = (Date.now() - Date.parse(String(cur.created_at).replace(' ', 'T') + 'Z')) / 60000;
+        if (!(yasDk <= GARSON_DUZELTME_DK)) return { kod: 409, hata: `${GARSON_DUZELTME_DK} dakikadan eski kalemi yalnız kasa düzeltebilir.` };
+    }
+    return { masa: o.table_name || o.table_code || '-' };
+}
+async function kalemiBul(req) {
+    const it = await query(
+        `SELECT oi.* FROM order_items oi JOIN orders o ON o.id = oi.order_id
+          WHERE oi.id = ? AND oi.order_id = ? AND o.tenant_id = ?`,
         [req.params.itemId, req.params.id, req.user.tenantId]);
-    if (!r.changes) return res.status(404).json({ message: 'Kalem yok.' });
+    return it.rows[0] || null;
+}
+
+exports.removeItem = async (req, res) => {
+    const cur = await kalemiBul(req);
+    if (!cur) return res.status(404).json({ message: 'Kalem yok.' });
+    const izin = await kalemDuzeltmeKontrol(req, cur);
+    if (izin.hata) return res.status(izin.kod).json({ message: izin.hata });
+    await query('DELETE FROM order_items WHERE id = ?', [cur.id]);
     await recomputeTotals(req.params.id);
+    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_sil', hedefTur: 'order_item', hedefId: cur.id,
+        detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} (${TL(cur.total)}) · ${req.user.role}` });
     res.json({ message: 'Silindi.' });
 };
-
 exports.updateItem = async (req, res) => {
     const { qty, note, status } = req.body;
-    const it = await query(
-        `SELECT oi.* FROM order_items oi
-          JOIN orders o ON o.id = oi.order_id
-          WHERE oi.id = ? AND o.tenant_id = ?`,
-        [req.params.itemId, req.user.tenantId]);
-    if (!it.rows.length) return res.status(404).json({ message: 'Kalem yok.' });
-    const cur = it.rows[0];
+    const cur = await kalemiBul(req);
+    if (!cur) return res.status(404).json({ message: 'Kalem yok.' });
     const newQty = qty != null ? Number(qty) : Number(cur.qty);
+    if (!(newQty > 0)) return res.status(400).json({ message: 'Adet 1 veya daha fazla olmalı; kaldırmak için silin.' });
+    const azaliyor = newQty < Number(cur.qty);
+    let izin = null;
+    if (azaliyor) {
+        izin = await kalemDuzeltmeKontrol(req, cur);
+        if (izin.hata) return res.status(izin.kod).json({ message: izin.hata });
+    }
     const newTotal = newQty * Number(cur.unit_price);
     await query(
         `UPDATE order_items SET qty = ?, total = ?, note = COALESCE(?, note), status = COALESCE(?, status)
          WHERE id = ?`,
-        [newQty, newTotal, note, status, req.params.itemId]);
+        [newQty, newTotal, note, status, cur.id]);
     await recomputeTotals(req.params.id);
+    if (azaliyor) {
+        gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_azalt', hedefTur: 'order_item', hedefId: cur.id,
+            detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} → ×${newQty} · ${req.user.role}` });
+    }
     res.json({ message: 'Güncellendi.' });
 };
 
@@ -247,4 +284,65 @@ exports.ackPendingQr = async (req, res) => {
             AND order_id IN (SELECT id FROM orders WHERE tenant_id = ?)`,
         [orderId, req.user.tenantId]);
     res.json({ ok: true, updated: r.changes || 0 });
+};
+
+// ——— Kasa onayi bekleyen QR siparisleri ———
+// Ayarlar > "QR siparisleri kasa onaylamadan hesaba girmesin" acikken public placeOrder buraya yazar.
+const QR_BEKLEME_SAAT = 4; // bu kadar beklemis siparis olmus bitmistir; listeden duser (SURESI_DOLDU)
+async function masaAdi(tableId) {
+    if (!tableId) return '-';
+    const r = await query('SELECT name, code FROM tables WHERE id = ?', [tableId]);
+    return r.rows[0] ? (r.rows[0].name || r.rows[0].code || '-') : '-';
+}
+exports.qrBekleyenler = async (req, res) => {
+    await query(`UPDATE qr_bekleyen_siparisler SET durum = 'SURESI_DOLDU', karar_at = CURRENT_TIMESTAMP
+                  WHERE tenant_id = ? AND durum = 'BEKLIYOR' AND created_at < datetime('now', ?)`,
+        [req.user.tenantId, `-${QR_BEKLEME_SAAT} hours`]);
+    const r = await query(
+        `SELECT b.id, b.table_id, b.kalemler_json, b.not_metni, b.toplam, b.created_at,
+                t.name AS table_name, t.code AS table_code, t.section
+           FROM qr_bekleyen_siparisler b LEFT JOIN tables t ON t.id = b.table_id
+          WHERE b.tenant_id = ? AND b.durum = 'BEKLIYOR'
+          ORDER BY b.created_at`, [req.user.tenantId]);
+    res.json(r.rows.map(b => {
+        let items = []; try { items = JSON.parse(b.kalemler_json); } catch (_) {}
+        const { kalemler_json, ...rest } = b;
+        return { ...rest, items };
+    }));
+};
+exports.qrOnayla = async (req, res) => {
+    let sonuc;
+    try {
+        sonuc = await tx(async () => {
+            // Durum degisimi atomik: iki kasa ayni anda onaylarsa ikincisi 409 alir, kalemler iki kez yazilmaz.
+            const u = await query("UPDATE qr_bekleyen_siparisler SET durum = 'ONAYLANDI', karar_veren = ?, karar_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ? AND durum = 'BEKLIYOR'",
+                [req.user.id, req.params.id, req.user.tenantId]);
+            if (!u.changes) {
+                const var_mi = await query('SELECT durum FROM qr_bekleyen_siparisler WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
+                const e = new Error(var_mi.rows.length ? 'Bu sipariş zaten sonuçlanmış.' : 'Bekleyen sipariş yok.');
+                e.status = var_mi.rows.length ? 409 : 404; throw e;
+            }
+            const b = (await query('SELECT * FROM qr_bekleyen_siparisler WHERE id = ?', [req.params.id])).rows[0];
+            let items = []; try { items = JSON.parse(b.kalemler_json); } catch (_) {}
+            const r = await hesabaYazIc({ tenantId: req.user.tenantId, tableId: b.table_id, items, note: b.not_metni, status: 'SEEN', addedBy: req.user.id });
+            await query('UPDATE qr_bekleyen_siparisler SET order_id = ? WHERE id = ?', [r.orderId, b.id]);
+            return { ...r, tableId: b.table_id };
+        });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
+    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_onay', hedefTur: 'qr_siparis', hedefId: req.params.id,
+        detay: `${await masaAdi(sonuc.tableId)} · ${sonuc.added} kalem · ${TL(sonuc.subAdded)}` + (sonuc.atlanan.length ? ` · hesaba yazılamadı: ${sonuc.atlanan.join(', ')}` : '') });
+    res.json({ orderId: sonuc.orderId, addedItems: sonuc.added, addedSubtotal: sonuc.subAdded, orderTotal: sonuc.total, atlanan: sonuc.atlanan });
+};
+exports.qrReddet = async (req, res) => {
+    const b = (await query('SELECT table_id, toplam, kalemler_json FROM qr_bekleyen_siparisler WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId])).rows[0];
+    const u = await query("UPDATE qr_bekleyen_siparisler SET durum = 'REDDEDILDI', karar_veren = ?, karar_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ? AND durum = 'BEKLIYOR'",
+        [req.user.id, req.params.id, req.user.tenantId]);
+    if (!u.changes) return res.status(b ? 409 : 404).json({ message: b ? 'Bu sipariş zaten sonuçlanmış.' : 'Bekleyen sipariş yok.' });
+    let adet = 0; try { adet = JSON.parse(b.kalemler_json).length; } catch (_) {}
+    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_red', hedefTur: 'qr_siparis', hedefId: req.params.id,
+        detay: `${await masaAdi(b.table_id)} · ${adet} kalem · ${TL(b.toplam)}` });
+    res.json({ ok: true });
 };

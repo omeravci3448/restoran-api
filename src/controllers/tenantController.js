@@ -9,7 +9,7 @@ exports.getProfile = async (req, res) => {
                 billing_name, billing_address, billing_tax_id, billing_tax_office,
                 referral_code, referred_by, discount_rate,
                 currency, tax_rate,
-                license_tier, license_modules, license_end_date, show_cost_analytics,
+                license_tier, license_modules, license_end_date, show_cost_analytics, qr_onay_gerekli,
                 is_active, created_at
            FROM tenants WHERE id = ?`,
         [req.user.tenantId]
@@ -84,6 +84,7 @@ exports.updateProfile = async (req, res) => {
                 show_cost_analytics = COALESCE(?, show_cost_analytics),
                 stock_module_on = COALESCE(?, stock_module_on),
                 stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale),
+                qr_onay_gerekli = COALESCE(?, qr_onay_gerekli),
                 logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END
           WHERE id = ?`,
         [f.businessName, f.phone, f.address,
@@ -92,6 +93,7 @@ exports.updateProfile = async (req, res) => {
             f.showCostAnalytics == null ? null : (f.showCostAnalytics ? 1 : 0),
             f.stockModuleOn == null ? null : (f.stockModuleOn ? 1 : 0),
             f.stockOutBlocksSale == null ? null : (f.stockOutBlocksSale ? 1 : 0),
+            f.qrOnayGerekli == null ? null : (f.qrOnayGerekli ? 1 : 0),
             logo.degis, logo.yol,
             req.user.tenantId]
     );

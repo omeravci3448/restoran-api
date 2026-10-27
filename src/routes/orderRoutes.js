@@ -7,6 +7,10 @@ router.get('/', ctrl.list);
 router.get('/pending-qr', ctrl.pendingQr);           // kasada "yeni QR siparişleri" alanı
 router.post('/pending-qr/ack', ctrl.ackPendingQr);   // "gördüm" → alandan düş
 router.post('/', ctrl.open);
+// Kasa onayi bekleyen QR siparisleri (ayar acikken). /:id'den ONCE tanimli olmali.
+router.get('/qr-bekleyen', ctrl.qrBekleyenler);
+router.post('/qr-bekleyen/:id/onayla', ctrl.qrOnayla);
+router.post('/qr-bekleyen/:id/reddet', ctrl.qrReddet);
 router.get('/:id', ctrl.get);
 router.post('/:id/items', ctrl.addItem);
 router.put('/:id/items/:itemId', ctrl.updateItem);

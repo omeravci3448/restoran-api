@@ -379,6 +379,26 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )`);
         db.run("CREATE INDEX IF NOT EXISTS idx_islem_gunlugu_tenant ON islem_gunlugu(tenant_id, created_at)", [], () => {});
+
+        // Kasa onayi bekleyen QR siparisleri (Ayarlar > "QR siparisleri kasa onaylamadan hesaba girmesin").
+        // Onaylanana kadar order_items'a YAZILMAZ; hesap, rapor ve stok etkilenmez. Onayda normal akis calisir.
+        // durum: BEKLIYOR | ONAYLANDI | REDDEDILDI | SURESI_DOLDU
+        db.run(`CREATE TABLE IF NOT EXISTS qr_bekleyen_siparisler (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            table_id TEXT,
+            kalemler_json TEXT NOT NULL,
+            not_metni TEXT,
+            toplam REAL DEFAULT 0,
+            durum TEXT DEFAULT 'BEKLIYOR',
+            karar_veren TEXT,
+            karar_at TEXT,
+            order_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_qr_bekleyen ON qr_bekleyen_siparisler(tenant_id, durum, created_at)", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN qr_onay_gerekli INTEGER DEFAULT 0", [], () => {}); // QR siparisi kasa onayi bekler mi
+        db.run("ALTER TABLE order_items ADD COLUMN added_by TEXT", [], () => {});               // kalemi ekleyen personel (gunluk)
         db.run("ALTER TABLE orders ADD COLUMN cancelled_by TEXT", [], () => {});
 
         // — TABLES (masalar) —
