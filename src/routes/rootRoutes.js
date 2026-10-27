@@ -38,6 +38,8 @@ router.post('/cihaz/giris', ctrl.cihazGiris);                 // acik uc: jeton 
 router.post('/cihaz/kaydet', protectRoot, ctrl.cihazKaydet);
 router.get('/cihaz', protectRoot, ctrl.cihazListe);
 router.post('/cihaz/unut', protectRoot, ctrl.cihazUnut);
+router.post('/cihaz/bildirim-durumu', ctrl.cihazBildirimDurumu);          // acik uc: dar yetkili bildirim jetonu (telefon arka plani)
+router.post('/cihaz/bildirim-jetonu', protectRoot, ctrl.cihazBildirimJetonu);
 router.get('/tenants', protectRoot, ctrl.listTenants);
 router.post('/tenants', protectRoot, ctrl.createTenant);
 router.patch('/tenants/:id', protectRoot, ctrl.updateTenant);

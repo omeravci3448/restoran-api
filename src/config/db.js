@@ -173,6 +173,8 @@ const initDb = () => {
             last_used_at TEXT,
             revoked_at TEXT
         )`);
+        // Telefon bildirim jetonu ozeti: arka plan isi parmak izi gerektirmeden yalniz "bekleyen odeme var mi" sorar
+        db.run("ALTER TABLE root_cihazlar ADD COLUMN bildirim_hash TEXT", [], () => {});
 
         // — DEMO TALEPLERI (tanitim sayfasindan gelen deneme istekleri) —
         // Kiraciya bagli DEGIL: henuz musteri olmayan isletmeler dolduruyor.

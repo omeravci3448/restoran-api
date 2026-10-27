@@ -20,6 +20,8 @@ async function temizle() {
     const r = await query('SELECT id FROM root_users WHERE email = ?', [EPOSTA]);
     for (const u of r.rows) await query('DELETE FROM root_cihazlar WHERE root_id = ?', [u.id]).catch(() => {});
     await query('DELETE FROM root_users WHERE email = ?', [EPOSTA]);
+    await query("DELETE FROM lisans_odemeleri WHERE tenant_id IN (SELECT id FROM tenants WHERE slug = 'rootcihaz-bildirim-test')").catch(() => {});
+    await query("DELETE FROM tenants WHERE slug = 'rootcihaz-bildirim-test'").catch(() => {});
     await uyu(300);
 }
 
@@ -43,6 +45,8 @@ async function temizle() {
     ok('oturumsuz kayit 401', (await iste('/api/root/cihaz/kaydet', { ad: 'X' })).kod === 401);
     const k = await iste('/api/root/cihaz/kaydet', { ad: 'Samsung Test' }, oturum);
     ok('kayit 201 + uzun rastgele jeton', k.kod === 201 && typeof k.veri.cihazJetonu === 'string' && k.veri.cihazJetonu.length >= 60 && !!k.veri.id, k.veri);
+    ok('kayit ayrica dar yetkili bildirim jetonu verir (cihaz jetonundan farkli)',
+        typeof k.veri.bildirimJetonu === 'string' && k.veri.bildirimJetonu.length >= 40 && k.veri.bildirimJetonu !== k.veri.cihazJetonu, k.veri);
     const jeton = k.veri.cihazJetonu;
 
     console.log('\n=== 2) Cihaz jetonuyla giris (parola/kod yok) ===');
@@ -68,6 +72,52 @@ async function temizle() {
     ok('listede revoked_at dolu', !!l3.veri[0].revoked_at);
     ok('mevcut cihaz oturumu (jwt) hala 8 saat gecerli - panel acar', (await fetch(TABAN + '/api/root/tenants', { headers: { Authorization: 'Bearer ' + g.veri.token } })).status === 200);
 
+    console.log('\n=== 4b) Telefon bildirimi: bildirim jetonu + bekleyen odeme durumu ===');
+    const k3 = await iste('/api/root/cihaz/kaydet', { ad: 'Bildirim Telefonu' }, oturum);
+    const bj = k3.veri.bildirimJetonu;
+    ok('bildirim jetonu panel uclarini ACMAZ (cihaz girisi 401)', (await iste('/api/root/cihaz/giris', { cihazJetonu: bj })).kod === 401);
+    let d = await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj });
+    ok('durum 200: bekleyen sayi + son (null ya da nesne)', d.kod === 200 && typeof d.veri.bekleyen === 'number' && (d.veri.son === null || typeof d.veri.son === 'object'), d.veri);
+    const oncekiBekleyen = d.veri.bekleyen;
+    ok('iptal edilen cihazin bildirim jetonu yok (eski cihaz): yanlis jeton 401', (await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: 'z'.repeat(50) })).kod === 401);
+    ok('kisa jeton 401', (await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: 'kisa' })).kod === 401);
+    // Bekleyen bir odeme bildirimi olusturulur (dogrudan tabloya: amac bildirim ucunun okudugu ozet)
+    {
+        const { query } = require('./src/config/db');
+        await query("INSERT INTO tenants (id, slug, business_name) VALUES ('rootcihaz-bildirim-tenant', 'rootcihaz-bildirim-test', 'Bildirim Test Lokantasi')");
+        await query("INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, created_at) VALUES ('rootcihaz-bildirim-odeme', 'rootcihaz-bildirim-tenant', 'TIER_PRO', '[]', 16000, 'beklemede', datetime('now', '+1 minute'))");
+    }
+    d = await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj });
+    ok('yeni bekleyen: sayi +1, son = bizim isletme, 16000, bildirildi=false, zaman dolu',
+        d.kod === 200 && d.veri.bekleyen === oncekiBekleyen + 1 && d.veri.son && d.veri.son.isletme === 'Bildirim Test Lokantasi'
+        && d.veri.son.tutar === 16000 && d.veri.son.bildirildi === false && typeof d.veri.son.zaman === 'string', d.veri);
+    const zaman1 = d.veri.son && d.veri.son.zaman;
+    {
+        const { query } = require('./src/config/db');
+        await query("UPDATE lisans_odemeleri SET odeme_bildirildi_at = datetime('now', '+2 minute') WHERE id = 'rootcihaz-bildirim-odeme'");
+    }
+    d = await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj });
+    ok('"odemeyi yaptim" sonrasi: bildirildi=true, zaman ILERLEDI', d.veri.son && d.veri.son.bildirildi === true && d.veri.son.zaman > zaman1, d.veri);
+    {
+        const { query } = require('./src/config/db');
+        await query("UPDATE lisans_odemeleri SET durum = 'onaylandi' WHERE id = 'rootcihaz-bildirim-odeme'");
+    }
+    d = await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj });
+    ok('onaylaninca bekleyenden duser', d.veri.bekleyen === oncekiBekleyen, d.veri);
+    // Eski kabukla kurulmus cihaza sonradan bildirim jetonu verme (yeniden uretme)
+    ok('bildirim-jetonu oturumsuz 401', (await iste('/api/root/cihaz/bildirim-jetonu', { id: k3.veri.id })).kod === 401);
+    const y = await iste('/api/root/cihaz/bildirim-jetonu', { id: k3.veri.id }, oturum);
+    ok('yeniden uretme 200 + yeni jeton', y.kod === 200 && typeof y.veri.bildirimJetonu === 'string' && y.veri.bildirimJetonu !== bj, y.veri);
+    ok('eski bildirim jetonu artik 401', (await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj })).kod === 401);
+    ok('yeni bildirim jetonu 200', (await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: y.veri.bildirimJetonu })).kod === 200);
+    const g3 = await iste('/api/root/cihaz/giris', { cihazJetonu: k3.veri.cihazJetonu });
+    const y2 = await iste('/api/root/cihaz/bildirim-jetonu', {}, g3.veri.token);
+    ok('cihaz oturumunda id vermeden kendi cihazina uretir', y2.kod === 200 && !!y2.veri.bildirimJetonu, y2.veri);
+    ok('cihaz unutulunca bildirim jetonu da duser',
+        (await iste('/api/root/cihaz/unut', { id: k3.veri.id }, oturum)).kod === 200
+        && (await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: y2.veri.bildirimJetonu })).kod === 401);
+    ok('iptal cihaza bildirim jetonu uretilmez 404', (await iste('/api/root/cihaz/bildirim-jetonu', { id: k3.veri.id }, oturum)).kod === 404);
+
     console.log('\n=== 5) IP sinirlayici: 10 hatali denemeden sonra 429 ===');
     let son = 0;
     for (let i = 0; i < 11; i++) son = (await iste('/api/root/cihaz/giris', { cihazJetonu: 'y'.repeat(64) })).kod;
@@ -77,7 +127,7 @@ async function temizle() {
     const k2 = await iste('/api/root/cihaz/kaydet', { ad: 'Tablet' }, oturum);
     ok('ikinci cihaz farkli jeton', k2.kod === 201 && k2.veri.cihazJetonu !== jeton);
     const l4 = await iste('/api/root/cihaz', null, oturum, 'GET');
-    ok('listede 2 cihaz', l4.veri.length === 2);
+    ok('listede 3 cihaz', l4.veri.length === 3);
 
     kapat();
     await temizle();

@@ -134,9 +134,11 @@ const ozet = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 exports.cihazKaydet = async (req, res) => {
     const ad = String((req.body || {}).ad || 'Telefon').slice(0, 80);
     const ham = crypto.randomBytes(48).toString('base64url');
+    const bildirim = crypto.randomBytes(32).toString('base64url');
     const id = uuidv4();
-    await query('INSERT INTO root_cihazlar (id, root_id, ad, token_hash) VALUES (?, ?, ?, ?)', [id, req.root.id, ad, ozet(ham)]);
-    res.status(201).json({ id, ad, cihazJetonu: ham });
+    await query('INSERT INTO root_cihazlar (id, root_id, ad, token_hash, bildirim_hash) VALUES (?, ?, ?, ?, ?)',
+        [id, req.root.id, ad, ozet(ham), ozet(bildirim)]);
+    res.status(201).json({ id, ad, cihazJetonu: ham, bildirimJetonu: bildirim });
 };
 
 exports.cihazGiris = async (req, res) => {
@@ -168,6 +170,47 @@ exports.cihazUnut = async (req, res) => {
     const r = await query('UPDATE root_cihazlar SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND root_id = ? AND revoked_at IS NULL', [id, req.root.id]);
     if (!r.changes) return res.status(404).json({ message: 'Cihaz bulunamadı ya da zaten iptal.' });
     res.json({ ok: true });
+};
+
+// ——— Telefon bildirimi (arka plan sorgusu) ———
+// Cihaz jetonu telefonda parmak iziyle acilan kasada durur; arka planda calisan bildirim isi ona
+// ulasamaz. Bu yuzden cihaza ikinci, DAR yetkili bir "bildirim jetonu" verilir: tek yapabildigi,
+// bekleyen odeme bildirimi sayisini ve en yenisinin ozetini sormak. Cihaz unutulunca o da duser.
+// Eski (1.0) kabukla kurulmus cihaza sonradan vermek icin ayri uc var (bildirim-jetonu).
+exports.cihazBildirimJetonu = async (req, res) => {
+    const id = String((req.body || {}).id || req.rootCihazId || '');
+    if (!id) return res.status(400).json({ message: 'Cihaz belirtilmedi.' });
+    const bildirim = crypto.randomBytes(32).toString('base64url');
+    const r = await query('UPDATE root_cihazlar SET bildirim_hash = ? WHERE id = ? AND root_id = ? AND revoked_at IS NULL',
+        [ozet(bildirim), id, req.root.id]);
+    if (!r.changes) return res.status(404).json({ message: 'Cihaz bulunamadı ya da iptal edilmiş.' });
+    res.json({ bildirimJetonu: bildirim });
+};
+
+// Telefon 15 dakikada bir sorar. Yanit bilerek kisa: bekleyen sayisi + en yeni olayin ozeti.
+// "zaman" olay damgasi: yeni bildirim ya da "odemeyi yaptim" ile ilerler, onay/ret ile geri gider;
+// telefon yalniz ILERLEDIGINDE bildirim gosterir (boylece onaylanan kayit sahte bildirim uretmez).
+exports.cihazBildirimDurumu = async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || '?';
+    if (cihazKisitliMi(ip)) return res.status(429).json({ message: 'Çok fazla deneme. 15 dakika sonra tekrar deneyin.' });
+    const ham = String((req.body || {}).bildirimJetonu || '');
+    if (ham.length < 32) { cihazBasarisiz(ip); return res.status(401).json({ message: 'Bildirim jetonu geçersiz.' }); }
+    const c = await query(
+        `SELECT c.id FROM root_cihazlar c JOIN root_users u ON u.id = c.root_id
+          WHERE c.bildirim_hash = ? AND c.revoked_at IS NULL AND u.is_active = 1`, [ozet(ham)]);
+    if (!c.rows.length) { cihazBasarisiz(ip); return res.status(401).json({ message: 'Bildirim jetonu geçersiz ya da iptal edilmiş.' }); }
+    cihazDenemeleri.delete(ip);
+    const r = await query(
+        `SELECT o.tutar, o.created_at, o.odeme_bildirildi_at, t.business_name
+           FROM lisans_odemeleri o JOIN tenants t ON t.id = o.tenant_id
+          WHERE o.durum = 'beklemede'
+          ORDER BY COALESCE(o.odeme_bildirildi_at, o.created_at) DESC`);
+    const s = r.rows[0];
+    res.json({
+        bekleyen: r.rows.length,
+        son: s ? { isletme: s.business_name, tutar: Number(s.tutar) || 0, bildirildi: !!s.odeme_bildirildi_at,
+                   zaman: s.odeme_bildirildi_at || s.created_at } : null
+    });
 };
 
 // --- Authenticator kurulumunu tamamla ---
