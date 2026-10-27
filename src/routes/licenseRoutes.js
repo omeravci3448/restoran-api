@@ -4,7 +4,7 @@ const { protect, requireManagerPin, requireRole } = require('../middleware/authM
 
 // Public — kayıt sayfası ve müşteri için
 router.get('/catalog', ctrl.catalog);
-router.post('/quote', ctrl.quote);
+router.post('/quote', ctrl.kimlikOpsiyonel, ctrl.quote); // oturum varsa kiraci indirimi uygulanir
 router.get('/bank-info', ctrl.bankInfo);
 
 

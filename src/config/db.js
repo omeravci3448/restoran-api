@@ -260,6 +260,7 @@ const initDb = () => {
             islenen_at TEXT
         )`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_lisans_odeme_durum ON lisans_odemeleri(durum, created_at)`);
+        db.run("ALTER TABLE lisans_odemeleri ADD COLUMN odeme_bildirildi_at TEXT", [], () => {}); // musteri "odemeyi yaptim" dedi
 
         // — LISANS KATALOGU (paketler + moduller, fiyatlariyla) —
         //

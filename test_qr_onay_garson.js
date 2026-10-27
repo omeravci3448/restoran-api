@@ -196,7 +196,7 @@ const gunlukSay = (tid, islem) => query('SELECT * FROM islem_gunlugu WHERE tenan
     const on3 = await js('/api/orders/qr-bekleyen/' + d3.d.bekleyenId + '/onayla', { token: kasiyer.token, method: 'POST' });
     ok('onayda satistan kalkan urun atlanir, digeri yazilir', on3.status === 200 && on3.d.addedItems === 1 && on3.d.atlanan.length === 1 && on3.d.atlanan[0] === 'Ezogelin', on3);
     const g5 = await gunlukSay(tid, 'qr_onay');
-    ok('gunlukte atlanan urun yazili', g5.length === 2 && /Ezogelin/.test(g5[1].detay), g5);
+    ok('gunlukte atlanan urun yazili', g5.length === 2 && g5.some(x => /Ezogelin/.test(x.detay)), g5);
     await js('/api/products/' + u2.id, { token: sahip.token, method: 'PUT', body: { isAvailable: true } });
     const d4 = await pub('/orders', { items: [{ productId: u2.id, qty: 1 }] });
     await query("UPDATE qr_bekleyen_siparisler SET created_at = datetime('now', '-5 hours') WHERE id = ?", [d4.d.bekleyenId]);

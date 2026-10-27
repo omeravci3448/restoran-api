@@ -94,11 +94,30 @@ exports.refresh = async (req, res) => {
 // ⚠ GIZLI MODUL FIYATA GIRMEZ. Gizlemek yalnizca "listede gorunmesin" olsaydi,
 // istegi elle gonderen biri kapatilmis bir modulu yine satin alabilirdi.
 // Katalog gizli satirlari hic dondurmedigi icin burada da bulunamaz.
+// Kimlik OPSIYONEL: /quote herkese acik (kayit sayfasi fiyat gosterebilsin) ama giris yapmis
+// kullanicida kiraci indirimi uygulanmali. Jeton yoksa/gecersizse anonim devam edilir; lisans
+// durumu BURADA kontrol edilmez (suresi dolmus musteri de fiyat gorup yenileyebilmeli).
+exports.kimlikOpsiyonel = async (req, _res, next) => {
+    try {
+        const auth = req.headers.authorization || '';
+        const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+        if (!token) return next();
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-change-me');
+        const u = (await query('SELECT id, tenant_id, role FROM users WHERE id = ? AND is_active = 1', [payload.userId])).rows[0];
+        if (u) req.user = { id: u.id, tenantId: u.tenant_id, role: u.role };
+    } catch (_) { /* anonim devam */ }
+    next();
+};
+
 exports.quote = async (req, res) => {
-    const { tier, modules = [] } = req.body;
+    const { tier, modules = [] } = req.body || {};
     const K = require('../services/lisansKatalog');
     const data = await K.musteriKatalogu();
-    const tenantRow = await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId]);
+    const tenantId = req.user && req.user.tenantId;
+    const tenantRow = tenantId
+        ? await query('SELECT discount_rate FROM tenants WHERE id = ?', [tenantId])
+        : { rows: [] };
 
     const tierRow = data.tiers.find(t => t.name === tier);
     if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
@@ -243,27 +262,34 @@ exports.markPaid = async (req, res) => {
         [req.params.id, req.user.tenantId]);
     if (!r.rows.length) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
-    await query('UPDATE lisans_odemeleri SET aciklama = ? WHERE id = ?',
+    await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = CURRENT_TIMESTAMP WHERE id = ?',
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
     res.json({ ok: true, status: 'PAID_DECLARED',
         message: 'Bildiriminiz alındı. Onaylandığında lisansınız uzayacak.' });
 };
 
+// Kayit, arayuzun bekledigi adlarla da doner (status/amount/modules/paid_declared_at); Turkce alanlar korunur.
+// Liste ve tekil uc AYNI bicimi vermeli: eskiden liste 'status' vermiyordu, arayuz bekleyen odemeyi bulamiyordu.
+function kaydiHazirla(x) {
+    const moduller = guvenliJson(x.moduller);
+    const status = x.durum === 'onaylandi' ? 'CONFIRMED'
+        : x.durum === 'reddedildi' ? 'REJECTED'
+        : x.durum === 'iptal' ? 'CANCELLED'
+        : (x.odeme_bildirildi_at ? 'PAID_DECLARED' : 'PENDING_PAYMENT');
+    return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null };
+}
 exports.purchases = async (req, res) => {
     const r = await query(
-        `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at
+        `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at
            FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 50`,
         [req.user.tenantId]);
-    res.json(r.rows.map(x => ({ ...x, moduller: guvenliJson(x.moduller) })));
+    res.json(r.rows.map(kaydiHazirla));
 };
-
 exports.purchaseStatus = async (req, res) => {
     const r = await query('SELECT * FROM lisans_odemeleri WHERE id = ? AND tenant_id = ?',
         [req.params.id, req.user.tenantId]);
     if (!r.rows.length) return res.status(404).json({ message: 'Bulunamadı.' });
-    const x = r.rows[0];
-    res.json({ ...x, moduller: guvenliJson(x.moduller),
-        status: x.durum === 'onaylandi' ? 'CONFIRMED' : x.durum === 'reddedildi' ? 'REJECTED' : 'PENDING_PAYMENT' });
+    res.json(kaydiHazirla(r.rows[0]));
 };
 
 function guvenliJson(s) {
