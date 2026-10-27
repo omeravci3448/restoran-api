@@ -153,10 +153,14 @@ async function yenilemeKanali(tenantId) {
                  + 'panelinizden yapmaniz gerekiyor.',
         };
     }
+    // Dogrudan (SofraMix disi) deneme hesabi POS icinden paket satin alir: ayni havale/EFT akisi,
+    // root onayinda lisans 1 yil uzar ve kiraci "musteri"ye doner (rootController). Deneme oldugu
+    // bilgisi arayuzde "Paketi Satin Al" metni ve kisa aciklama icin tasinir.
     if (t.license_tier === 'TIER_DENEME') {
         return {
-            kanal: 'deneme',
-            mesaj: 'Deneme surumundesiniz. Paketi satin almak icin bizimle iletisime gecin.',
+            kanal: 'yerel', deneme: true,
+            mesaj: 'Deneme sürümündesiniz. Paketi satın aldığınızda lisansınız 1 yıl uzar; kayıtlarınız '
+                 + 've ayarlarınız olduğu gibi kalır. Ödeme havale/EFT ile yapılır, onaylanınca otomatik açılır.',
         };
     }
     return { kanal: 'yerel' };
