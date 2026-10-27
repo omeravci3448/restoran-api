@@ -90,7 +90,15 @@ async function temizle() {
     ok('listede de PAID_DECLARED', (await js('/api/license/purchases', { token: sahip.token })).d[0].status === 'PAID_DECLARED');
     ok('ikinci kez bildirim 200 (hala beklemede)', (await js('/api/license/purchases/' + satin.d.id + '/mark-paid', { token: sahip.token, body: {} })).status === 200);
     const ikinci = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
-    ok('ikinci bildirim 409 (bekleyen varken)', ikinci.status === 409, ikinci);
+    ok('ikinci bildirim 409 (bekleyen varken) + id', ikinci.status === 409 && ikinci.d.id === satin.d.id, ikinci);
+    const ipt = await js('/api/license/purchases/' + satin.d.id + '/cancel', { token: sahip.token, method: 'POST' });
+    const iptSonra = (await js('/api/license/purchases/' + satin.d.id, { token: sahip.token })).d;
+    ok('musteri bekleyen bildirimi iptal eder: CANCELLED', ipt.status === 200 && iptSonra.status === 'CANCELLED' && iptSonra.durum === 'iptal', [ipt, iptSonra]);
+    ok('iptal edileni tekrar iptal 409', (await js('/api/license/purchases/' + satin.d.id + '/cancel', { token: sahip.token, method: 'POST' })).status === 409);
+    ok('bilinmeyen kayit iptal 404', (await js('/api/license/purchases/yok/cancel', { token: sahip.token, method: 'POST' })).status === 404);
+    const yeni = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
+    ok('iptalden sonra yeni secimle bildirim acilir (201)', yeni.status === 201, yeni);
+    ok('listede 2 kayit: iptal + beklemede', (await js('/api/license/purchases', { token: sahip.token })).d.length === 2);
 
     console.log('\n=== SofraMix kaynakli hesap: kanal soframix, satin alma kapali ===');
     await query("UPDATE tenants SET parent_org = 'SofraMix' WHERE id = ?", [me.tenantId]);

@@ -278,6 +278,17 @@ function kaydiHazirla(x) {
         : (x.odeme_bildirildi_at ? 'PAID_DECLARED' : 'PENDING_PAYMENT');
     return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null };
 }
+// Bekleyen bildirimi musteri iptal eder: secimi/tutari degistirmek icin tek yol (ayni anda tek bekleyen kurali).
+// Onaylanmis/reddedilmis kayit iptal edilemez. Kayit silinmez, root panelinde 'iptal' olarak gorunur.
+exports.cancelPurchase = async (req, res) => {
+    const r = await query('SELECT id, durum FROM lisans_odemeleri WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
+    if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış; iptal edilemez.' });
+    await query("UPDATE lisans_odemeleri SET durum = 'iptal', islenen_at = CURRENT_TIMESTAMP, admin_note = COALESCE(admin_note, 'müşteri iptal etti') WHERE id = ? AND durum = 'beklemede'",
+        [req.params.id]);
+    res.json({ ok: true, status: 'CANCELLED' });
+};
+
 exports.purchases = async (req, res) => {
     const r = await query(
         `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at
