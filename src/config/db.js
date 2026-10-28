@@ -142,7 +142,10 @@ const initDb = () => {
         db.run("ALTER TABLE tenants ADD COLUMN parent_org TEXT", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN stock_module_on INTEGER DEFAULT 0", [], () => {});      // stok arayuzu gorunsun mu
         db.run("ALTER TABLE tenants ADD COLUMN stock_out_blocks_sale INTEGER DEFAULT 0", [], () => {}); // stok bitince satisi durdur
-        db.run("ALTER TABLE tenants ADD COLUMN logo_url TEXT", [], () => {});                      // isletme logosu (/uploads/<tenant>/..): basili menu + QR menu
+        db.run("ALTER TABLE tenants ADD COLUMN logo_url TEXT", [], () => {});
+        // Musteri ekrani (kasadaki ikinci ekran): isletmenin sectigi gorsel + karsilama cumlesi
+        db.run("ALTER TABLE tenants ADD COLUMN musteri_ekrani_gorsel_url TEXT", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN musteri_ekrani_mesaj TEXT", [], () => {});                      // isletme logosu (/uploads/<tenant>/..): basili menu + QR menu
 
         // — ROOT USERS (ekosistem yoneticisi) —
         // users tablosuna KONULMADI: users.tenant_id NOT NULL ve tum sorgular

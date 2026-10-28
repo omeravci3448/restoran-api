@@ -6,6 +6,7 @@ const { saveDataUrl, UPLOADS_DIR } = require('../services/imageService');
 exports.getProfile = async (req, res) => {
     const r = await query(
         `SELECT id, slug, business_code, business_name, owner_email, phone, address, logo_url,
+                musteri_ekrani_gorsel_url, musteri_ekrani_mesaj,
                 billing_name, billing_address, billing_tax_id, billing_tax_office,
                 referral_code, referred_by, discount_rate,
                 currency, tax_rate,
@@ -43,15 +44,22 @@ exports.requestClosure = async (req, res) => {
     res.json({ ok: true, message: 'Hesap kapatma talebiniz alındı ve erişim durduruldu.' });
 };
 
-// Logo: Ayarlar > Logo'dan data URL gelir, urun gorselleri gibi diske yazilir (base64 DB'de degil).
-// logoUrl alani hic gelmezse dokunulmaz, '' gelirse kaldirilir. Eski dosya best-effort silinir.
-async function logoHazirla(tenantId, logoUrl) {
-    if (logoUrl === undefined) return { degis: 0, yol: null };
-    if (!logoUrl) return { degis: 1, yol: null };
-    if (typeof logoUrl !== 'string' || !/^data:image\/(png|jpe?g|webp);base64,/i.test(logoUrl)) {
-        const e = new Error('Logo PNG, JPG veya WebP dosyası olmalı.'); e.status = 400; throw e;
+// Logo ve musteri ekrani gorseli: Ayarlar'dan data URL gelir, urun gorselleri gibi diske yazilir (base64 DB'de degil).
+// Alan hic gelmezse dokunulmaz, '' gelirse kaldirilir. Eski dosya best-effort silinir.
+async function gorselHazirla(tenantId, url, etiket) {
+    if (url === undefined) return { degis: 0, yol: null };
+    if (!url) return { degis: 1, yol: null };
+    if (typeof url !== 'string' || !/^data:image\/(png|jpe?g|webp);base64,/i.test(url)) {
+        const e = new Error(etiket + ' PNG, JPG veya WebP dosyası olmalı.'); e.status = 400; throw e;
     }
-    return { degis: 1, yol: await saveDataUrl(tenantId, logoUrl) };
+    return { degis: 1, yol: await saveDataUrl(tenantId, url) };
+}
+const logoHazirla = (tenantId, url) => gorselHazirla(tenantId, url, 'Logo');
+// Karsilama cumlesi: undefined -> dokunma; bos -> NULL; en fazla 140 karakter.
+function mesajHazirla(m) {
+    if (m === undefined) return { degis: 0, deger: null };
+    const s = String(m == null ? '' : m).trim().slice(0, 140);
+    return { degis: 1, deger: s || null };
 }
 function eskiLogoyuSil(tenantId, eski, yeni) {
     const onek = `/uploads/${tenantId}/`;
@@ -62,13 +70,17 @@ function eskiLogoyuSil(tenantId, eski, yeni) {
 
 exports.updateProfile = async (req, res) => {
     const f = req.body || {};
-    let logo;
-    try { logo = await logoHazirla(req.user.tenantId, f.logoUrl); }
-    catch (e) { return res.status(e.status || 500).json({ message: e.message || 'Logo kaydedilemedi.' }); }
-    let eskiLogo = null;
-    if (logo.degis) {
-        const e = await query('SELECT logo_url FROM tenants WHERE id = ?', [req.user.tenantId]);
+    let logo, gorsel;
+    try {
+        logo = await logoHazirla(req.user.tenantId, f.logoUrl);
+        gorsel = await gorselHazirla(req.user.tenantId, f.musteriEkraniGorsel, 'Müşteri ekranı görseli');
+    } catch (e) { return res.status(e.status || 500).json({ message: e.message || 'Görsel kaydedilemedi.' }); }
+    const mesaj = mesajHazirla(f.musteriEkraniMesaj);
+    let eskiLogo = null, eskiGorsel = null;
+    if (logo.degis || gorsel.degis) {
+        const e = await query('SELECT logo_url, musteri_ekrani_gorsel_url FROM tenants WHERE id = ?', [req.user.tenantId]);
         eskiLogo = e.rows[0] ? e.rows[0].logo_url : null;
+        eskiGorsel = e.rows[0] ? e.rows[0].musteri_ekrani_gorsel_url : null;
     }
     await query(
         `UPDATE tenants
@@ -86,7 +98,9 @@ exports.updateProfile = async (req, res) => {
                 stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale),
                 qr_onay_gerekli = COALESCE(?, qr_onay_gerekli),
                 mutfak_ekrani = COALESCE(?, mutfak_ekrani),
-                logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END
+                logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END,
+                musteri_ekrani_gorsel_url = CASE WHEN ? = 1 THEN ? ELSE musteri_ekrani_gorsel_url END,
+                musteri_ekrani_mesaj = CASE WHEN ? = 1 THEN ? ELSE musteri_ekrani_mesaj END
           WHERE id = ?`,
         [f.businessName, f.phone, f.address,
             f.billingName, f.billingAddress, f.billingTaxId, f.billingTaxOffice,
@@ -97,8 +111,12 @@ exports.updateProfile = async (req, res) => {
             f.qrOnayGerekli == null ? null : (f.qrOnayGerekli ? 1 : 0),
             f.mutfakEkrani == null ? null : (f.mutfakEkrani ? 1 : 0),
             logo.degis, logo.yol,
+            gorsel.degis, gorsel.yol,
+            mesaj.degis, mesaj.deger,
             req.user.tenantId]
     );
     if (logo.degis) eskiLogoyuSil(req.user.tenantId, eskiLogo, logo.yol);
-    res.json({ message: 'Güncellendi.', logoUrl: logo.degis ? logo.yol : undefined });
+    if (gorsel.degis) eskiLogoyuSil(req.user.tenantId, eskiGorsel, gorsel.yol);
+    res.json({ message: 'Güncellendi.', logoUrl: logo.degis ? logo.yol : undefined,
+               musteriEkraniGorselUrl: gorsel.degis ? gorsel.yol : undefined });
 };

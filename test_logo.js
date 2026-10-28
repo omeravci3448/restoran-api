@@ -130,6 +130,30 @@ const dosyaVar = (tenantId, url) => !!url && fs.existsSync(path.join(UPLOADS_DIR
     const k1 = await js('/api/tenant/me', { token: kasiyer.token, method: 'PUT', body: { logoUrl: PNG1 } });
     ok('kasiyer 403', k1.status === 403, k1);
 
+    console.log('\n=== 8) Musteri ekrani gorseli + karsilama mesaji ===');
+    const m0 = (await js('/api/tenant/me', { token: sahip.token })).d;
+    ok('baslangicta gorsel ve mesaj bos', m0.musteri_ekrani_gorsel_url == null && m0.musteri_ekrani_mesaj == null, [m0.musteri_ekrani_gorsel_url, m0.musteri_ekrani_mesaj]);
+    const m1 = await js('/api/tenant/me', { token: sahip.token, method: 'PUT', body: { musteriEkraniGorsel: JPG1, musteriEkraniMesaj: '  Hoş geldiniz, afiyet olsun!  ' } });
+    const mp1 = (await js('/api/tenant/me', { token: sahip.token })).d;
+    ok('PUT 200 + musteriEkraniGorselUrl /uploads/..jpg', m1.status === 200 && new RegExp('^/uploads/' + tid + '/[^/]+\\.jpg$').test(m1.d && m1.d.musteriEkraniGorselUrl), m1.d);
+    ok('profilde gorsel yolu + dosya diskte', mp1.musteri_ekrani_gorsel_url === m1.d.musteriEkraniGorselUrl && dosyaVar(tid, mp1.musteri_ekrani_gorsel_url));
+    ok('mesaj kirpilarak kaydedildi', mp1.musteri_ekrani_mesaj === 'Hoş geldiniz, afiyet olsun!', mp1.musteri_ekrani_mesaj);
+    ok('logo bu islemden etkilenmedi (null kaldi)', mp1.logo_url == null, mp1.logo_url);
+    const m2 = await js('/api/tenant/me', { token: sahip.token, method: 'PUT', body: { musteriEkraniGorsel: PNG1 } });
+    const mp2 = (await js('/api/tenant/me', { token: sahip.token })).d;
+    ok('gorsel degisti: eski dosya silindi, yeni .png var, mesaj durdu', m2.status === 200 && /\.png$/.test(mp2.musteri_ekrani_gorsel_url) && !dosyaVar(tid, mp1.musteri_ekrani_gorsel_url) && dosyaVar(tid, mp2.musteri_ekrani_gorsel_url) && mp2.musteri_ekrani_mesaj === 'Hoş geldiniz, afiyet olsun!', mp2);
+    const m3 = await js('/api/tenant/me', { token: sahip.token, method: 'PUT', body: { musteriEkraniGorsel: 'https://ornek.test/x.jpg' } });
+    ok('http adresi reddedilir (400)', m3.status === 400, m3);
+    const uzun = 'x'.repeat(200);
+    await js('/api/tenant/me', { token: sahip.token, method: 'PUT', body: { musteriEkraniMesaj: uzun } });
+    const mp3 = (await js('/api/tenant/me', { token: sahip.token })).d;
+    ok('mesaj 140 karakterde kesilir', mp3.musteri_ekrani_mesaj && mp3.musteri_ekrani_mesaj.length === 140, mp3.musteri_ekrani_mesaj && mp3.musteri_ekrani_mesaj.length);
+    const m4 = await js('/api/tenant/me', { token: sahip.token, method: 'PUT', body: { musteriEkraniGorsel: '', musteriEkraniMesaj: '' } });
+    const mp4 = (await js('/api/tenant/me', { token: sahip.token })).d;
+    ok('kaldir: gorsel null + dosya silindi + mesaj null', m4.status === 200 && mp4.musteri_ekrani_gorsel_url == null && !dosyaVar(tid, mp2.musteri_ekrani_gorsel_url) && mp4.musteri_ekrani_mesaj == null, mp4);
+    const m5 = await js('/api/tenant/me', { token: kasiyer.token, method: 'PUT', body: { musteriEkraniMesaj: 'x' } });
+    ok('kasiyer degistiremez 403', m5.status === 403, m5.status);
+
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);
     process.exit(fail ? 1 : 0);
