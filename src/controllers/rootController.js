@@ -206,10 +206,15 @@ exports.cihazBildirimDurumu = async (req, res) => {
           WHERE o.durum = 'beklemede'
           ORDER BY COALESCE(o.odeme_bildirildi_at, o.created_at) DESC`);
     const s = r.rows[0];
+    // Yeni restoran kaydi / SofraMix'ten paket alimi (APK 1.4+ okur; eski surum bu alani yok sayar)
+    let olay = null;
+    try { olay = await require('../services/yeniKayitIzleyici').telefonOzeti((req.body || {}).olaySonId); }
+    catch (e) { console.error('[olay] telefon ozeti:', e.message); }
     res.json({
         bekleyen: r.rows.length,
         son: s ? { isletme: s.business_name, tutar: Number(s.tutar) || 0, bildirildi: !!s.odeme_bildirildi_at,
-                   zaman: s.odeme_bildirildi_at || s.created_at } : null
+                   zaman: s.odeme_bildirildi_at || s.created_at } : null,
+        olay,
     });
 };
 

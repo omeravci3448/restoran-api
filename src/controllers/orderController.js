@@ -48,6 +48,11 @@ exports.get = async (req, res) => {
 // Yeni sipariş aç — masa için 1 aktif sipariş prensibi (aynı masada açık varsa onu döndür)
 exports.open = async (req, res) => {
     const { tableId, channel = 'DINE_IN', externalRef, note } = req.body;
+    if (tableId) {
+        // Masa bu isletmenin olmali ve silinmemis olmali (silinmis masaya hesap acilmasin)
+        const tb = await query('SELECT id FROM tables WHERE id = ? AND tenant_id = ? AND is_active = 1', [tableId, req.user.tenantId]);
+        if (!tb.rows.length) return res.status(404).json({ message: 'Masa bulunamadı ya da silinmiş.' });
+    }
     if (channel === 'DINE_IN') {
         if (!tableId) return res.status(400).json({ message: 'Masa ID gerekli.' });
         const exist = await query(
@@ -60,7 +65,7 @@ exports.open = async (req, res) => {
         `INSERT INTO orders (id, tenant_id, table_id, channel, external_ref, note, opened_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [id, req.user.tenantId, tableId || null, channel, externalRef || null, note || null, req.user.id]);
-    if (tableId) await query("UPDATE tables SET status = 'OCCUPIED' WHERE id = ?", [tableId]);
+    if (tableId) await query("UPDATE tables SET status = 'OCCUPIED' WHERE id = ? AND tenant_id = ?", [tableId, req.user.tenantId]);
     res.status(201).json({ id, tableId, channel, status: 'OPEN' });
 };
 

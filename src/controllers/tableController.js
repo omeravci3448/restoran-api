@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const QRCode = require('qrcode');
 const { query } = require('../config/db');
+const G = require('../services/islemGunlugu');
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
 
@@ -88,53 +89,143 @@ exports.create = async (req, res) => {
     }
 };
 
+// RegExp icin kacis (kod harfi kullanicidan geliyor)
+const kacis = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Silinmis (pasif) bir masa bu kodu tutuyorsa kodu serbest birakir. Kod isletme icinde tekil
+// (UNIQUE tenant_id+code); pasif kayit yeni bir masanin ya da yeniden adlandirmanin onunu
+// kesmesin. Gecmis raporlar masa ADINI gosterdigi icin pasif kaydin kodu degisse de bir sey bozulmaz.
+// Doner: 'bos' (kimse kullanmiyor) | 'dolu' (aktif bir masada) | 'bosaltildi'
+async function pasifKoduBosalt(tenantId, code, haricId) {
+    const r = await query('SELECT id, is_active FROM tables WHERE tenant_id = ? AND code = ? AND id <> ?',
+        [tenantId, code, haricId || '']);
+    if (!r.rows.length) return 'bos';
+    if (r.rows[0].is_active) return 'dolu';
+    await query('UPDATE tables SET code = ? WHERE id = ? AND tenant_id = ?',
+        [code + '~' + String(r.rows[0].id).slice(0, 8), r.rows[0].id, tenantId]);
+    return 'bosaltildi';
+}
+
+// Masa silinebilir mi? Acik hesabi ya da kasa onayi bekleyen QR siparisi olan masa silinmez:
+// silinseydi o hesap Masalar ekranindan kaybolur, kimse kapatamazdi.
+async function silmeEngeli(tenantId, tableId) {
+    const acik = await query("SELECT 1 FROM orders WHERE tenant_id = ? AND table_id = ? AND status = 'OPEN' LIMIT 1",
+        [tenantId, tableId]);
+    if (acik.rows.length) return { kod: 'ACIK_HESAP', mesaj: 'Bu masada açık hesap var. Önce hesabı kapatın ya da başka masaya aktarın, sonra silin.' };
+    const bekleyen = await query("SELECT 1 FROM qr_bekleyen_siparisler WHERE tenant_id = ? AND table_id = ? AND durum = 'BEKLIYOR' LIMIT 1",
+        [tenantId, tableId]);
+    if (bekleyen.rows.length) return { kod: 'ONAY_BEKLIYOR', mesaj: 'Bu masada kasa onayı bekleyen QR siparişi var. Önce onaylayın ya da reddedin, sonra silin.' };
+    return null;
+}
+
+// Toplu ekleme: numara KALDIGI YERDEN surer. Eskiden hep 1'den basliyordu; M1-M5 varken "M" ile
+// 5 masa daha istenince kodlar cakisiyor, hepsi sessizce atlaniyor ve ekranda hicbir sey olmuyordu.
+// Simdi bu harfle (silinmisler dahil) en buyuk numaranin ustune eklenir.
 exports.bulkCreate = async (req, res) => {
-    const { count, prefix = 'M', section } = req.body;
-    if (!count || count < 1 || count > 100) return res.status(400).json({ message: 'count 1-100 arası.' });
-    if (await checkTableLimit(req, res, Number(count))) return;
+    const b = req.body || {};
+    const count = Number(b.count);
+    const prefix = String(b.prefix == null ? 'M' : b.prefix).trim().slice(0, 6);
+    const section = String(b.section || '').trim().slice(0, 40) || null;
+    if (!Number.isInteger(count) || count < 1 || count > 100) return res.status(400).json({ message: 'Masa sayısı 1 ile 100 arasında olmalı.' });
+    if (/\s|~/.test(prefix)) return res.status(400).json({ message: 'Kod harfinde boşluk ya da ~ olmasın (örnek: M, B, T).' });
+    if (await checkTableLimit(req, res, count)) return;
+    const mevcut = await query('SELECT code FROM tables WHERE tenant_id = ?', [req.user.tenantId]);
+    const desen = new RegExp('^' + kacis(prefix) + '(\\d+)$');
+    let enBuyuk = 0;
+    for (const x of mevcut.rows) {
+        const m = desen.exec(x.code);
+        if (m) enBuyuk = Math.max(enBuyuk, Number(m[1]));
+    }
     const created = [];
     for (let i = 1; i <= count; i++) {
-        const code = `${prefix}${i}`;
+        const code = prefix + String(enBuyuk + i);
         const id = uuidv4();
         try {
             await query(
-                `INSERT INTO tables (id, tenant_id, code, name, section, qr_token)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [id, req.user.tenantId, code, `Masa ${code}`, section || null, newToken()]
-            );
+                'INSERT INTO tables (id, tenant_id, code, name, section, qr_token) VALUES (?, ?, ?, ?, ?, ?)',
+                [id, req.user.tenantId, code, 'Masa ' + code, section, newToken()]);
             created.push({ id, code });
-        } catch (_) { /* zaten varsa atla */ }
-    }
-    res.status(201).json({ created });
-};
-
-exports.update = async (req, res) => {
-    const { name, section, capacity, positionX, positionY, isActive } = req.body;
-    // Pasif masayı yeniden aktive ediyorsa limit kontrolü gerek
-    if (isActive === true || isActive === 1) {
-        const cur = await query('SELECT is_active FROM tables WHERE id = ? AND tenant_id = ?',
-            [req.params.id, req.user.tenantId]);
-        if (cur.rows.length && !cur.rows[0].is_active) {
-            if (await checkTableLimit(req, res, 1)) return;
+        } catch (e) {
+            if (!String(e.message).includes('UNIQUE')) throw e;
         }
     }
-    await query(
-        `UPDATE tables
-            SET name = COALESCE(?, name),
-                section = COALESCE(?, section),
-                capacity = COALESCE(?, capacity),
-                position_x = COALESCE(?, position_x),
-                position_y = COALESCE(?, position_y),
-                is_active = COALESCE(?, is_active)
-          WHERE id = ? AND tenant_id = ?`,
-        [name, section, capacity, positionX, positionY, isActive, req.params.id, req.user.tenantId]
-    );
+    res.status(201).json({
+        created, eklenen: created.length,
+        ilk: created.length ? created[0].code : null,
+        son: created.length ? created[created.length - 1].code : null,
+    });
+};
+
+// Masa duzenleme: kod, ad, bolum, kisi sayisi. Yalniz GONDERILEN alanlar degisir.
+exports.update = async (req, res) => {
+    const b = req.body || {};
+    const tenantId = req.user.tenantId;
+    const cur = await query('SELECT id, code, name, is_active FROM tables WHERE id = ? AND tenant_id = ?', [req.params.id, tenantId]);
+    if (!cur.rows.length) return res.status(404).json({ message: 'Masa bulunamadı.' });
+    const masa = cur.rows[0];
+    const set = [], p = [];
+
+    if (b.code !== undefined) {
+        const code = String(b.code == null ? '' : b.code).trim().slice(0, 12);
+        if (!code) return res.status(400).json({ message: 'Masa kodu boş olamaz.' });
+        if (code.includes('~')) return res.status(400).json({ message: 'Masa kodunda ~ işareti kullanılamaz.' });
+        if (code !== masa.code) {
+            const d = await pasifKoduBosalt(tenantId, code, masa.id);
+            if (d === 'dolu') return res.status(409).json({ message: '"' + code + '" kodu başka bir masada kullanılıyor.' });
+            set.push('code = ?'); p.push(code);
+        }
+    }
+    if (b.name !== undefined) {
+        const name = String(b.name == null ? '' : b.name).trim().slice(0, 40);
+        if (!name) return res.status(400).json({ message: 'Masa adı boş olamaz.' });
+        set.push('name = ?'); p.push(name);
+    }
+    if (b.section !== undefined) {
+        set.push('section = ?'); p.push(String(b.section == null ? '' : b.section).trim().slice(0, 40) || null);
+    }
+    if (b.capacity !== undefined && b.capacity !== null && b.capacity !== '') {
+        const k = Number(b.capacity);
+        if (!Number.isInteger(k) || k < 1 || k > 99) return res.status(400).json({ message: 'Kişi sayısı 1 ile 99 arasında olmalı.' });
+        set.push('capacity = ?'); p.push(k);
+    }
+    if (b.positionX !== undefined) { set.push('position_x = ?'); p.push(Number(b.positionX) || 0); }
+    if (b.positionY !== undefined) { set.push('position_y = ?'); p.push(Number(b.positionY) || 0); }
+    if (b.isActive !== undefined) {
+        const aktif = b.isActive === true || b.isActive === 1 || b.isActive === '1';
+        // Silinmis masayi geri acmak lisans sinirina tabidir
+        if (aktif && !masa.is_active && await checkTableLimit(req, res, 1)) return;
+        if (!aktif && masa.is_active) {
+            const engel = await silmeEngeli(tenantId, masa.id);
+            if (engel) return res.status(409).json({ code: engel.kod, message: engel.mesaj });
+        }
+        set.push('is_active = ?'); p.push(aktif ? 1 : 0);
+    }
+    if (!set.length) return res.json({ message: 'Değişiklik yok.' });
+    try {
+        await query('UPDATE tables SET ' + set.join(', ') + ' WHERE id = ? AND tenant_id = ?', [...p, masa.id, tenantId]);
+    } catch (e) {
+        if (String(e.message).includes('UNIQUE')) return res.status(409).json({ message: 'Bu masa kodu başka bir masada kullanılıyor.' });
+        throw e;
+    }
     res.json({ message: 'Güncellendi.' });
 };
 
+// Silme = pasiflestirme: gecmis hesaplar ve raporlar masanin adini gostermeye devam eder.
+// QR kodu da artik menu acmaz (publicController aktif masaya bakiyor).
 exports.remove = async (req, res) => {
-    await query('UPDATE tables SET is_active = 0 WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
-    res.json({ message: 'Pasifleştirildi.' });
+    const tenantId = req.user.tenantId;
+    const r = await query('SELECT id, code, name, is_active FROM tables WHERE id = ? AND tenant_id = ?', [req.params.id, tenantId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Masa bulunamadı.' });
+    const masa = r.rows[0];
+    if (!masa.is_active) return res.json({ message: 'Masa zaten silinmiş.' });
+    const engel = await silmeEngeli(tenantId, masa.id);
+    if (engel) return res.status(409).json({ code: engel.kod, message: engel.mesaj });
+    await query("UPDATE tables SET is_active = 0, status = 'EMPTY' WHERE id = ? AND tenant_id = ?", [masa.id, tenantId]);
+    // Bu masadan bekleyen garson cagrisi kalmasin (silinmis masaya kimse gitmeyecek)
+    await query("UPDATE waiter_calls SET status = 'HANDLED', handled_at = CURRENT_TIMESTAMP, handled_by = ? WHERE tenant_id = ? AND table_id = ? AND status = 'PENDING'",
+        [req.user.id, tenantId, masa.id]).catch(() => {});
+    G.kaydet({ tenantId, user: req.user, islem: 'masa_sil', hedefTur: 'table', hedefId: masa.id, detay: masa.name + ' (' + masa.code + ')' });
+    res.json({ message: 'Masa silindi.' });
 };
 
 // QR kod PNG döndür (her masa için)

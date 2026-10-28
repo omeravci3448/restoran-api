@@ -29,7 +29,7 @@ exports.publicCall = async (req, res) => {
     const t = await query(
         `SELECT tb.id AS table_id, tb.tenant_id, tb.name AS table_name, tb.code AS table_code, tb.section
            FROM tables tb JOIN tenants te ON te.id = tb.tenant_id
-          WHERE te.slug = ? AND tb.qr_token = ?`,
+          WHERE te.slug = ? AND tb.qr_token = ? AND tb.is_active = 1 AND te.is_active = 1`,
         [tenantSlug, qrToken]);
     if (!t.rows.length) return res.status(404).json({ message: 'Masa bulunamadı.' });
     const tb = t.rows[0];

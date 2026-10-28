@@ -1,6 +1,7 @@
 const { query } = require('../config/db');
 const hub = require('../services/hubService');
 const { v4: uuidv4 } = require('uuid');
+const { rootaBildir } = require('../services/rootBildirim');
 
 // Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
 // Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların
@@ -287,22 +288,7 @@ function kaydiHazirla(x) {
         : (x.odeme_bildirildi_at ? 'PAID_DECLARED' : 'PENDING_PAYMENT');
     return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null };
 }
-// Yeni odeme bildirimi / "odemeyi yaptim" geldiginde Patron'a e-posta (root ayari bildirim_eposta,
-// yoksa ROOT_EMAIL). Best-effort: posta gitmese de musteri akisi bozulmaz; root panelinde zaten gorunur.
-async function rootaBildir(konu, satirlar) {
-    try {
-        const A = require('../services/sistemAyar');
-        const alici = (await A.oku('bildirim_eposta', '')) || process.env.ROOT_EMAIL || '';
-        if (!alici) return;
-        const { sendMail } = require('../services/emailService');
-        const panel = (process.env.POS_PANEL_URL || 'https://restoran.mdayazilim.com').replace(/\/+$/, '');
-        const html = '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:520px;padding:16px;border:1px solid #e5e7eb;border-radius:12px">'
-            + '<h2 style="color:#E2622A;margin:0 0 10px">' + konu + '</h2>'
-            + satirlar.map(([k, v]) => '<div style="margin:2px 0"><b>' + k + ':</b> ' + String(v == null ? '' : v) + '</div>').join('')
-            + '<p style="margin-top:14px"><a href="' + panel + '/1453" style="background:#E2622A;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none">Root paneli &gt; Ödeme Bildirimleri</a></p></div>';
-        sendMail({ to: alici, subject: '[MDA POS] ' + konu, html }).catch(() => {});
-    } catch (_) { /* bildirim yan is */ }
-}
+// Patron'a e-posta: ortak servis services/rootBildirim.js (rootaBildir), degerleri HTML kacislar.
 async function isletmeAdi(tenantId) {
     const t = (await query('SELECT business_name, business_code, owner_email, phone FROM tenants WHERE id = ?', [tenantId])).rows[0] || {};
     return { ad: t.business_name || tenantId, kod: t.business_code || '-', eposta: t.owner_email || '-', tel: t.phone || '-' };

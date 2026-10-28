@@ -788,6 +788,19 @@ const initDb = () => {
         db.run(`CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id)`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_stock_product ON stock_movements(product_id)`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_tables_qr ON tables(qr_token)`);
+
+        // — ROOT OLAYLARI: yeni restoran kaydi, SofraMix'ten paket alimi (Patron'a e-posta + yonetim APK bildirimi).
+        //   ref: olayin tekil anahtari (yeni_kayit -> tenant id, paket_alindi -> odeme id); UNIQUE ile her olay bir kez.
+        db.run(`CREATE TABLE IF NOT EXISTS root_olaylar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tur TEXT NOT NULL,
+            ref TEXT NOT NULL,
+            tenant_id TEXT,
+            baslik TEXT,
+            detay TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tur, ref)
+        )`);
     });
 };
 
