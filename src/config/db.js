@@ -761,6 +761,30 @@ const initDb = () => {
             FOREIGN KEY(handled_by) REFERENCES users(id)
         )`);
 
+        // — TELEFON BILDIRIMI (Web Push) aboneligi —
+        // Garson uygulamasinda "bildirimleri ac" diyen her cihaz bir satir. Uygulama kapaliyken
+        // garson cagrisi / QR siparisi telefona dussun diye (services/pushBildirim.js).
+        // Kim alir: kullanicinin ROLU isletmenin bildirim_roller ayarinda varsa. Kullanici pasife
+        // alinirsa bildirim gitmez (gonderimde users JOIN); isletme/kullanici silinirse satir da gider.
+        db.run(`CREATE TABLE IF NOT EXISTS push_abonelikleri (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            endpoint TEXT NOT NULL UNIQUE,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            cihaz TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            son_gorulme_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            son_basari_at TEXT,
+            hata_sayisi INTEGER DEFAULT 0,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_push_tenant ON push_abonelikleri(tenant_id)", [], () => {});
+        // {"garson":["OWNER","MANAGER","WAITER"],"qr":[...]} - NULL = varsayilan (pushBildirim.VARSAYILAN_ROLLER)
+        db.run("ALTER TABLE tenants ADD COLUMN bildirim_roller TEXT", [], () => {});
+
         // — LICENSE CACHE (hub cevabı local'de tutulur, offline çalışma için) —
         db.run(`CREATE TABLE IF NOT EXISTS license_cache (
             tenant_id TEXT PRIMARY KEY,

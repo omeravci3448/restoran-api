@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { query } = require('../config/db');
 const { saveDataUrl, UPLOADS_DIR } = require('../services/imageService');
+const push = require('../services/pushBildirim');
 
 exports.getProfile = async (req, res) => {
     const r = await query(
@@ -11,13 +12,15 @@ exports.getProfile = async (req, res) => {
                 referral_code, referred_by, discount_rate,
                 currency, tax_rate,
                 license_tier, license_modules, license_end_date, show_cost_analytics, qr_onay_gerekli, mutfak_ekrani,
-                is_active, created_at
+                bildirim_roller, is_active, created_at
            FROM tenants WHERE id = ?`,
         [req.user.tenantId]
     );
     if (!r.rows.length) return res.status(404).json({ message: 'Bulunamadı.' });
     const t = r.rows[0];
     try { t.license_modules = t.license_modules ? JSON.parse(t.license_modules) : []; } catch (_) { t.license_modules = []; }
+    // Telefon bildirimi alan roller (NULL = varsayilan; services/pushBildirim.js)
+    t.bildirim_roller = push.rolleriCoz(t.bildirim_roller);
     t.show_cost_analytics = t.show_cost_analytics == null ? 1 : Number(t.show_cost_analytics);
     res.json(t);
 };
@@ -76,6 +79,17 @@ exports.updateProfile = async (req, res) => {
         gorsel = await gorselHazirla(req.user.tenantId, f.musteriEkraniGorsel, 'Müşteri ekranı görseli');
     } catch (e) { return res.status(e.status || 500).json({ message: e.message || 'Görsel kaydedilemedi.' }); }
     const mesaj = mesajHazirla(f.musteriEkraniMesaj);
+    // Telefon bildirimi rolleri: gelmezse dokunulmaz; bilinmeyen olay/rol sessizce atilir
+    let bildirimRoller = null;
+    if (f.bildirimRoller !== undefined) {
+        if (!f.bildirimRoller || typeof f.bildirimRoller !== 'object' || Array.isArray(f.bildirimRoller)) {
+            return res.status(400).json({ message: 'Bildirim ayarı geçersiz.' });
+        }
+        // Yalniz bir olay gonderildiyse digerinin kayitli degeri korunur (varsayilana donmez)
+        const k = await query('SELECT bildirim_roller FROM tenants WHERE id = ?', [req.user.tenantId]);
+        const mevcut = push.rolleriCoz(k.rows[0] && k.rows[0].bildirim_roller);
+        bildirimRoller = JSON.stringify(push.rolleriCoz({ ...mevcut, ...f.bildirimRoller }));
+    }
     let eskiLogo = null, eskiGorsel = null;
     if (logo.degis || gorsel.degis) {
         const e = await query('SELECT logo_url, musteri_ekrani_gorsel_url FROM tenants WHERE id = ?', [req.user.tenantId]);
@@ -98,6 +112,7 @@ exports.updateProfile = async (req, res) => {
                 stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale),
                 qr_onay_gerekli = COALESCE(?, qr_onay_gerekli),
                 mutfak_ekrani = COALESCE(?, mutfak_ekrani),
+                bildirim_roller = COALESCE(?, bildirim_roller),
                 logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END,
                 musteri_ekrani_gorsel_url = CASE WHEN ? = 1 THEN ? ELSE musteri_ekrani_gorsel_url END,
                 musteri_ekrani_mesaj = CASE WHEN ? = 1 THEN ? ELSE musteri_ekrani_mesaj END
@@ -110,6 +125,7 @@ exports.updateProfile = async (req, res) => {
             f.stockOutBlocksSale == null ? null : (f.stockOutBlocksSale ? 1 : 0),
             f.qrOnayGerekli == null ? null : (f.qrOnayGerekli ? 1 : 0),
             f.mutfakEkrani == null ? null : (f.mutfakEkrani ? 1 : 0),
+            bildirimRoller,
             logo.degis, logo.yol,
             gorsel.degis, gorsel.yol,
             mesaj.degis, mesaj.deger,

@@ -56,6 +56,7 @@ const YAZMAYA_IZINLI = [
     '/api/license',      // paket satin alma, havale bildirimi
     '/api/auth',         // giris/cikis/sifre
     '/api/tenant',       // fatura bilgisi duzeltme
+    '/api/push/iptal',   // telefon bildirimini kapatma / cikis
 ];
 
 function saltOkunurdaGecerMi(req) {

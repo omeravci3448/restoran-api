@@ -95,6 +95,7 @@ app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/mutfak', require('./src/routes/mutfakRoutes'));   // mutfak ekrani (KDS)
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
+app.use('/api/push', require('./src/routes/pushRoutes'));         // telefon bildirimi (Web Push)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
 app.use('/api/aktivasyon', require('./src/routes/aktivasyonRoutes')); // ilk sifre belirleme (jeton = kimlik)
 app.use('/api/root', require('./src/routes/rootRoutes'));     // ekosistem yönetimi (işletme aç/yönet)

@@ -2,6 +2,19 @@ const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const bus = require('../services/eventBus');
 const { hesabaYaz, kalemleriHazirla } = require('../services/qrSiparis');
+const push = require('../services/pushBildirim');
+
+// QR siparisi telefona (garson uygulamasi kapaliyken de). Musteri notu bildirime girmez.
+function qrTelefonaBildir(ctx, adet, tutar, bekliyor) {
+    const masa = ctx.table_name || ctx.table_code || 'Masa';
+    const tl = Number(tutar || 0).toLocaleString('tr-TR', { maximumFractionDigits: 2 }) + ' ₺';
+    push.arkadaBildir(ctx.tenant_id, 'qr', {
+        baslik: `🧾 ${masa}: yeni QR siparişi`,
+        govde: [`${adet} kalem · ${tl}`, bekliyor ? 'Kasa onayı bekliyor' : ''].filter(Boolean).join(' · '),
+        etiket: 'qr-' + ctx.table_id,
+        url: '/garson/masa/' + ctx.table_id,
+    });
+}
 
 // QR'dan gelen müşteri için bu masanın bağlamını döndür
 async function loadTableContext(tenantSlug, qrToken) {
@@ -104,6 +117,7 @@ exports.placeOrder = async (req, res) => {
              VALUES (?, ?, ?, ?, ?, ?)`,
             [id, ctx.tenant_id, ctx.table_id, JSON.stringify(kalemler), note || null, toplam]);
         bus.emit(ctx.tenant_id, 'new_order', { ...olay, pending: true, bekleyenId: id, addedItems: kalemler.length, addedSubtotal: toplam });
+        qrTelefonaBildir(ctx, kalemler.length, toplam, true);
         return res.status(201).json({ pending: true, bekleyenId: id, addedItems: kalemler.length, addedSubtotal: toplam });
     }
 
@@ -112,6 +126,7 @@ exports.placeOrder = async (req, res) => {
     // Kasaya anlık bildirim (yalnızca gerçekten kalem eklendiyse)
     if (r.added > 0) {
         bus.emit(ctx.tenant_id, 'new_order', { ...olay, orderId: r.orderId, addedItems: r.added, addedSubtotal: r.subAdded, orderTotal: r.total });
+        qrTelefonaBildir(ctx, r.added, r.subAdded, false);
     }
     res.status(201).json({ orderId: r.orderId, addedItems: r.added, addedSubtotal: r.subAdded, orderTotal: r.total, atlanan: r.atlanan });
 };
