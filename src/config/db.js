@@ -569,7 +569,7 @@ const initDb = () => {
         db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_channel_ref
                 ON orders(tenant_id, channel, external_ref) WHERE external_ref IS NOT NULL`, [], () => {});
 
-        // --- PAKET SERVIS (telefon siparisi channel='PAKET' + SofraMix siparisleri ayni ekranda) ---
+        // --- PAKET SERVIS (telefon siparisi channel='PAKET_SERVIS' + pazaryeri siparisleri ayni ekranda) ---
         // Musteri adi/telefon/adres YALNIZ paket siparisinde tutulur; siparis kapandiktan ya da iptal
         // edildikten 30 gun sonra services/paketKvkk.js siler (siparis ve tutarlar kalir, musteri_silindi_at
         // damgasi atilir). SofraMix adresi maskeli/silinmis gonderirse yerel kopya hemen silinir.
@@ -595,7 +595,7 @@ const initDb = () => {
                  WHERE channel = 'soframix' AND status = 'OPEN' AND channel_status_raw IN ('teslim', 'iptal')`, [], () => {});
 
         // - PAKET MUSTERI DEFTERI (Patron karari 2026-11-03: telefon yazilinca ad/adres kendiliginden gelsin) -
-        // Yalniz TELEFON (PAKET) siparislerinden beslenir; SofraMix musterisi GIRMEZ. Kiraci basina telefon
+        // Yalniz TELEFON (PAKET_SERVIS) siparislerinden beslenir; SofraMix musterisi GIRMEZ. Kiraci basina telefon
         // (son 10 hane) tekil. Siparislerdeki 30 gunluk silme deftere dokunmaz; musteri 365 gun siparis
         // vermezse kayit kendiliginden silinir (services/paketKvkk.js). "Musteriyi unut" (KVKK talebi) kaydi
         // ve kapanmis siparislerdeki kisisel bilgiyi siler.

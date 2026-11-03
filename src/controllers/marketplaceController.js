@@ -1,5 +1,18 @@
 const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../config/db');
+const { PAKET, kisiselAlanlariCikar } = require('../services/paketServis');
+
+// Elle acilan kanalin ADI orders.channel'a yazilir: salon (DINE_IN), paket servis kodu, eski paket kodu ve
+// siparis getirebilen (baglanabilir) adaptor kodlariyla cakismasin. Buyuk/kucuk harf duyarsiz.
+// Bekleyen adaptorler (yemeksepeti, getir, migros) BILEREK serbest: elle "Yemeksepeti" kanali acmak bilinen
+// kullanim, o kodlarla adaptor siparisi gelmez.
+function ayrilmisAd(ad) {
+    const a = String(ad || '').trim().toLowerCase();
+    if (!a) return false;
+    const ayrik = ['dine_in', 'paket', PAKET.toLowerCase()];
+    try { for (const x of require('../marketplace/registry').listAvailable()) ayrik.push(String(x.code).toLowerCase()); } catch (_) { /* kayit yoksa sabitler yeter */ }
+    return ayrik.includes(a);
+}
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100; // 2 ondalık
 
@@ -36,8 +49,8 @@ exports.createChannel = async (req, res) => {
     const commissionRate = Number(req.body.commissionRate || 0);
     const fixedFee = Number(req.body.fixedFee || 0);
     if (!name) return res.status(400).json({ message: 'Kanal adı zorunlu.' });
-    // DINE_IN = salon, PAKET = telefon paket siparisi: elle girilen siparis bu kanal adiyla yazilir, karismasin
-    if (['DINE_IN', 'PAKET'].includes(name.toUpperCase())) return res.status(400).json({ message: 'Bu ad ayrılmıştır.' });
+    // Elle girilen siparis orders.channel'a bu ADLA yazilir: salon / paket servis / adaptor kodlariyla karismasin
+    if (ayrilmisAd(name)) return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
     if (commissionRate < 0 || commissionRate > 100) return res.status(400).json({ message: 'Komisyon %0–100 arası olmalı.' });
     if (fixedFee < 0) return res.status(400).json({ message: 'İşlem ücreti negatif olamaz.' });
     // Aynı isim mükerrer olmasın
@@ -63,8 +76,8 @@ exports.updateChannel = async (req, res) => {
     const exist = await query('SELECT id FROM marketplace_channels WHERE id = ? AND tenant_id = ?', [id, req.user.tenantId]);
     if (!exist.rows.length) return res.status(404).json({ message: 'Kanal bulunamadı.' });
     const b = req.body;
-    if (b.name != null && ['DINE_IN', 'PAKET'].includes(String(b.name).trim().toUpperCase()))
-        return res.status(400).json({ message: 'Bu ad ayrılmıştır.' });
+    if (b.name != null && ayrilmisAd(b.name))
+        return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
     if (b.commissionRate != null && (Number(b.commissionRate) < 0 || Number(b.commissionRate) > 100))
         return res.status(400).json({ message: 'Komisyon %0–100 arası olmalı.' });
     if (b.fixedFee != null && Number(b.fixedFee) < 0)
@@ -197,9 +210,9 @@ exports.ingest = async (req, res) => {
 // Pazaryeri siparişlerini net kâr ile listele
 exports.list = async (req, res) => {
     const { channel, from, to } = req.query;
-    // Telefon paket siparisi (PAKET) pazaryeri degil: kendi ekraninda (Paket Servis) listelenir.
-    const w = ['o.tenant_id = ?', "o.channel NOT IN ('DINE_IN', 'PAKET')"];
-    const p = [req.user.tenantId];
+    // Telefon paket siparisi pazaryeri degil: kendi ekraninda (Paket Servis) listelenir.
+    const w = ['o.tenant_id = ?', "o.channel NOT IN ('DINE_IN', ?)"];
+    const p = [req.user.tenantId, PAKET];
     if (channel) { w.push('o.channel = ?'); p.push(channel); }
     if (from) { w.push('o.opened_at >= ?'); p.push(from); }
     if (to) { w.push('o.opened_at <= ?'); p.push(to); }
@@ -216,7 +229,8 @@ exports.list = async (req, res) => {
         const fee = Number(o.platform_fee || 0);
         const extra = Number(o.extra_cost || 0);
         const netProfit = r2(Number(o.total || 0) - productCost - commission - fee - extra);
-        return { ...o, product_cost: r2(productCost), net_profit: netProfit };
+        // Musteri adi/telefon/adres bu listeden DONMEZ (yalniz Paket Servis ucu, mutfak rolu goremez)
+        return { ...kisiselAlanlariCikar(o), product_cost: r2(productCost), net_profit: netProfit };
     });
     res.json(rows);
 };

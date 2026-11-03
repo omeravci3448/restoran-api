@@ -4,8 +4,15 @@ const { query } = require('../config/db');
 // Hesabi KAPALI yapar: masa (varsa) bosalir, stoklu urunlerde stok duser (OUT hareketi).
 // Masadaki "Hesabi Kapat" ile paket siparisinin teslimde kendiliginden kapanmasi AYNI yolu kullanir.
 // Odeme toplami = siparis toplami denetimini CAGIRAN yapar. tx ICINDE cagrilmali (tx yeniden girilemez).
+// Yalniz ACIK siparis kapanir: iptal edilmis siparis bayat bir odeme penceresinden kapatilamaz, ayni anda
+// gelen iki kapatma isteginde ikincisi 409 alir ve stok bir kez duser (degisen satir denetimi).
 async function hesabiKapatIc({ orderId, tenantId, userId, tableId }) {
-    await query("UPDATE orders SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP WHERE id = ?", [orderId]);
+    const u = await query("UPDATE orders SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'OPEN'", [orderId]);
+    if (!u.changes) {
+        const e = new Error('Sipariş zaten kapanmış ya da iptal edilmiş; ekranı yenileyin.');
+        e.status = 409;
+        throw e;
+    }
     if (tableId) {
         await query("UPDATE tables SET status = 'EMPTY' WHERE id = ?", [tableId]);
     }

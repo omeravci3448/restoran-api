@@ -20,6 +20,7 @@
 //   teslimEdilemedi : "Teslim edilemedi" bildiriminin acik oldugu normalize durumlar (adaptorde
 //                 reportUndeliverable varsa)
 //   takmaHam    : eski surumlerin yerelde yazdigi, platformda olmayan ham degerlerin karsiligi
+//   bildirilmisHam : bu ham degerdeki siparis icin "Teslim edilemedi" ZATEN bildirilmis sayilir
 //   odeme       : platform odeme kodu -> { pos: POS odeme yontemi, etiket }
 //   musteri     : musteri adi/telefon/adres Paket Servis icin saklansin mi (KVKK: 30 gun)
 const SMX = require('./adapters/soframix/mapping');
@@ -34,7 +35,10 @@ const ESLEME = {
         reddetDurum: ['NEW'],
         dikkat: ['NEW', 'ACCEPTED'],
         teslimEdilemedi: ['DISPATCHED', 'READY'],
+        // Eski Pazaryeri ekrani "teslim edilemedi" bildiriminde yerel ham durumu boyle yaziyordu (damga yoktu):
+        // SofraMix'te siparis yolda/hazir kalir, bildirim yapilmistir (ikincisi SofraMix'ten 409 alir).
         takmaHam: { teslim_edilemedi: { GEL_AL: 'hazir', ADRES: 'yolda' } },
+        bildirilmisHam: ['teslim_edilemedi'],
         odeme: {
             kapida_nakit: { pos: SMX.PAYMENT.kapida_nakit.posMethod, etiket: 'Kapıda nakit' },
             kapida_kart: { pos: SMX.PAYMENT.kapida_kart.posMethod, etiket: 'Kapıda kart' },

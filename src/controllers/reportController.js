@@ -1,7 +1,7 @@
 const { query } = require('../config/db');
-const { kanalAdi } = require('../services/paketServis');
+const { kanalAdi, PAKET } = require('../services/paketServis');
 
-// Kanal kirilimi: Salon (DINE_IN) / Paket (telefon paketi, PAKET) / Pazaryeri (SofraMix ve digerleri).
+// Kanal kirilimi: Salon (DINE_IN) / Paket (telefon paketi, PAKET_SERVIS) / Pazaryeri (SofraMix ve digerleri).
 // "Pazaryeri" toplami paketi ICERMEZ.
 
 // SQLite CURRENT_TIMESTAMP "YYYY-MM-DD HH:MM:SS" formatı kullandığı için
@@ -21,8 +21,8 @@ exports.daySummary = async (req, res) => {
             COUNT(*) AS order_count,
             COALESCE(SUM(total), 0) AS revenue,
             COALESCE(SUM(CASE WHEN channel = 'DINE_IN' THEN total ELSE 0 END), 0) AS dine_in_revenue,
-            COALESCE(SUM(CASE WHEN channel = 'PAKET' THEN total ELSE 0 END), 0) AS paket_revenue,
-            COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', 'PAKET') THEN total ELSE 0 END), 0) AS marketplace_revenue
+            COALESCE(SUM(CASE WHEN channel = '${PAKET}' THEN total ELSE 0 END), 0) AS paket_revenue,
+            COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', '${PAKET}') THEN total ELSE 0 END), 0) AS marketplace_revenue
            FROM orders
           WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 10) = ?`,
         [t, day]);
@@ -119,8 +119,8 @@ exports.monthSummary = async (req, res) => {
                 COUNT(*) AS cnt,
                 COALESCE(SUM(total), 0) AS revenue,
                 COALESCE(SUM(CASE WHEN channel = 'DINE_IN' THEN total ELSE 0 END), 0) AS dine_in,
-                COALESCE(SUM(CASE WHEN channel = 'PAKET' THEN total ELSE 0 END), 0) AS paket,
-                COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', 'PAKET') THEN total ELSE 0 END), 0) AS marketplace
+                COALESCE(SUM(CASE WHEN channel = '${PAKET}' THEN total ELSE 0 END), 0) AS paket,
+                COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', '${PAKET}') THEN total ELSE 0 END), 0) AS marketplace
            FROM orders
           WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 7) = ?
           GROUP BY day

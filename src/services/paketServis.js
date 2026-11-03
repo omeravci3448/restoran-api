@@ -4,15 +4,27 @@ const ES = require('../marketplace/paketEsleme');
 
 // --- PAKET SERVIS: ortak kurallar ---
 // Paket Servis ekranina iki kaynak duser:
-//   1) Telefon siparisi: kasada acilir, channel = 'PAKET', masasiz. Gunluk artan no (Paket 3).
+//   1) Telefon siparisi: kasada acilir, channel = 'PAKET_SERVIS', masasiz. Gunluk artan no (Paket 3).
 //      Akis: HAZIRLANIYOR -> (adrese) YOLDA / (gel-al) HAZIR -> TESLIM -> odeme -> hesap kapanir.
 //   2) Pazaryeri siparisi: cekme dongusu (services/siparisCekici.js) yazar, channel = adaptor kodu.
 //      Hangi pazaryerinin listeye dusecegi, asamasi, dugmeleri, uyarisi ve odeme yontemi ADAPTOR
 //      KODUNDAN BAGIMSIZ: marketplace/paketEsleme.js'teki satirdan okunur (bugun yalniz SofraMix).
 // Temel pakette: lisans modulu (MARKETPLACE) ISTEMEZ.
 
-const PAKET = 'PAKET';
+// Kanal kodu: elle acilan pazaryeri kanalinin ADI orders.channel'a yazildigi icin (ornek "Paket") onunla
+// cakismayacak bir kod; ayrica pazaryeri kanal adi olarak ayrilmis (marketplaceController).
+const PAKET = 'PAKET_SERVIS';
 const paketKanaliMi = (kanal) => kanal === PAKET || !!ES.satir(kanal);
+
+// Musteri adi/telefon/adres yalniz Paket Servis uclarindan doner; genel siparis uclari (/api/orders,
+// /api/marketplace/orders) her role acik oldugu icin bu alanlari CIKARIR.
+const KISISEL_ALANLAR = ['musteri_ad', 'musteri_tel', 'musteri_adres'];
+function kisiselAlanlariCikar(o) {
+    if (!o) return o;
+    const k = { ...o };
+    for (const a of KISISEL_ALANLAR) delete k[a];
+    return k;
+}
 
 // Teslimat ucreti siparise OZEL KALEM olarak yazilir (product_id NULL, source bu deger): toplam, kalem
 // bazli odeme ve ciro kendiliginden dogru olur. Mutfak ekranina dusmez, "En cok satan"a girmez,
@@ -192,10 +204,15 @@ function aksiyonlarOf(o) {
             ekle('iptal', { etiket: (s.reddetDurum || []).includes(simdi) ? 'Reddet' : 'İptal et', tur: 'tehlikeli', yalnizYonetici: true, sebepZorunlu: true });
         } else ekle(kod);
     }
-    if ((s.teslimEdilemedi || []).includes(simdi) && !o.teslim_sorunu_at && adaptorYapar(o.channel, 'teslim_edilemedi')) {
+    if ((s.teslimEdilemedi || []).includes(simdi) && !teslimSorunuVar(o, s) && adaptorYapar(o.channel, 'teslim_edilemedi')) {
         ekle('teslim_edilemedi', { tur: 'ikincil', sebepZorunlu: true });
     }
     return a;
+}
+
+// "Teslim edilemedi" bildirilmis mi: yerel damga ya da eski surumun yazdigi ham deger (esleme satiri)
+function teslimSorunuVar(o, s = ES.satir(o.channel)) {
+    return !!o.teslim_sorunu_at || !!(s && (s.bildirilmisHam || []).includes(o.channel_status_raw));
 }
 
 // Kasadan yapilan islemden sonra yerelde yazilacak ham durum: esleme satirindaki gecis matrisinden
@@ -313,20 +330,23 @@ const defterGorunum = (v) => (v ? {
 // --- Ekran gorunumu ---
 async function kalemVeOdemeler(ids) {
     const kalemler = new Map(), odenen = new Map();
-    if (!ids.length) return { kalemler, odenen };
-    const yer = ids.map(() => '?').join(',');
-    // Teslimat ucreti kalemi listenin sonunda
-    const k = await query(
-        `SELECT order_id, product_name, qty, total, note, source, COALESCE(is_cancelled, 0) AS iptal
-           FROM order_items WHERE order_id IN (${yer})
-          ORDER BY CASE WHEN source = '${TESLIMAT_KAYNAK}' THEN 1 ELSE 0 END, created_at`, ids);
-    for (const r of k.rows) {
-        if (!kalemler.has(r.order_id)) kalemler.set(r.order_id, []);
-        kalemler.get(r.order_id).push({ ad: r.product_name, adet: Number(r.qty), tutar: Number(r.total), not: r.note || null, iptal: !!r.iptal,
-            ucret: r.source === TESLIMAT_KAYNAK });
+    // Acik siparislerin hepsi listelenir (sinir yok): IN listesi 500'luk parcalarla (SQLite degisken siniri)
+    for (let i = 0; i < ids.length; i += 500) {
+        const parca = ids.slice(i, i + 500);
+        const yer = parca.map(() => '?').join(',');
+        // Teslimat ucreti kalemi listenin sonunda
+        const k = await query(
+            `SELECT order_id, product_name, qty, total, note, source, COALESCE(is_cancelled, 0) AS iptal
+               FROM order_items WHERE order_id IN (${yer})
+              ORDER BY CASE WHEN source = '${TESLIMAT_KAYNAK}' THEN 1 ELSE 0 END, created_at`, parca);
+        for (const r of k.rows) {
+            if (!kalemler.has(r.order_id)) kalemler.set(r.order_id, []);
+            kalemler.get(r.order_id).push({ ad: r.product_name, adet: Number(r.qty), tutar: Number(r.total), not: r.note || null, iptal: !!r.iptal,
+                ucret: r.source === TESLIMAT_KAYNAK });
+        }
+        const p = await query(`SELECT order_id, COALESCE(SUM(amount), 0) AS s FROM payments WHERE order_id IN (${yer}) GROUP BY order_id`, parca);
+        for (const r of p.rows) odenen.set(r.order_id, Number(r.s));
     }
-    const p = await query(`SELECT order_id, COALESCE(SUM(amount), 0) AS s FROM payments WHERE order_id IN (${yer}) GROUP BY order_id`, ids);
-    for (const r of p.rows) odenen.set(r.order_id, Number(r.s));
     return { kalemler, odenen };
 }
 
@@ -370,7 +390,10 @@ function gorunum(o, kalemler, odenen) {
         teslimAt: o.teslim_at || null,
         kapanis: o.closed_at || null,
         teslimSorunuAt: o.teslim_sorunu_at || null,
+        teslimSorunu: kaynak === 'PAZARYERI' && teslimSorunuVar(o),
         aksiyonlar: aksiyonlarOf(o),
+        // Platforma gitmeden yerelde kapatma (kanal koptu / siparis platformda takildi): yalniz sahip/mudur
+        yerelKapatilabilir: kaynak === 'PAZARYERI' && o.status === 'OPEN',
         duzenlenebilir: o.channel === PAKET && o.status === 'OPEN' && (o.paket_durum || 'HAZIRLANIYOR') === 'HAZIRLANIYOR',
     };
 }
@@ -397,7 +420,7 @@ async function paketSatiri(id, tenantId) {
 }
 
 module.exports = {
-    PAKET, TELEFON_ODEME, TESLIMAT_ETIKET, ASAMA_ETIKET, AKSIYON_ETIKET,
+    PAKET, TELEFON_ODEME, TESLIMAT_ETIKET, ASAMA_ETIKET, AKSIYON_ETIKET, KISISEL_ALANLAR, kisiselAlanlariCikar, teslimSorunuVar,
     TESLIMAT_KAYNAK, TESLIMAT_KALEM_ADI, telNorm, defterBul, defterYaz, defterGeriAl, defterGorunum,
     r2, TL, odemeBilgisi, posYontemi, istanbulGunu, istanbulGunBasiUtc, sqlZamani, duzTire, kanalAdi, paketEtiketi,
     paketKanaliMi, paketKanallariSql, paketKosulu, teslimatOf, efektifHam, normalOf, hamNormal, geriMi,

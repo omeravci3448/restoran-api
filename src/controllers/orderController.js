@@ -3,7 +3,7 @@ const { query, tx } = require('../config/db');
 const gunluk = require('../services/islemGunlugu');
 const { hesabaYazIc } = require('../services/qrSiparis');
 const { hesabiKapatIc } = require('../services/hesapKapat');
-const { paketEtiketi } = require('../services/paketServis');
+const { paketEtiketi, kisiselAlanlariCikar, PAKET } = require('../services/paketServis');
 
 // Sipariş toplamlarını yeniden hesaplayıp orders satırını günceller
 async function recomputeTotals(orderId) {
@@ -32,7 +32,8 @@ exports.list = async (req, res) => {
           WHERE ${w.join(' AND ')}
           ORDER BY o.opened_at DESC
           LIMIT 200`, p);
-    res.json(r.rows);
+    // Paket musteri bilgisi (ad/telefon/adres) bu uctan DONMEZ: her rol (mutfak, garson) okuyabiliyor.
+    res.json(r.rows.map(kisiselAlanlariCikar));
 };
 
 exports.get = async (req, res) => {
@@ -44,14 +45,14 @@ exports.get = async (req, res) => {
     if (!o.rows.length) return res.status(404).json({ message: 'Sipariş yok.' });
     const items = await query('SELECT * FROM order_items WHERE order_id = ? ORDER BY created_at', [req.params.id]);
     const pays = await query('SELECT * FROM payments WHERE order_id = ? ORDER BY created_at', [req.params.id]);
-    res.json({ ...o.rows[0], items: items.rows, payments: pays.rows });
+    res.json({ ...kisiselAlanlariCikar(o.rows[0]), items: items.rows, payments: pays.rows });
 };
 
 // Yeni sipariş aç — masa için 1 aktif sipariş prensibi (aynı masada açık varsa onu döndür)
 exports.open = async (req, res) => {
     const { tableId, channel = 'DINE_IN', externalRef, note } = req.body;
     // Paket siparisi numara, musteri bilgisi ve durumla birlikte yalniz Paket Servis ucundan acilir.
-    if (String(channel).toUpperCase() === 'PAKET') return res.status(400).json({ message: 'Paket siparişi Paket Servis ekranından açılır.' });
+    if (String(channel).toUpperCase() === PAKET) return res.status(400).json({ message: 'Paket siparişi Paket Servis ekranından açılır.' });
     if (tableId) {
         // Masa bu isletmenin olmali ve silinmemis olmali (silinmis masaya hesap acilmasin)
         const tb = await query('SELECT id FROM tables WHERE id = ? AND tenant_id = ? AND is_active = 1', [tableId, req.user.tenantId]);
@@ -106,6 +107,7 @@ exports.addItem = async (req, res) => {
         [req.params.id, req.user.tenantId]);
     if (!o.rows.length) return res.status(404).json({ message: 'Sipariş yok.' });
     if (o.rows[0].status !== 'OPEN') return res.status(409).json({ message: 'Sipariş kapalı, ekleme yapılamaz.' });
+    if (paketEklemeKapali(o.rows[0])) return res.status(409).json({ message: PAKET_EKLEME_MESAJI });
 
     const p = await query('SELECT * FROM products WHERE id = ? AND tenant_id = ?',
         [productId, req.user.tenantId]);
@@ -172,6 +174,12 @@ async function kalemiBul(req) {
 
 // Paket siparisinin teslimat ucreti kalemi +/- ile degismez: tutari "Bilgileri duzenle" yonetir.
 const UCRET_MESAJI = 'Teslimat ücreti Paket Servis ekranında "Bilgileri düzenle" ile değişir.';
+// Paket siparisine urun yalniz HAZIRLANIYOR asamasinda eklenir: yola cikmis / hazir / teslim edilmis
+// siparise eklenen kalem mutfak kartini yeniden acar ve kuryenin gotureni degistirir.
+const PAKET_EKLEME_MESAJI = 'Paket siparişi yola çıktı, hazır ya da teslim edildi; artık ürün eklenemez.';
+function paketEklemeKapali(o) {
+    return o && o.channel === PAKET && (o.paket_durum || 'HAZIRLANIYOR') !== 'HAZIRLANIYOR';
+}
 
 exports.removeItem = async (req, res) => {
     const cur = await kalemiBul(req);
@@ -193,6 +201,10 @@ exports.updateItem = async (req, res) => {
     const newQty = qty != null ? Number(qty) : Number(cur.qty);
     if (!(newQty > 0)) return res.status(400).json({ message: 'Adet 1 veya daha fazla olmalı; kaldırmak için silin.' });
     const azaliyor = newQty < Number(cur.qty);
+    if (newQty > Number(cur.qty)) {
+        const ord = (await query('SELECT channel, paket_durum FROM orders WHERE id = ? AND tenant_id = ?', [cur.order_id, req.user.tenantId])).rows[0];
+        if (paketEklemeKapali(ord)) return res.status(409).json({ message: PAKET_EKLEME_MESAJI });
+    }
     let izin = null;
     if (azaliyor) {
         izin = await kalemDuzeltmeKontrol(req, cur);
@@ -219,9 +231,10 @@ exports.close = async (req, res) => {
         [id, req.user.tenantId]);
     if (!o.rows.length) return res.status(404).json({ message: 'Sipariş yok.' });
     if (o.rows[0].status === 'CLOSED') return res.json({ message: 'Zaten kapalı.' });
+    if (o.rows[0].status !== 'OPEN') return res.status(409).json({ message: 'İptal edilmiş sipariş kapatılamaz.' });
     // Paket siparisi teslim edilmeden kapanmaz: kapanan siparis listeden duser, kuryenin yolda oldugu bilgisi kaybolurdu.
     // (Teslim edildi denince odeme tamamsa hesap kendiliginden kapanir - bkz paketController.aksiyon)
-    if (o.rows[0].channel === 'PAKET' && o.rows[0].paket_durum !== 'TESLIM') {
+    if (o.rows[0].channel === PAKET && o.rows[0].paket_durum !== 'TESLIM') {
         return res.status(409).json({ code: 'PAKET_TESLIM_YOK',
             message: 'Paket siparişi teslim edilmeden hesap kapatılamaz. Önce "Teslim edildi" deyin.' });
     }
@@ -239,7 +252,13 @@ exports.close = async (req, res) => {
     }
 
     // Kapatma (masa bosalt + stok dusumu) ortak serviste: paket teslimde ayni yolu kullanir.
-    await tx(() => hesabiKapatIc({ orderId: id, tenantId: req.user.tenantId, userId: req.user.id, tableId: o.rows[0].table_id }));
+    // Yalniz ACIK siparis kapanir (ayni anda iki istek: ikincisi 409, stok bir kez duser).
+    try {
+        await tx(() => hesabiKapatIc({ orderId: id, tenantId: req.user.tenantId, userId: req.user.id, tableId: o.rows[0].table_id }));
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
 
     res.json({ message: 'Sipariş kapatıldı.', orderTotal, paidTotal });
 };

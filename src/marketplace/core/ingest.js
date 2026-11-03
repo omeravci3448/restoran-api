@@ -3,6 +3,7 @@ const { query, tx } = require('../../config/db');
 const { toTL } = require('../money');
 const paket = require('../../services/paketServis');
 const PaketEsleme = require('../paketEsleme');
+const kvkk = require('../../services/paketKvkk');
 const bus = require('../../services/eventBus');
 
 // ——— Sipariş alım boru hattı (INBOX → normalize → orders) ———
@@ -61,6 +62,12 @@ async function sonrakiIsler(orderId, s) {
     } catch (e) { console.error('[ingest] teslim sonrasi isler:', e.message); }
 }
 
+// KVKK: islenen olayin ham yukunu bosalt (olay kaydi ve tekrar-koruma anahtari kalir; yuk islendikten
+// sonra hicbir yerde okunmuyor).
+async function yukuBosalt(eventId) {
+    if (eventId) await query('UPDATE marketplace_events SET payload = ? WHERE id = ?', [kvkk.BOS_YUK, eventId]);
+}
+
 // Normalize edilmiş siparişi orders/order_items'a yaz (UPSERT).
 // Var olan sipariş: durum ve tutarlar güncellenir, kalemler YENİDEN yazılmaz.
 //
@@ -84,21 +91,27 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
 
     if (existing.rows.length) {
         const orderId = existing.rows[0].id;
+        const yereldeAcik = existing.rows[0].status === 'OPEN';
         // Platform durumu yalniz ILERI gider. Kasadan "yola cikti" denildikten hemen sonra, ondan once
         // cekilmis eski bir olay islenirse durum geri gitmesin (ekranda dugmeler geri gelirdi).
         // Sira esleme satirinin normalize sozlugunden (satiri olmayan kanalda eski davranis).
         const geri = paket.geriMi(channelCode, existing.rows[0].channel_status_raw, n.platformStatusRaw);
+        // Yerel durum, tutar, kapanis zamani ve damgalar YALNIZ siparis yerelde ACIKKEN degisir. Yerelde kapanmis /
+        // iptal edilmis siparise gelen olay (ornek: kapanis zamani bos eski SofraMix kaydi platformda guncellendi)
+        // kapanisi bugune cekmez, ciroyu/odemeyi degistirmez. Kosul SQL'de (SET ifadeleri ESKI satiri gorur).
         if (!geri) await query(
             `UPDATE orders SET
-                status = CASE WHEN ? IN ('CANCELLED','REJECTED') THEN 'CANCELLED'
+                status = CASE WHEN status <> 'OPEN' THEN status
+                              WHEN ? IN ('CANCELLED','REJECTED') THEN 'CANCELLED'
                               WHEN ? = 'DELIVERED' THEN 'CLOSED' ELSE status END,
-                closed_at = CASE WHEN ? IN ('CANCELLED','REJECTED','DELIVERED') THEN COALESCE(closed_at, ?, CURRENT_TIMESTAMP) ELSE closed_at END,
-                yola_cikti_at = CASE WHEN ? = 'DISPATCHED' THEN COALESCE(yola_cikti_at, ?, CURRENT_TIMESTAMP) ELSE yola_cikti_at END,
-                hazir_at = CASE WHEN ? = 'READY' THEN COALESCE(hazir_at, ?, CURRENT_TIMESTAMP) ELSE hazir_at END,
-                teslim_at = CASE WHEN ? = 'DELIVERED' THEN COALESCE(teslim_at, ?, CURRENT_TIMESTAMP) ELSE teslim_at END,
+                closed_at = CASE WHEN status = 'OPEN' AND ? IN ('CANCELLED','REJECTED','DELIVERED') THEN COALESCE(closed_at, ?, CURRENT_TIMESTAMP) ELSE closed_at END,
+                yola_cikti_at = CASE WHEN status = 'OPEN' AND ? = 'DISPATCHED' THEN COALESCE(yola_cikti_at, ?, CURRENT_TIMESTAMP) ELSE yola_cikti_at END,
+                hazir_at = CASE WHEN status = 'OPEN' AND ? = 'READY' THEN COALESCE(hazir_at, ?, CURRENT_TIMESTAMP) ELSE hazir_at END,
+                teslim_at = CASE WHEN status = 'OPEN' AND ? = 'DELIVERED' THEN COALESCE(teslim_at, ?, CURRENT_TIMESTAMP) ELSE teslim_at END,
                 channel_status_raw = ?, channel_sub = COALESCE(?, channel_sub),
                 platform_modified_at = ?, raw_payload_id = COALESCE(?, raw_payload_id),
-                total = COALESCE(?, total), subtotal = COALESCE(?, subtotal),
+                total = CASE WHEN status = 'OPEN' THEN COALESCE(?, total) ELSE total END,
+                subtotal = CASE WHEN status = 'OPEN' THEN COALESCE(?, subtotal) ELSE subtotal END,
                 is_address_masked = CASE WHEN ? = 1 THEN 1 ELSE is_address_masked END,
                 odeme_sekli = COALESCE(?, odeme_sekli)
               WHERE id = ?`,
@@ -106,16 +119,25 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
                 n.platformStatusRaw, n.subChannel, n.platformModifiedAt, eventId,
                 toTL(n.money?.grandTotalKurus), toTL(n.money?.grandTotalKurus),
                 n.isAddressMasked ? 1 : 0, odemeKodu, orderId]);
-        if (kisisel && !existing.rows[0].musteri_silindi_at) {
+        let silinmis = !!existing.rows[0].musteri_silindi_at;
+        if (kisisel && !silinmis) {
             if (m.silindi) {
-                await query(`UPDATE orders SET musteri_ad = NULL, musteri_tel = NULL, musteri_adres = NULL,
+                // Platform musteriyi sildi/maskeledi: yerel kopya, serbest not ve onceki olay yukleri de silinir
+                await query(`UPDATE orders SET musteri_ad = NULL, musteri_tel = NULL, musteri_adres = NULL, note = NULL,
                                     musteri_silindi_at = CURRENT_TIMESTAMP WHERE id = ?`, [orderId]);
-            } else {
+                await kvkk.siparisOlaylariniTemizle(tenantId, channelCode, n.externalOrderId);
+                silinmis = true;
+            } else if (yereldeAcik) {
+                // Bilgi yalniz teslim edilecek (ACIK) sipariste tazelenir; kapanmis siparise yeniden yazilmaz
                 await query('UPDATE orders SET musteri_ad = ?, musteri_tel = ?, musteri_adres = ? WHERE id = ?',
                     [m.ad, m.tel, m.adres, orderId]);
             }
         }
-        if (!geri) await sonrakiIsler(orderId, s);
+        // Kisisel bilgisi silinmis siparise (30 gun / platform silmesi / Musteriyi unut) yeni olay geldi: bu
+        // olayin ham yuku de (platform hala tam bilgiyle gonderiyor olabilir) olay kutusunda durmasin.
+        if (kisisel && silinmis) await yukuBosalt(eventId);
+        // Mutfaktan dusurme / eksik odeme: yalniz yerelde ACIK siparis kapanirken (bir kez)
+        if (!geri && yereldeAcik) await sonrakiIsler(orderId, s);
         return { orderId, created: false };
     }
 
@@ -136,7 +158,7 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
              VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [orderId, tenantId, channelCode, n.externalOrderId, yerel,
                 toTL(n.money?.grandTotalKurus) || 0, toTL(n.money?.grandTotalKurus) || 0,
-                n.customerNote || null, n.subChannel, n.platformStatusRaw, n.deliveryMode,
+                kisisel && m.silindi ? null : (n.customerNote || null), n.subChannel, n.platformStatusRaw, n.deliveryMode,
                 n.isTest ? 1 : 0, n.isAddressMasked ? 1 : 0, n.externalOrderNo,
                 n.platformModifiedAt, eventId,
                 yerel === 'OPEN' ? null : an,
@@ -157,6 +179,7 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
         }
     });
     await sonrakiIsler(orderId, s);
+    if (kisisel && m.silindi) await yukuBosalt(eventId);   // ilk gorulen siparis zaten maskeli: ham yuk de tutulmaz
     // Kasaya canli uyari (SSE + ses + kart): yalniz Paket Servis ekranina dusen ACIK siparis. Ayri olay adi
     // ('paket_siparis'): garson uygulamasi 'new_order'i "QR siparisi" diye caliyor, ona karismasin.
     // Kisisel veri olaya KONMAZ (mutfak tableti / garson telefonu da bu akisi dinliyor).

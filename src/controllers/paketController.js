@@ -7,10 +7,10 @@ const gunluk = require('../services/islemGunlugu');
 const bus = require('../services/eventBus');
 
 // --- PAKET SERVIS ekrani ---
-// Telefon siparisi (channel 'PAKET') + pazaryeri siparisleri (marketplace/paketEsleme.js'te satiri olan her
-// kanal; bugun SofraMix) tek listede. Temel paket: modul istemez.
-// Okuma ve durum ilerletme her kasa rolune acik (KITCHEN haric, route'ta); iptal yalniz sahip/mudur
-// (bos telefon siparisi haric) ve islem gunlugune yazilir.
+// Telefon siparisi (channel 'PAKET_SERVIS') + pazaryeri siparisleri (marketplace/paketEsleme.js'te satiri olan
+// her kanal; bugun SofraMix) tek listede. Temel paket: modul istemez.
+// Okuma ve durum ilerletme kasa rollerine acik (sahip, mudur, kasiyer; mutfak ve garson YOK - route); iptal ve
+// yerelde kapatma yalniz sahip/mudur (bos telefon siparisi iptali haric) ve islem gunlugune yazilir.
 
 const YONETICI = ['OWNER', 'MANAGER'];
 
@@ -72,16 +72,19 @@ async function teslimatUcretiYazIc(orderId, ucret) {
 const urunSayisi = async (orderId) => Number((await query(
     'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND COALESCE(source, \'\') != ?', [orderId, P.TESLIMAT_KAYNAK])).rows[0].c);
 
-// GET /api/paket -> acik siparisler + bugun (Istanbul) kapanan/iptal edilenler
+// GET /api/paket -> acik siparislerin HEPSI + bugun (Istanbul) kapanan/iptal edilenler (son 300)
 exports.liste = async (req, res) => {
-    const r = await query(
+    const acik = await query(
+        `SELECT o.* FROM orders o WHERE o.tenant_id = ? AND ${P.paketKosulu()} AND o.status = 'OPEN'
+          ORDER BY o.opened_at`, [req.user.tenantId]);
+    const biten = await query(
         `SELECT o.* FROM orders o
           WHERE o.tenant_id = ? AND ${P.paketKosulu()}
-            AND (o.status = 'OPEN' OR (o.status IN ('CLOSED', 'CANCELLED') AND COALESCE(o.closed_at, o.opened_at) >= ?))
-          ORDER BY o.opened_at DESC
+            AND o.status IN ('CLOSED', 'CANCELLED') AND COALESCE(o.closed_at, o.opened_at) >= ?
+          ORDER BY COALESCE(o.closed_at, o.opened_at) DESC
           LIMIT 300`,
         [req.user.tenantId, P.istanbulGunBasiUtc()]);
-    const siparisler = await P.gorunumler(r.rows);
+    const siparisler = await P.gorunumler([...acik.rows, ...biten.rows]);
     // Sira: acik olanlar once (yeni gelen pazaryeri siparisi en ustte, sonra en eski acilan), bitenler en son kapanan ustte
     siparisler.sort((a, b) => {
         const ga = a.durum === 'OPEN' ? 0 : 1, gb = b.durum === 'OPEN' ? 0 : 1;
@@ -160,6 +163,15 @@ exports.guncelle = async (req, res) => {
                 [f.ad, f.tel, f.adres, f.not, f.odeme, f.deliveryMode, o.id, req.user.tenantId]);
             if (!u.changes) { const e = new Error('Sipariş bu arada ilerledi; ekranı yenileyin.'); e.status = 409; throw e; }
             await teslimatUcretiYazIc(o.id, f.ucret);
+            // Ucret dusurulunce / gel-al'a gecince toplam alinan odemenin altina inerse hesap bir daha kapanamaz
+            // (odeme = toplam sarti): degisiklik geri alinir.
+            const yeni = Number((await query('SELECT total FROM orders WHERE id = ?', [o.id])).rows[0].total || 0);
+            const odenen = Number((await query('SELECT COALESCE(SUM(amount), 0) AS s FROM payments WHERE order_id = ?', [o.id])).rows[0].s);
+            if (odenen - yeni > 0.01) {
+                const e = new Error(`Bu siparişte ${P.TL(odenen)} ödeme alınmış; değişiklikle toplam ${P.TL(yeni)} olur ve ödenenin altına iner. `
+                    + 'Önce fazla ödemeyi silin (yönetici), sonra tekrar deneyin.');
+                e.status = 409; throw e;
+            }
             // Defter: numara degistiyse eski numaranin bu siparisle acilan kaydi geri alinir, yenisi yazilir.
             // Numara ayniysa yalniz VAR OLAN kayit guncellenir ("Musteriyi unut" sonrasi geri gelmesin).
             const eskiNorm = P.telNorm(o.musteri_tel), yeniNorm = P.telNorm(f.tel);
@@ -178,9 +190,10 @@ exports.guncelle = async (req, res) => {
 };
 
 // --- Musteri defteri ---
-// GET /api/paket/musteri?tel=...  -> { musteri } (yoksa null). Yalniz bu isletmenin telefon siparislerinden.
+// POST /api/paket/musteri/bul { tel } -> { musteri } (yoksa null). Yalniz bu isletmenin telefon siparislerinden.
+// Telefon GOVDEDE: adres satirinda (sunucu / vekil kayitlarinda) kisisel veri tasinmasin.
 exports.musteriBul = async (req, res) => {
-    const v = await P.defterBul(req.user.tenantId, req.query.tel);
+    const v = await P.defterBul(req.user.tenantId, (req.body || {}).tel);
     res.json({ musteri: P.defterGorunum(v) });
 };
 
@@ -303,6 +316,46 @@ exports.iptal = async (req, res) => {
         await aksiyonServisi.uygula({ tenantId: req.user.tenantId, orderId: o.id, aksiyon: 'iptal', sebep, user: req.user, izinliMi });
         return res.json({ ok: true });
     } catch (e) { return aksiyonHatasiGonder(res, e); }
+};
+
+// POST /api/paket/:id/yerel-kapat { sonuc: 'TESLIM' | 'IPTAL', sebep }   (yalniz sahip/mudur - route)
+// Pazaryeri siparisi takildiysa (kanal baglantisi koptu / platformda bir daha degismiyor) aktif listeden
+// kaldirmak icin. Platforma GITMEZ. TESLIM: kapanir, eksik odeme platformun bildirdigi yontemle yazilir
+// (ciro ve gun sonu tutar). IPTAL: iptal sayilir, ciroya girmez. Sebep zorunlu, islem gunlugune yazilir;
+// musteri bilgisi 30 gun sonra silinir (normal kural). Platformdan sonra gelen olay bu kapanisi DEGISTIRMEZ.
+exports.yerelKapat = async (req, res) => {
+    const o = await P.paketSatiri(req.params.id, req.user.tenantId);
+    if (!o) return res.status(404).json({ message: 'Paket siparişi bulunamadı.' });
+    if (o.channel === P.PAKET) return res.status(400).json({ message: 'Telefon siparişinde "Teslim edildi" ya da "İptal et" kullanın.' });
+    if (o.status !== 'OPEN') return res.status(409).json({ message: 'Bu sipariş zaten kapanmış ya da iptal edilmiş.' });
+    const sonuc = String((req.body || {}).sonuc || '').toUpperCase();
+    if (!['TESLIM', 'IPTAL'].includes(sonuc)) return res.status(400).json({ message: 'Sonucu seçin: teslim edildi mi, iptal mi?' });
+    const sebep = String((req.body || {}).sebep || '').trim().slice(0, 300);
+    if (sebep.length < 10) return res.status(400).json({ message: 'Sebep yazın (en az 10 karakter); işlem günlüğüne yazılır.' });
+    const durum = sonuc === 'TESLIM' ? 'CLOSED' : 'CANCELLED';
+    let otoOdeme = 0;
+    try {
+        await tx(async () => {
+            const u = await query(
+                `UPDATE orders SET status = ?, closed_at = CURRENT_TIMESTAMP,
+                        teslim_at = CASE WHEN ? = 'CLOSED' THEN COALESCE(teslim_at, CURRENT_TIMESTAMP) ELSE teslim_at END,
+                        cancelled_by = CASE WHEN ? = 'CANCELLED' THEN ? ELSE cancelled_by END
+                  WHERE id = ? AND tenant_id = ? AND status = 'OPEN'`,
+                [durum, durum, durum, req.user.id, o.id, req.user.tenantId]);
+            if (!u.changes) { const e = new Error('Bu sipariş zaten kapanmış ya da iptal edilmiş.'); e.status = 409; throw e; }
+            await P.mutfakKalemleriniKapat(o.id);
+            if (durum === 'CLOSED') otoOdeme = await P.otoOdemeYazIc(o.id);
+        });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
+    await gunluk.kaydet({
+        tenantId: req.user.tenantId, user: req.user, islem: 'yerel_kapat', hedefTur: 'order', hedefId: o.id,
+        detay: `${P.paketEtiketi(o)} - ${P.TL(o.total)} - ${sonuc === 'TESLIM' ? 'teslim edildi sayıldı' : 'iptal sayıldı'} `
+            + `(platforma iletilmedi) - ${sebep}`,
+    });
+    res.json({ ok: true, otoOdeme, siparis: (await P.gorunumler([await P.paketSatiri(o.id, req.user.tenantId)]))[0] });
 };
 
 exports._ic = { formuOku };

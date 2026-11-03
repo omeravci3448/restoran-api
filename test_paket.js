@@ -1,8 +1,10 @@
 // PAKET SERVIS: telefon siparisi (olustur, kalem, bilgi duzenle, durum, odeme + kapanis, iptal yetkisi, paket no),
 // kiraci izolasyonu, MARKETPLACE modulu olmadan calisma, SofraMix siparisi (listede gorunme, musteri bilgisi,
 // aksiyonun adaptore gitmesi, gecis kurali, teslimde tek seferlik otomatik odeme, maskeli adresin silinmesi,
-// platform hata mesaji), SSE uyarisi, mutfak etiketi, 30 gun KVKK temizligi, rapor kirilimi,
-// musteri defteri (bulma, tekillik, unutma, 365 gun, kiraci izolasyonu), teslimat ucreti (ayri kalem).
+// platform hata mesaji), SSE uyarisi, mutfak etiketi, 30 gun KVKK temizligi (olay kutusu yukleri dahil), rapor kirilimi,
+// musteri defteri (bulma, tekillik, unutma, 365 gun, kiraci izolasyonu), teslimat ucreti (ayri kalem, odenenin altina inmez),
+// yerelde kapali siparise gelen olay (kapanis/ciro/odeme degismez), ilk kez teslim gorulen siparis, yerelde kapat,
+// kapanis guvenligi (iptal edilen kapanmaz, esanli kapatma), ayrilmis kanal adlari, liste siniri (acik siparis kesilmez).
 // Sahte SofraMix bu testin icinde kosar (ag yok). Calistir: node test_paket.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -10,6 +12,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { v4: uuid } = require('uuid');
 const { query, initDb } = require('./src/config/db');
+const KVKK = require('./src/services/paketKvkk');
 
 const PORT = 45975, TABAN = `http://127.0.0.1:${PORT}`, PANEL = 'http://panel.test';
 const SMX_PORT = 45976, SMX = `http://127.0.0.1:${SMX_PORT}`;
@@ -180,7 +183,9 @@ const smx = http.createServer(async (req, res) => {
     ok('mutfak hesabi (KITCHEN) goremez 403', (await js('/api/paket', { token: mutfak.token })).status === 403);
     const l0 = await js('/api/paket', { token: sahip.token });
     ok('MARKETPLACE modulu olmadan liste 200', l0.status === 200 && Array.isArray(l0.d.siparisler), l0);
-    ok('garson listeyi okur', (await js('/api/paket', { token: garson.token })).status === 200);
+    ok('garson (WAITER) paket goremez 403 (Patron karari)', (await js('/api/paket', { token: garson.token })).status === 403);
+    ok('garson paket acamaz 403', (await js('/api/paket', { token: garson.token, body: { musteriAd: 'X', teslimat: 'GEL_AL' } })).status === 403);
+    ok('garson musteri defterine de bakamaz 403', (await js('/api/paket/musteri/bul', { token: garson.token, body: { tel: '05321112233' } })).status === 403);
     const mp0 = await js('/api/marketplace/orders', { token: sahip.token });
     ok('(karsilastirma) pazaryeri ucu modulsuz 403', mp0.status === 403 && mp0.d.code === 'MODULE_NOT_LICENSED', mp0);
 
@@ -204,8 +209,16 @@ const smx = http.createServer(async (req, res) => {
     ok('P2: Paket 2, gel-al -> Hazir dugmesi', p2.paketNo === 2 && p2.teslimat === 'GEL_AL' && p2.aksiyonlar[0].kod === 'hazir' && p2.odeme.etiket === 'Kapıda kart', p2);
     const pB = (await js('/api/paket', { token: sahipB.token, body: { musteriTel: '05000000000', teslimat: 'GEL_AL' } })).d;
     ok('B isletmesinde numara 1den baslar', pB.paketNo === 1, pB);
-    const gen = await js('/api/orders', { token: kasiyer.token, body: { channel: 'PAKET' } });
-    ok('genel siparis ucundan PAKET acilamaz (400)', gen.status === 400, gen);
+    const gen = await js('/api/orders', { token: kasiyer.token, body: { channel: 'PAKET_SERVIS' } });
+    const gen2 = await js('/api/orders', { token: kasiyer.token, body: { channel: 'paket_servis' } });
+    ok('genel siparis ucundan paket kanali acilamaz (400, buyuk/kucuk harf)', gen.status === 400 && gen2.status === 400, [gen, gen2]);
+    ok('telefon siparisinin kanal kodu PAKET_SERVIS (elle acilan "PAKET" kanaliyla karismaz)',
+        (await query('SELECT channel FROM orders WHERE id = ?', [p1.id])).rows[0].channel === 'PAKET_SERVIS');
+    // Esanli 5 siparis: gunluk paket no tekil ve ardisik kalmali (yazma kilidi + UNIQUE indeks)
+    const esZaman = await Promise.all([1, 2, 3, 4, 5].map((i) => yeni({ musteriAd: 'Esanli ' + i, teslimat: 'GEL_AL' })));
+    const nolar = esZaman.map(r => r.d && r.d.paketNo).sort((a, b) => a - b);
+    ok('esanli acilista paket no tekil ve ardisik (3..7)', esZaman.every(r => r.status === 201) && nolar.join(',') === '3,4,5,6,7', nolar);
+    for (const r of esZaman) await js(`/api/paket/${r.d.id}/iptal`, { token: mudur.token, body: {} });
 
     console.log('\n=== 4) Kalemler (masadaki ayni uclar) + mutfak etiketi ===');
     await js(`/api/orders/${p1.id}/items`, { token: kasiyer.token, body: { productId: lahmacun.id, qty: 2 } });
@@ -217,6 +230,15 @@ const smx = http.createServer(async (req, res) => {
     ok('mutfakta "Paket 1" karti (masa adi bos, teslimat yazili)', kp1 && kp1.etiket === 'Paket 1' && !kp1.tableName && kp1.teslimat === 'Adrese teslim', kp1);
     const gk = (await js('/api/mutfak/kuyruk?istasyon=HEPSI', { token: garson.token })).d;
     ok('garson uygulamasi paket siparisini GORMEZ (kuyrukta yok)', gk && !gk.kartlar.some(k => k.orderId === p1.id), gk && gk.kartlar.map(k => k.etiket));
+    // KVKK: genel siparis uclari her role acik -> musteri ad/telefon/adres DONMEZ
+    const kisiselYok = (o) => o && !('musteri_ad' in o) && !('musteri_tel' in o) && !('musteri_adres' in o);
+    const ko = await js('/api/orders?channel=PAKET_SERVIS', { token: mutfak.token });
+    ok('mutfak /api/orders?channel=PAKET_SERVIS: siparis var ama musteri alanlari YOK', ko.status === 200 && ko.d.some(o => o.id === p1.id) && ko.d.every(kisiselYok), ko.d && ko.d[0]);
+    const go1 = await js('/api/orders/' + p1.id, { token: garson.token });
+    const ko1 = await js('/api/orders/' + p1.id, { token: mutfak.token });
+    ok('garson ve mutfak /api/orders/:id: musteri alanlari YOK', go1.status === 200 && kisiselYok(go1.d) && ko1.status === 200 && kisiselYok(ko1.d), [go1.d && Object.keys(go1.d)]);
+    ok('kasiyer de genel uctan goremez (bilgi yalniz Paket Servis ucunda)', kisiselYok((await js('/api/orders/' + p1.id, { token: kasiyer.token })).d)
+        && (await js('/api/paket/' + p1.id, { token: kasiyer.token })).d.musteri.tel === '0532 111 22 33');
 
     console.log('\n=== 5) Bilgi duzenleme ===');
     const d1 = await js('/api/paket/' + p1.id, { token: kasiyer.token, method: 'PUT', body: { musteriAdres: 'Yeni Mah. 7. Sok. No:1' } });
@@ -236,6 +258,11 @@ const smx = http.createServer(async (req, res) => {
     ok('yola cikinca mutfak kartindan dustu', !kq2.kartlar.some(k => k.orderId === p1.id), kq2.kartlar.map(k => k.etiket));
     ok('yola ciktiktan sonra bilgi degismez (409)', (await js('/api/paket/' + p1.id, { token: kasiyer.token, method: 'PUT', body: { musteriAd: 'B' } })).status === 409);
     ok('ikinci kez yola cikti 409', (await aks(p1.id, 'yolda')).status === 409);
+    const yoldaEkle = await js(`/api/orders/${p1.id}/items`, { token: kasiyer.token, body: { productId: ayran.id, qty: 1 } });
+    ok('yola cikan pakete urun EKLENEMEZ (409, mutfak karti yeniden acilmaz)', yoldaEkle.status === 409 && /eklenemez/.test(yoldaEkle.d.message), yoldaEkle);
+    const p1Kalem = (await js(`/api/orders/${p1.id}`, { token: kasiyer.token })).d.items.find(i => i.product_id === lahmacun.id);
+    ok('yola cikan pakette adet ARTIRILAMAZ (409)', (await js(`/api/orders/${p1.id}/items/${p1Kalem.id}`, { token: kasiyer.token, method: 'PUT', body: { qty: 3 } })).status === 409);
+    ok('mutfak karti yeniden acilmadi', !(await js('/api/mutfak/kuyruk?istasyon=HEPSI', { token: mutfak.token })).d.kartlar.some(k => k.orderId === p1.id));
     const erkenKapat = await js(`/api/orders/${p1.id}/close`, { token: kasiyer.token, body: {} });
     ok('teslimden once hesap kapatilamaz (409 PAKET_TESLIM_YOK)', erkenKapat.status === 409 && erkenKapat.d.code === 'PAKET_TESLIM_YOK', erkenKapat);
 
@@ -243,6 +270,8 @@ const smx = http.createServer(async (req, res) => {
     const t1 = await aks(p1.id, 'teslim');
     ok('P1 teslim: odeme yok -> acik kalir, "Odeme bekliyor"', t1.status === 200 && t1.d.kapandi === false && t1.d.siparis.asama === 'TESLIM'
         && t1.d.siparis.grup === 'odeme' && !!t1.d.siparis.teslimAt, t1);
+    const teslimEkle = await js(`/api/orders/${p1.id}/items`, { token: kasiyer.token, body: { productId: ayran.id, qty: 1 } });
+    ok('teslim edilmis (odeme bekleyen) pakete de urun EKLENEMEZ (409)', teslimEkle.status === 409 && /eklenemez/.test(teslimEkle.d.message), teslimEkle);
     const it1 = (await js(`/api/orders/${p1.id}`, { token: kasiyer.token })).d.items;
     const by = await js('/api/payments/by-items', { token: kasiyer.token, body: { orderId: p1.id, method: 'NAKIT', items: it1.map(i => ({ itemId: i.id, qty: i.qty })) } });
     ok('kalem bazli tahsilat (mevcut odeme ekrani)', by.status === 201 && by.d.amount === 270, by);
@@ -255,6 +284,7 @@ const smx = http.createServer(async (req, res) => {
     const onOdeme = await js('/api/payments', { token: kasiyer.token, body: { orderId: p2.id, method: 'KREDI_KARTI', amount: 60 } });
     ok('teslimden once odeme alinabilir', onOdeme.status === 201, onOdeme);
     ok('P2 hazir', (await aks(p2.id, 'hazir')).d.siparis.asama === 'HAZIR');
+    ok('hazir (gel-al) pakete urun eklenemez (409)', (await js(`/api/orders/${p2.id}/items`, { token: kasiyer.token, body: { productId: ayran.id, qty: 1 } })).status === 409);
     const t2 = await aks(p2.id, 'teslim');
     ok('P2 teslim: odeme tamam -> hesap KENDILIGINDEN kapandi', t2.status === 200 && t2.d.kapandi === true && t2.d.siparis.durum === 'CLOSED', t2);
     const stok = (await query("SELECT COUNT(*) AS c, SUM(qty) AS q FROM stock_movements WHERE ref_id = ? AND kind = 'OUT'", [p2.id])).rows[0];
@@ -265,7 +295,7 @@ const smx = http.createServer(async (req, res) => {
     console.log('\n=== 8) Iptal yetkisi + islem gunlugu ===');
     const p3 = (await yeni({ musteriTel: '05321234567', teslimat: 'GEL_AL' })).d;
     await js(`/api/orders/${p3.id}/items`, { token: kasiyer.token, body: { productId: lahmacun.id, qty: 1 } });
-    ok('Paket 3', p3.paketNo === 3, p3.paketNo);
+    ok('Paket 8 (esanli 5 siparisten sonra)', p3.paketNo === 8, p3.paketNo);
     const iptal = (id, tok, sebep) => js(`/api/paket/${id}/iptal`, { token: tok, body: { sebep } });
     ok('kasiyer dolu siparisi iptal edemez (403)', (await iptal(p3.id, kasiyer.token)).status === 403);
     ok('garson iptal edemez (403)', (await iptal(p3.id, garson.token)).status === 403);
@@ -274,13 +304,30 @@ const smx = http.createServer(async (req, res) => {
     const g3 = (await js('/api/paket/' + p3.id, { token: mudur.token })).d;
     ok('mudur iptal eder -> IPTAL', ip3.status === 200 && g3.durum === 'CANCELLED' && g3.asama === 'IPTAL', [ip3, g3.durum]);
     const gl3 = (await query("SELECT * FROM islem_gunlugu WHERE tenant_id = ? AND hedef_id = ? AND islem = 'siparis_iptal'", [tid, p3.id])).rows[0];
-    ok('islem gunlugune yazildi (kim + Paket 3 + sebep)', gl3 && gl3.user_name === 'Mudur Can' && /Paket 3/.test(gl3.detay) && /Musteri vazgecti/.test(gl3.detay), gl3);
+    ok('islem gunlugune yazildi (kim + Paket 8 + sebep)', gl3 && gl3.user_name === 'Mudur Can' && /Paket 8/.test(gl3.detay) && /Musteri vazgecti/.test(gl3.detay), gl3);
     ok('iptal edilen tekrar iptal edilemez (409)', (await iptal(p3.id, mudur.token)).status === 409);
     const p4 = (await yeni({ musteriAd: 'Yanlis Acilan', teslimat: 'GEL_AL' })).d;
     const ip4 = await iptal(p4.id, kasiyer.token);
     ok('BOS siparisi kasiyer de silebilir (yanlislikla acilan)', ip4.status === 200, ip4);
     const gl4 = (await query("SELECT detay FROM islem_gunlugu WHERE hedef_id = ?", [p4.id])).rows[0];
     ok('bos iptal de gunlukte', gl4 && /boş sipariş/.test(gl4.detay), gl4);
+
+    console.log('\n=== 8b) Kapanis guvenligi: iptal edilen kapanmaz, esanli kapatmada stok bir kez duser ===');
+    await query("UPDATE orders SET paket_durum = 'TESLIM' WHERE id = ?", [p3.id]);   // bayat odeme penceresi senaryosu
+    const iptalKapat = await js(`/api/orders/${p3.id}/close`, { token: kasiyer.token, body: {} });
+    ok('iptal edilmis paket bayat pencereden KAPATILAMAZ (409)', iptalKapat.status === 409
+        && (await query('SELECT status FROM orders WHERE id = ?', [p3.id])).rows[0].status === 'CANCELLED', iptalKapat);
+    const p9 = (await yeni({ musteriAd: 'Esanli Kapanis', teslimat: 'GEL_AL' })).d;
+    await js(`/api/orders/${p9.id}/items`, { token: kasiyer.token, body: { productId: ayran.id, qty: 1 } });
+    await aks(p9.id, 'hazir'); await aks(p9.id, 'teslim');
+    const it9 = (await js(`/api/orders/${p9.id}`, { token: kasiyer.token })).d.items;
+    await js('/api/payments/by-items', { token: kasiyer.token, body: { orderId: p9.id, method: 'NAKIT', items: it9.map(i => ({ itemId: i.id, qty: i.qty })) } });
+    const stokOnce = (await query('SELECT stock_qty FROM products WHERE id = ?', [ayran.id])).rows[0].stock_qty;
+    const [c1, c2] = await Promise.all([js(`/api/orders/${p9.id}/close`, { token: kasiyer.token, body: {} }), js(`/api/orders/${p9.id}/close`, { token: mudur.token, body: {} })]);
+    const hareket = (await query("SELECT COUNT(*) AS c FROM stock_movements WHERE ref_id = ? AND kind = 'OUT'", [p9.id])).rows[0].c;
+    const stokSonra = (await query('SELECT stock_qty FROM products WHERE id = ?', [ayran.id])).rows[0].stock_qty;
+    ok('esanli iki kapatma: biri kapatir, digeri kapatmaz; stok TEK kez duser', [c1.status, c2.status].includes(200) && hareket === 1 && stokSonra === stokOnce - 1,
+        [c1.status, c2.status, c1.d && c1.d.message, c2.d && c2.d.message, hareket, stokOnce, stokSonra]);
 
     console.log('\n=== 9) Kiraci izolasyonu ===');
     ok('B, A siparisini goremez (404)', (await js('/api/paket/' + p1.id, { token: sahipB.token })).status === 404);
@@ -381,8 +428,12 @@ const smx = http.createServer(async (req, res) => {
     o3.updated_at = smxZaman();
     const s3b = await bekle(async () => { const s = await smxBul(9003); return s && s.musteriSilindi ? s : null; });
     ok('SofraMix KVKK imhasi -> yerelde ad/telefon/adres SILINDI', s3b && s3b.musteri === null && s3b.musteriSilindi === true, s3b);
-    const r3 = (await query('SELECT musteri_ad, musteri_tel, musteri_adres, musteri_silindi_at FROM orders WHERE id = ?', [s3.id])).rows[0];
-    ok('veritabaninda da bos + damga', !r3.musteri_ad && !r3.musteri_tel && !r3.musteri_adres && !!r3.musteri_silindi_at, r3);
+    const r3 = (await query('SELECT musteri_ad, musteri_tel, musteri_adres, musteri_silindi_at, note FROM orders WHERE id = ?', [s3.id])).rows[0];
+    ok('veritabaninda da bos + damga + siparis notu da silindi', !r3.musteri_ad && !r3.musteri_tel && !r3.musteri_adres && !!r3.musteri_silindi_at && !r3.note, r3);
+    await bekle(async () => (await query("SELECT COUNT(*) c FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9003' AND state = 'pending'", [tid])).rows[0].c === 0);
+    const olay3 = (await query("SELECT state, payload FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9003'", [tid])).rows;
+    ok('olay kutusundaki ham SofraMix yukleri de bosaltildi (telefon/ad/adres/not KALMADI)', olay3.length >= 2
+        && olay3.every(e => e.payload === KVKK.BOS_YUK && !/0555|Zeynep|Dumlupinar|Acisiz/.test(e.payload)), olay3.map(e => e.state + ' ' + e.payload.slice(0, 60)));
     const red = await iptal(s3.id, mudur.token, 'Malzeme bitti, hazirlayamiyoruz');
     ok('mudur yeni siparisi reddeder -> SofraMix "iptal" + sebep', red.status === 200 && smxSiparis.get('9003').status === 'iptal'
         && smxSiparis.get('9003').cancel_reason === 'Malzeme bitti, hazirlayamiyoruz', red);
@@ -401,15 +452,63 @@ const smx = http.createServer(async (req, res) => {
     const mpRet = await js(`/api/marketplace/orders/${s4.id}/aksiyon`, { token: kasiyer.token, body: { aksiyon: 'kabul' } });
     ok('pazaryeri ucu da ortak servisten ayni Turkce mesaji verir', mpRet.status === 409 && /^Platform kabul etmedi: /.test(mpRet.d.message), mpRet);
     const mpListe = (await js('/api/marketplace/orders', { token: kasiyer.token })).d;
-    ok('pazaryeri listesinde telefon paketi YOK, SofraMix var', Array.isArray(mpListe) && !mpListe.some(o => o.channel === 'PAKET') && mpListe.some(o => o.channel === 'soframix'), Array.isArray(mpListe) && mpListe.map(o => o.channel));
+    ok('pazaryeri listesinde telefon paketi YOK, SofraMix var', Array.isArray(mpListe) && !mpListe.some(o => o.channel === 'PAKET_SERVIS') && mpListe.some(o => o.channel === 'soframix'), Array.isArray(mpListe) && mpListe.map(o => o.channel));
+    ok('pazaryeri listesinde de musteri ad/telefon/adres alani YOK', mpListe.length > 0 && mpListe.every(kisiselYok), mpListe[0] && Object.keys(mpListe[0]));
+    // Elle acilan kanalin ADI orders.channel'a yazilir: salon / paket servis / adaptor kodlariyla cakismamali
+    const kanalAc = (name) => js('/api/marketplace/channels', { token: sahip.token, body: { name } });
+    const ayrik = [];
+    for (const ad of ['PAKET_SERVIS', 'paket_servis', 'Paket', 'DINE_IN', 'soframix', ' SofraMix ']) ayrik.push(await kanalAc(ad));
+    ok('elle kanal: salon/paket/adaptor kodu adlari ayrilmis (400, buyuk/kucuk harf ve bosluk duyarsiz)',
+        ayrik.every(r => r.status === 400 && /ayrılmıştır/.test(r.d.message)), ayrik.map(r => r.status));
+    const elle = await kanalAc('Yemeksepeti');
+    ok('serbest ad (Yemeksepeti, elle siparis etiketi) acilir 201', elle.status === 201, elle);
+    const yenidenAd = await js('/api/marketplace/channels/' + elle.d.id, { token: sahip.token, method: 'PUT', body: { name: 'Paket_Servis' } });
+    ok('kanal adi sonradan ayrilmis ada cevrilemez (400)', yenidenAd.status === 400 && /ayrılmıştır/.test(yenidenAd.d.message), yenidenAd);
     await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
 
+    console.log('\n=== 13a) Yerelde kapali siparise gelen olay kapanisi/ciroyu/odemeyi DEGISTIRMEZ; ilk kez teslim gorulen siparise tek odeme ===');
+    // 9100: kapanis zamani BOS eski kayit (veri onarimiyla kapanmis), 9101: 40 gun once kapanmis, 9102: yerelde iptal edilmis
+    const eskiK = uuid(), eskiK2 = uuid(), eskiC = uuid();
+    const eskiEkle = (id, ref, durum, tutar, acilis, kapanis) => query(
+        `INSERT INTO orders (id, tenant_id, table_id, channel, external_ref, external_order_no, status, subtotal, total, channel_status_raw,
+                             delivery_mode, odeme_sekli, opened_at, closed_at)
+         VALUES (?, ?, NULL, 'soframix', ?, ?, ?, ?, ?, 'yolda', 'RESTAURANT_COURIER', 'kapida_nakit', datetime('now', ?), ${kapanis ? "datetime('now', ?)" : 'NULL'})`,
+        [id, tid, ref, 'SMX-AB' + ref, durum, tutar, tutar, acilis, ...(kapanis ? [kapanis] : [])]);
+    await eskiEkle(eskiK, '9100', 'CLOSED', 100, '-20 days', null);
+    await eskiEkle(eskiK2, '9101', 'CLOSED', 80, '-41 days', '-40 days');
+    await eskiEkle(eskiC, '9102', 'CANCELLED', 90, '-2 days', '-2 days');
+    const eskiSatir = async (id) => (await query('SELECT status, closed_at, teslim_at, total, musteri_tel FROM orders WHERE id = ?', [id])).rows[0];
+    const [onceK2, onceC] = [await eskiSatir(eskiK2), await eskiSatir(eskiC)];
+    for (const id of [9100, 9101, 9102]) smxYeni(id, { status: 'teslim', payment_status: 'odendi' });
+    const eskiOlay = await bekle(async () => (await query(`SELECT COUNT(*) c FROM marketplace_events WHERE tenant_id = ?
+        AND external_order_id IN ('9100', '9101', '9102') AND platform_status = 'teslim' AND state = 'done'`, [tid])).rows[0].c >= 3);
+    ok('eski siparislerin "teslim" olaylari islendi', !!eskiOlay);
+    const [sK, sK2, sC] = [await eskiSatir(eskiK), await eskiSatir(eskiK2), await eskiSatir(eskiC)];
+    ok('9100 (kapanis zamani bos): KAPALI kaldi, kapanis BUGUNE CEKILMEDI, tutar 100 kaldi', sK.status === 'CLOSED' && sK.closed_at === null && !sK.teslim_at && sK.total === 100, sK);
+    ok('9101 (40 gun once kapanmis): kapanis zamani + tutar degismedi', sK2.status === 'CLOSED' && sK2.closed_at === onceK2.closed_at && sK2.total === 80, [onceK2, sK2]);
+    ok('9102 (yerelde iptal): IPTAL kaldi, kapanis zamani + tutar degismedi', sC.status === 'CANCELLED' && sC.closed_at === onceC.closed_at && sC.total === 90, [onceC, sC]);
+    const eskiOdeme = (await query('SELECT COUNT(*) c FROM payments WHERE order_id IN (?, ?, ?)', [eskiK, eskiK2, eskiC])).rows[0].c;
+    ok('hicbirine otomatik odeme YAZILMADI (ciro/gun sonu degismez)', eskiOdeme === 0, eskiOdeme);
+    ok('kapanmis siparise musteri bilgisi YENIDEN YAZILMADI', !sK.musteri_tel && !sK2.musteri_tel && !sC.musteri_tel, [sK, sK2, sC]);
+    // POS kapaliyken teslim edilmis siparis ILK KEZ goruluyor: kapali acilir, odeme platformun yontemiyle bir kez yazilir.
+    // Telefon numarasi bilerek 13b'deki defter musterisiyle ayni ("Musteriyi unut" SofraMix kopyasini da siler).
+    smxYeni(9005, { status: 'teslim', payment_method: 'kapida_kart', payment_status: 'odendi', customer_name: 'Ayşe Yılmaz', customer_phone: '05321112233',
+        items_total_kurus: 5000, delivery_fee_kurus: 0, total_kurus: 5000,
+        items: [{ id: 90051, product_id: 6, name: 'Ayran', qty: 2, unit_price_kurus: 2500, total_kurus: 5000, note: '', options: [] }] });
+    await bekle(async () => (await query("SELECT COUNT(*) c FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9005' AND state = 'done'", [tid])).rows[0].c > 0);
+    const s5 = (await query("SELECT * FROM orders WHERE tenant_id = ? AND channel = 'soframix' AND external_ref = '9005'", [tid])).rows[0];
+    ok('ilk kez teslim gorulen 9005: ACIK degil KAPALI acildi + kapanis/teslim zamani', s5 && s5.status === 'CLOSED' && !!s5.closed_at && !!s5.teslim_at, s5);
+    const od5 = s5 ? (await query('SELECT method, amount FROM payments WHERE order_id = ?', [s5.id])).rows : [];
+    ok('ilk gorulen teslimde otomatik odeme: KREDI_KARTI 50 (kapida kart), tek kayit', od5.length === 1 && od5[0].method === 'KREDI_KARTI' && od5[0].amount === 50, od5);
+    ok('kapali acilan siparis icin kasada zil/uyari uretilmedi', s5 && !olaylar.join('').includes(s5.id));
+
     console.log('\n=== 13b) Musteri defteri: telefonla hatirlama, tekillik, unutma, kiraci izolasyonu ===');
-    const bul = (tel, tok = kasiyer.token) => js('/api/paket/musteri?tel=' + encodeURIComponent(tel), { token: tok });
+    const bul = (tel, tok = kasiyer.token) => js('/api/paket/musteri/bul', { token: tok, body: { tel } });
     const b1 = await bul('+90 (532) 111 2233');
     ok('farkli yazilmis numarayla bulunur: ad + son kullanilan adres basta', b1.status === 200 && b1.d.musteri && b1.d.musteri.ad === 'Ayşe Yılmaz'
         && b1.d.musteri.adresler[0] === 'Yeni Mah. 7. Sok. No:1' && b1.d.musteri.adresler[1] === 'Cumhuriyet Mah. 5. Sok. No:3' && b1.d.musteri.siparisSayisi === 1, b1.d);
     ok('kisa numarada kayit yok', (await bul('12')).d.musteri === null);
+    ok('telefon adres satirinda aranmaz: GET ucu yok (404)', (await js('/api/paket/musteri/bul?tel=05321112233', { token: kasiyer.token })).status === 404);
     ok('mutfak hesabi defteri okuyamaz (403)', (await bul('05321112233', mutfak.token)).status === 403);
     const p5 = (await yeni({ musteriTel: '05321112233', musteriAd: 'Ayşe Yılmaz', musteriAdres: 'Üçüncü Adres Sok. 9', teslimat: 'ADRES' })).d;
     const p5b = (await yeni({ musteriTel: '0 532 111 22 33', musteriAdres: '  yeni mah.  7. sok. no:1 ', teslimat: 'ADRES' })).d;
@@ -424,8 +523,13 @@ const smx = http.createServer(async (req, res) => {
     ok('kasiyer musteriyi unutamaz (403)', (await js(`/api/paket/musteri/${b2.id}/unut`, { token: kasiyer.token, body: {} })).status === 403);
     ok('B, A\'nin musterisini unutamaz (404)', (await js(`/api/paket/musteri/${b2.id}/unut`, { token: sahipB.token, body: {} })).status === 404);
     const un = await js(`/api/paket/musteri/${b2.id}/unut`, { token: mudur.token, body: {} });
-    ok('mudur unutur: kapali 1 sipariste silindi, 2 acik sipariş teslim icin korundu', un.status === 200 && un.d.silinenSiparis === 1 && un.d.acikSiparis === 2, un);
+    ok('mudur unutur: kapali 2 sipariste (telefon P1 + ayni numaradan SofraMix 9005) silindi, 2 acik siparis teslim icin korundu',
+        un.status === 200 && un.d.silinenSiparis === 2 && un.d.acikSiparis === 2, un);
     ok('defter kaydi silindi', (await bul('05321112233')).d.musteri === null);
+    const u5 = (await query('SELECT musteri_ad, musteri_tel, musteri_adres, musteri_silindi_at, total FROM orders WHERE id = ?', [s5.id])).rows[0];
+    const olay5 = (await query("SELECT payload FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9005'", [tid])).rows;
+    ok('unut: SofraMix 9005 yerel kopyasi silindi (tutar kaldi) + olay kutusundaki ham yuku bosaltildi', !u5.musteri_ad && !u5.musteri_tel && !u5.musteri_adres
+        && !!u5.musteri_silindi_at && u5.total === 50 && olay5.length >= 1 && olay5.every(e => e.payload === KVKK.BOS_YUK), [u5, olay5.map(e => e.payload.slice(0, 50))]);
     const up1 = (await query('SELECT musteri_ad, musteri_tel, musteri_adres, note, musteri_silindi_at, total FROM orders WHERE id = ?', [p1.id])).rows[0];
     ok('kapali P1: kisisel bilgi + not silindi, tutar kaldi', !up1.musteri_ad && !up1.musteri_tel && !up1.musteri_adres && !up1.note && !!up1.musteri_silindi_at && up1.total === 270, up1);
     ok('acik P5 bilgisini korudu', (await query('SELECT musteri_tel FROM orders WHERE id = ?', [p5.id])).rows[0].musteri_tel === '05321112233');
@@ -473,6 +577,31 @@ const smx = http.createServer(async (req, res) => {
     await aks(p7.id, 'yolda');
     const t7 = await aks(p7.id, 'teslim');
     ok('teslim: odeme tamam -> kendiliginden kapandi', t7.status === 200 && t7.d.kapandi === true, t7.d);
+    // Ucret dusurulunce toplam alinan odemenin altina inemez (yoksa hesap bir daha kapanamazdi)
+    const p8 = (await yeni({ musteriAd: 'Ucret Dusen', musteriAdres: 'Bahce Sok. 1', teslimat: 'ADRES', teslimatUcreti: 20 })).d;
+    await js(`/api/orders/${p8.id}/items`, { token: kasiyer.token, body: { productId: lahmacun.id, qty: 1 } });
+    const od8 = await js('/api/payments', { token: kasiyer.token, body: { orderId: p8.id, method: 'NAKIT', amount: 140 } });
+    ok('P8: 140 TL (120 + 20 ucret) tutar olarak tahsil edildi', od8.status === 201, od8);
+    const dus8 = await js('/api/paket/' + p8.id, { token: kasiyer.token, method: 'PUT', body: { teslimatUcreti: 0 } });
+    const g8 = (await js('/api/paket/' + p8.id, { token: kasiyer.token })).d;
+    ok('ucret dusurulunce toplam odenenin altina inecekse 409 + acik mesaj; siparis degismedi', dus8.status === 409
+        && /140 TL ödeme alınmış/.test(dus8.d.message) && /toplam 120 TL/.test(dus8.d.message) && /fazla ödemeyi silin/.test(dus8.d.message)
+        && g8.toplam === 140 && g8.teslimatUcreti === 20, [dus8, g8.toplam, g8.teslimatUcreti]);
+    const gelal8 = await js('/api/paket/' + p8.id, { token: kasiyer.token, method: 'PUT', body: { teslimat: 'GEL_AL' } });
+    ok('gel-al\'a gecis (ucret duser) de ayni sekilde 409, teslimat degismedi', gelal8.status === 409
+        && (await js('/api/paket/' + p8.id, { token: kasiyer.token })).d.teslimat === 'ADRES', gelal8);
+    const odeme8 = (await query('SELECT id FROM payments WHERE order_id = ?', [p8.id])).rows[0].id;
+    ok('kasiyer odeme silemez (403)', (await js('/api/payments/' + odeme8, { token: kasiyer.token, method: 'DELETE' })).status === 403);
+    ok('mudur fazla odemeyi siler', (await js('/api/payments/' + odeme8, { token: mudur.token, method: 'DELETE' })).status === 200);
+    const dus8b = await js('/api/paket/' + p8.id, { token: kasiyer.token, method: 'PUT', body: { teslimatUcreti: 0 } });
+    ok('odeme silinince ucret dusurulur: toplam 120', dus8b.status === 200 && dus8b.d.toplam === 120 && dus8b.d.teslimatUcreti === 0, dus8b.d);
+    await js('/api/payments', { token: kasiyer.token, body: { orderId: p8.id, method: 'NAKIT', amount: 120 } });
+    await aks(p8.id, 'yolda');
+    const t8 = await aks(p8.id, 'teslim');
+    const k8 = (await query('SELECT status, total FROM orders WHERE id = ?', [p8.id])).rows[0];
+    const s8 = (await query('SELECT COALESCE(SUM(amount), 0) s FROM payments WHERE order_id = ?', [p8.id])).rows[0].s;
+    ok('ucreti dusurulen siparis teslimde kapandi: toplam 120 = odenen 120', t8.status === 200 && t8.d.kapandi === true && k8.status === 'CLOSED'
+        && k8.total === 120 && s8 === 120, [t8.d && t8.d.kapandi, k8, s8]);
 
     console.log('\n=== 14) Rapor kirilimi: Salon / Paket / Pazaryeri ===');
     const mo = (await js('/api/orders', { token: kasiyer.token, body: { tableId: m1.id } })).d;
@@ -481,16 +610,72 @@ const smx = http.createServer(async (req, res) => {
     ok('masa hesabi kapandi', (await js(`/api/orders/${mo.id}/close`, { token: kasiyer.token, body: {} })).status === 200);
     const gun = (await js('/api/reports/day', { token: sahip.token })).d;
     const tt = gun.totals;
-    // Paket = P1 270 + P2 60 + P7 140 (20 TL teslimat ucreti dahil)
-    ok('Salon 120 / Paket 470 / Pazaryeri 475 (paket pazaryerine KARISMADI)', tt.dine_in_revenue === 120 && tt.paket_revenue === 470 && tt.marketplace_revenue === 475 && tt.revenue === 1065, tt);
+    // Paket = P1 270 + P2 60 + P9 30 + P7 140 (20 TL teslimat ucreti dahil) + P8 120 = 620
+    // Pazaryeri = 9001 265 + 9002 210 + 9005 50 = 525 (yerelde kapali 9100/9101/9102'ye gelen olaylar EKLEMEDI)
+    ok('Salon 120 / Paket 620 / Pazaryeri 525 (paket pazaryerine KARISMADI)', tt.dine_in_revenue === 120 && tt.paket_revenue === 620 && tt.marketplace_revenue === 525 && tt.revenue === 1265, tt);
     const kanal = Object.fromEntries(gun.byChannel.map(c => [c.label, c.revenue]));
-    ok('kanal etiketleri: Salon, Paket, SofraMix', kanal.Salon === 120 && kanal.Paket === 470 && kanal.SofraMix === 475, gun.byChannel);
+    ok('kanal etiketleri: Salon, Paket, SofraMix', kanal.Salon === 120 && kanal.Paket === 620 && kanal.SofraMix === 525, gun.byChannel);
     const odm = Object.fromEntries(gun.byPayment.map(p => [p.method, p.amount]));
-    ok('gun sonu odeme dagilimi tutar: NAKIT 795, KART 60, DIGER 210', odm.NAKIT === 795 && odm.KREDI_KARTI === 60 && odm.DIGER === 210, odm);
+    // NAKIT = P1 270 + P9 30 + P7 140 + P8 120 + 9001 265 + masa 120; KART = P2 60 + 9005 50; DIGER = 9002 210
+    ok('gun sonu odeme dagilimi tutar: NAKIT 945, KART 110, DIGER 210', odm.NAKIT === 945 && odm.KREDI_KARTI === 110 && odm.DIGER === 210, odm);
     ok('"En cok satan"da teslimat ucreti YOK', gun.topProducts.length > 0 && !gun.topProducts.some(p => p.name === 'Teslimat ücreti'), gun.topProducts.map(p => p.name));
     const ay = (await js('/api/reports/month', { token: sahip.token })).d;
-    ok('aylik: paket ayri sutun', ay.totals.paket === 470 && ay.totals.marketplace === 475 && ay.totals.dine_in === 120, ay.totals);
+    ok('aylik: paket ayri sutun', ay.totals.paket === 620 && ay.totals.marketplace === 525 && ay.totals.dine_in === 120, ay.totals);
     ok('aylik "En cok satan"da da teslimat ucreti YOK', !ay.topProducts.some(p => p.name === 'Teslimat ücreti'));
+
+    console.log('\n=== 14b) Yerelde kapat: platforma gitmez, yalniz sahip/mudur, sonuc + sebep zorunlu, gunlukte ===');
+    smxYeni(9006, { status: 'onaylandi' });
+    smxYeni(9007, { status: 'yolda' });
+    const s6 = await bekle(() => smxBul(9006));
+    const s7 = await bekle(() => smxBul(9007));
+    ok('pazaryeri siparisinde "Yerelde kapat" secenegi var', s6 && s6.yerelKapatilabilir === true && s7 && s7.yerelKapatilabilir === true, [s6, s7]);
+    for (const id of ['9006', '9007']) smxSiparis.get(id).gizli = true;   // kanal koptu: platform siparisi bir daha gostermiyor
+    const yk = (id, tok, body) => js(`/api/paket/${id}/yerel-kapat`, { token: tok, body });
+    const gelen0 = smxGelen.length;
+    ok('kasiyer yerelde kapatamaz (403)', (await yk(s6.id, kasiyer.token, { sonuc: 'IPTAL', sebep: 'Kanal baglantisi koptu' })).status === 403);
+    ok('garson yerelde kapatamaz (403)', (await yk(s6.id, garson.token, { sonuc: 'IPTAL', sebep: 'Kanal baglantisi koptu' })).status === 403);
+    ok('sonuc secilmeden 400', (await yk(s6.id, mudur.token, { sebep: 'Kanal baglantisi koptu' })).status === 400);
+    ok('kisa sebep 400', (await yk(s6.id, mudur.token, { sonuc: 'IPTAL', sebep: 'koptu' })).status === 400);
+    const p10 = (await yeni({ musteriAd: 'Yerel Deneme', teslimat: 'GEL_AL' })).d;
+    ok('telefon siparisinde secenek yok ve yerelde kapatilmaz (400)', p10.yerelKapatilabilir === false
+        && (await yk(p10.id, mudur.token, { sonuc: 'IPTAL', sebep: 'Kanal baglantisi koptu' })).status === 400);
+    await iptal(p10.id, kasiyer.token);
+    const yk6 = await yk(s6.id, mudur.token, { sonuc: 'IPTAL', sebep: 'SofraMix panelinde iptal edildi, POS gormedi' });
+    const r6 = (await query('SELECT status, closed_at, cancelled_by FROM orders WHERE id = ?', [s6.id])).rows[0];
+    ok('IPTAL sayildi: yerelde IPTAL + kapanis zamani + kim; ciroya girmez', yk6.status === 200 && r6.status === 'CANCELLED' && !!r6.closed_at && !!r6.cancelled_by
+        && (await query('SELECT COUNT(*) c FROM payments WHERE order_id = ?', [s6.id])).rows[0].c === 0, [yk6, r6]);
+    const yk7 = await yk(s7.id, sahip.token, { sonuc: 'TESLIM', sebep: 'Kurye teslim etti, SofraMix baglantisi koptu' });
+    const r7 = (await query('SELECT status, closed_at, teslim_at FROM orders WHERE id = ?', [s7.id])).rows[0];
+    const od7 = (await query('SELECT method, amount FROM payments WHERE order_id = ?', [s7.id])).rows;
+    ok('TESLIM sayildi: KAPALI + teslim zamani + eksik odeme platformun yontemiyle (NAKIT 265)', yk7.status === 200 && r7.status === 'CLOSED' && !!r7.closed_at
+        && !!r7.teslim_at && yk7.d.otoOdeme === 265 && od7.length === 1 && od7[0].method === 'NAKIT' && od7[0].amount === 265, [yk7.d && yk7.d.otoOdeme, r7, od7]);
+    ok('platforma HICBIR istek gitmedi', smxGelen.length === gelen0, smxGelen.slice(gelen0));
+    ok('ikinci kez yerelde kapatma 409', (await yk(s7.id, mudur.token, { sonuc: 'TESLIM', sebep: 'Kurye teslim etti, tekrar' })).status === 409);
+    const glY = (await query("SELECT user_name, detay, hedef_id FROM islem_gunlugu WHERE tenant_id = ? AND islem = 'yerel_kapat'", [tid])).rows;
+    const gl6 = glY.find(g => g.hedef_id === s6.id), gl7 = glY.find(g => g.hedef_id === s7.id);
+    ok('islem gunlugu: kim + etiket + sonuc + "platforma iletilmedi" + sebep', glY.length === 2 && gl6 && gl6.user_name === 'Mudur Can'
+        && /SofraMix SMX-AB9006/.test(gl6.detay) && /iptal sayıldı/.test(gl6.detay) && /platforma iletilmedi/.test(gl6.detay) && /POS gormedi/.test(gl6.detay)
+        && gl7 && /teslim edildi sayıldı/.test(gl7.detay) && /265 TL/.test(gl7.detay), glY);
+    // Platform sonradan "teslim" gosterse de yerel IPTAL kararini degistirmez (ciroya/odemeye girmez)
+    const o6 = smxSiparis.get('9006'); o6.gizli = false; o6.status = 'teslim'; o6.updated_at = smxZaman();
+    const olay6 = await bekle(async () => (await query(`SELECT COUNT(*) c FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9006'
+        AND platform_status = 'teslim' AND state = 'done'`, [tid])).rows[0].c > 0);
+    const r6b = (await query('SELECT status, closed_at FROM orders WHERE id = ?', [s6.id])).rows[0];
+    ok('sonradan gelen platform "teslim"i yerel IPTAL kapanisini DEGISTIRMEDI, odeme yazilmadi', !!olay6 && r6b.status === 'CANCELLED' && r6b.closed_at === r6.closed_at
+        && (await query('SELECT COUNT(*) c FROM payments WHERE order_id = ?', [s6.id])).rows[0].c === 0, r6b);
+    // Eski surum "teslim edilemedi"yi ham durum olarak yaziyordu (teslim_sorunu_at bos): bildirilmis sayilir
+    const eskiTE = uuid();
+    await query(`INSERT INTO orders (id, tenant_id, table_id, channel, external_ref, external_order_no, status, subtotal, total, channel_status_raw,
+                                     delivery_mode, odeme_sekli, opened_at)
+                 VALUES (?, ?, NULL, 'soframix', 'ESKI-TE', 'SMX-ESKITE', 'OPEN', 75, 75, 'teslim_edilemedi', 'RESTAURANT_COURIER', 'kapida_nakit',
+                         datetime('now', '-1 hours'))`, [eskiTE, tid]);
+    const gTE = (await js('/api/paket/' + eskiTE, { token: kasiyer.token })).d;
+    ok('eski "teslim_edilemedi" ham durumu: Yolda, tekrar bildirim dugmesi YOK (yalniz Teslim edildi), uyari var, yerelde kapatilabilir',
+        gTE.asama === 'YOLDA' && gTE.aksiyonlar.map(a => a.kod).join(',') === 'teslim' && gTE.teslimSorunu === true && !gTE.teslimSorunuAt
+        && gTE.yerelKapatilabilir === true, gTE);
+    const ykTE = await yk(eskiTE, mudur.token, { sonuc: 'IPTAL', sebep: 'Eski kayit, SofraMix karar verdi: iptal' });
+    ok('eski takili kayit yerelde kapatildi (aktif listeden cikti)', ykTE.status === 200
+        && !(await js('/api/paket', { token: kasiyer.token })).d.siparisler.some(s => s.id === eskiTE && s.durum === 'OPEN'), ykTE);
 
     console.log('\n=== 15) Salt-okunur lisans ===');
     await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [new Date(Date.now() - 86400000).toISOString(), tid]);
@@ -525,6 +710,31 @@ const smx = http.createServer(async (req, res) => {
     await bekle(async () => (await query("SELECT COUNT(*) c FROM marketplace_events WHERE external_order_id = '9001' AND state = 'done'")).rows[0].c > evOnce, 8000);
     const ks1 = (await query('SELECT musteri_ad, musteri_tel, musteri_adres FROM orders WHERE id = ?', [s1.id])).rows[0];
     ok('KVKK silinen SofraMix siparisine bilgi geri yazilmadi', !ks1.musteri_ad && !ks1.musteri_tel && !ks1.musteri_adres, ks1);
+    const olay1 = (await query("SELECT payload FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9001'", [tid])).rows;
+    ok('olay kutusu: 30 gun silmesi 9001\'in olay yuklerini bosaltti; silmeden SONRA gelen olayin ham yuku de saklanmadi',
+        olay1.length >= 2 && olay1.every(e => e.payload === kvkk.BOS_YUK), olay1.map(e => e.payload.slice(0, 40)));
+    const olay9101 = (await query("SELECT payload FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9101'", [tid])).rows;
+    ok('40 gun once kapanmis 9101: siparis silmesiyle olay yuku de bosaltildi', olay9101.length >= 1 && olay9101.every(e => e.payload === kvkk.BOS_YUK)
+        && !!(await query("SELECT musteri_silindi_at s FROM orders WHERE id = ?", [eskiK2])).rows[0].s, olay9101.map(e => e.payload.slice(0, 40)));
+    // Siparisi olmayan / acik olmayan 30 gunden eski islenmis olay bosaltilir; islenmemis (pending) olay ve ACIK siparisin (9004)
+    // olayi teslim icin korunur
+    const olayEkle = async (ref, durum) => {
+        const id = uuid();
+        await query(`INSERT INTO marketplace_events (id, tenant_id, channel_id, channel_code, source, event_key, external_order_id, platform_status,
+                                                     payload, state, received_at)
+                     VALUES (?, ?, ?, 'soframix', 'poll', ?, ?, 'teslim', ?, ?, datetime('now', '-31 days'))`,
+            [id, tid, kanalId, 'eski-olay-' + id, ref, JSON.stringify({ id: ref, customer_phone: '05559998877', customer_name: 'Eski Musteri' }), durum]);
+        return id;
+    };
+    const yetimOlay = await olayEkle('YETIM-1', 'done'), hataliOlay = await olayEkle('YETIM-2', 'failed'), bekleyenOlay = await olayEkle('YETIM-3', 'pending');
+    await query("UPDATE marketplace_events SET received_at = datetime('now', '-31 days') WHERE tenant_id = ? AND external_order_id = '9004'", [tid]);
+    await kvkk.temizle();
+    const yuk = async (id) => (await query('SELECT payload FROM marketplace_events WHERE id = ?', [id])).rows[0].payload;
+    ok('31 gunluk islenmis (done/failed) olay, siparisi acik degilse bosaltildi', await yuk(yetimOlay) === kvkk.BOS_YUK && await yuk(hataliOlay) === kvkk.BOS_YUK);
+    ok('islenmemis (pending) olayin yukune dokunulmadi', /05559998877/.test(await yuk(bekleyenOlay)));
+    const olay4 = (await query("SELECT payload FROM marketplace_events WHERE tenant_id = ? AND external_order_id = '9004'", [tid])).rows;
+    ok('ACIK siparisin (9004) eski olay yuku teslim icin korundu', olay4.length >= 1 && olay4.every(e => /05551234567/.test(e.payload)), olay4.length);
+    await query('DELETE FROM marketplace_events WHERE id = ?', [bekleyenOlay]);
 
     console.log('\n=== 16b) Eski hatali kayit onarimi: teslim/iptal olmus ama ACIK kalmis SofraMix siparisi ===');
     // Eski cekme kodu ilk gorusunde teslim olmus siparisi ACIK yaziyordu; Paket Servis'te sonsuza dek aktif gorunurdu
@@ -570,6 +780,20 @@ const smx = http.createServer(async (req, res) => {
     } finally { delete ES.ESLEME.sandbox; }
     ok('satir kaldirilinca kanal yine kapsam disi', !P.paketKosulu().includes("'sandbox'"));
     await query('DELETE FROM orders WHERE id = ?', [sbxId]);
+
+    console.log('\n=== 16d) Liste siniri yalniz bitenlere: ACIK siparis 300 sinirinda KESILMEZ (B isletmesi) ===');
+    const unutulanAcik = uuid();
+    await query(`INSERT INTO orders (id, tenant_id, table_id, channel, status, subtotal, total, paket_durum, musteri_ad, delivery_mode, opened_at)
+                 VALUES (?, ?, NULL, 'PAKET_SERVIS', 'OPEN', 0, 0, 'HAZIRLANIYOR', 'Unutulan Siparis', 'PICKUP', datetime('now', '-2 days'))`, [unutulanAcik, tidB]);
+    for (let i = 0; i < 301; i++) {
+        await query(`INSERT INTO orders (id, tenant_id, table_id, channel, status, subtotal, total, paket_durum, delivery_mode, opened_at, closed_at)
+                     VALUES (?, ?, NULL, 'PAKET_SERVIS', 'CLOSED', 10, 10, 'TESLIM', 'PICKUP', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, [uuid(), tidB]);
+    }
+    const lbB = (await js('/api/paket', { token: sahipB.token })).d;
+    const bitenB = lbB.siparisler.filter(s => s.durum !== 'OPEN').length;
+    ok('bugun 301 siparis kapansa da 2 gun onceki ACIK siparis + bugunku acik siparis listede; bitenler 300 ile sinirli',
+        lbB.siparisler.some(s => s.id === unutulanAcik) && lbB.siparisler.some(s => s.id === pB.id) && bitenB === 300 && lbB.sayac.aktif === 2,
+        [bitenB, lbB.sayac, lbB.siparisler.filter(s => s.durum === 'OPEN').map(s => s.etiket)]);
 
     console.log('\n=== 17) Anahtar gecersiz: yetki sorunu anlasilir ===');
     smxAnahtarIptal = true;
