@@ -2,17 +2,24 @@ const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../config/db');
 const { PAKET, kisiselAlanlariCikar } = require('../services/paketServis');
 
-// Elle acilan kanalin ADI orders.channel'a yazilir: salon (DINE_IN), paket servis kodu, eski paket kodu ve
-// siparis getirebilen (baglanabilir) adaptor kodlariyla cakismasin. Buyuk/kucuk harf duyarsiz.
-// Bekleyen adaptorler (yemeksepeti, getir, migros) BILEREK serbest: elle "Yemeksepeti" kanali acmak bilinen
-// kullanim, o kodlarla adaptor siparisi gelmez.
-function ayrilmisAd(ad) {
+// Elle girilen pazaryeri siparisinde kanalin ADI orders.channel'a yazilir (ingest asagida). Sistemin kendi
+// yazdigi kodlarla cakismasin: salon (DINE_IN), telefon paketi (PAKET_SERVIS) her kanal icin ayrilmis;
+// siparis getirebilen (baglanabilir) adaptor kodlari yalniz ADAPTORSUZ (elle) kanal icin ayrilmis - adaptorlu
+// kanal kendi adaptorunun adini kullanabilir (SofraMix'ten acilan isletmenin 'SofraMix' kanali). Buyuk/kucuk harf
+// ve bosluk duyarsiz. 'Paket' artik serbest (telefon paketi PAKET_SERVIS kodunu kullaniyor; eski 'Paket' adli elle
+// kanallar raporda 'Paket (elle kanal)' gorunur). Bekleyen adaptorler (yemeksepeti, getir, migros) BILEREK
+// serbest: elle "Yemeksepeti" kanali acmak bilinen kullanim, o kodlarla adaptor siparisi gelmez.
+const adaptorKodlari = () => { try { return require('../marketplace/registry').listAvailable().map((x) => String(x.code).toLowerCase()); } catch (_) { return []; } };
+function ayrilmisAd(ad, adaptorKodu) {
     const a = String(ad || '').trim().toLowerCase();
     if (!a) return false;
-    const ayrik = ['dine_in', 'paket', PAKET.toLowerCase()];
-    try { for (const x of require('../marketplace/registry').listAvailable()) ayrik.push(String(x.code).toLowerCase()); } catch (_) { /* kayit yoksa sabitler yeter */ }
-    return ayrik.includes(a);
+    if (a === 'dine_in' || a === PAKET.toLowerCase()) return true;
+    const kendi = String(adaptorKodu || '').toLowerCase();
+    return adaptorKodlari().some((k) => k === a && k !== kendi);
 }
+// Elle siparis girisinde: kanal adi sistem koduyla BIREBIR ayniysa (ornek adaptorlu kanalin adi 'soframix')
+// elle girilen siparis platformdan gelenlerle ayni kanal koduna yazilirdi.
+const sistemKoduMu = (ad) => ad === 'DINE_IN' || ad === PAKET || adaptorKodlari().includes(ad);
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100; // 2 ondalık
 
@@ -49,19 +56,18 @@ exports.createChannel = async (req, res) => {
     const commissionRate = Number(req.body.commissionRate || 0);
     const fixedFee = Number(req.body.fixedFee || 0);
     if (!name) return res.status(400).json({ message: 'Kanal adı zorunlu.' });
+    // Adaptor kodu (once: adaptorlu kanal kendi adaptorunun adini alabilir, bkz ayrilmisAd). Bu alan YAZILMADIGI
+    // surece kanal yalnizca elle siparis girilen bir muhasebe etiketi olarak kalir: anahtar kaydetme ve menu cekme
+    // uclari "Bu kanalda adaptor tanimli degil" deyip 400 doner. Beyaz liste: yalnizca kayitli ve baglanabilir adaptorler.
+    const adapterCode = adaptorKoduCoz(req.body.adapterCode);
+    if (adapterCode === false) return res.status(400).json({ message: 'Bilinmeyen veya henüz bağlanamayan pazaryeri kodu.' });
     // Elle girilen siparis orders.channel'a bu ADLA yazilir: salon / paket servis / adaptor kodlariyla karismasin
-    if (ayrilmisAd(name)) return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
-    if (commissionRate < 0 || commissionRate > 100) return res.status(400).json({ message: 'Komisyon %0–100 arası olmalı.' });
+    if (ayrilmisAd(name, adapterCode)) return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
+    if (commissionRate < 0 || commissionRate > 100) return res.status(400).json({ message: 'Komisyon %0-100 arası olmalı.' });
     if (fixedFee < 0) return res.status(400).json({ message: 'İşlem ücreti negatif olamaz.' });
     // Aynı isim mükerrer olmasın
     const dup = await query('SELECT id FROM marketplace_channels WHERE tenant_id = ? AND name = ?', [req.user.tenantId, name]);
     if (dup.rows.length) return res.status(409).json({ message: 'Bu isimde bir kanal zaten var.' });
-    // Adaptor kodu. Bu alan YAZILMADIGI surece kanal yalnizca elle siparis
-    // girilen bir muhasebe etiketi olarak kalir: anahtar kaydetme ve menu cekme
-    // uclari "Bu kanalda adaptor tanimli degil" deyip 400 doner. Yani entegrasyon
-    // fiilen kurulamaz. Beyaz liste: yalnizca kayitli ve baglanabilir adaptorler.
-    const adapterCode = adaptorKoduCoz(req.body.adapterCode);
-    if (adapterCode === false) return res.status(400).json({ message: 'Bilinmeyen veya henüz bağlanamayan pazaryeri kodu.' });
 
     const id = uuidv4();
     await query(
@@ -73,20 +79,24 @@ exports.createChannel = async (req, res) => {
 
 exports.updateChannel = async (req, res) => {
     const { id } = req.params;
-    const exist = await query('SELECT id FROM marketplace_channels WHERE id = ? AND tenant_id = ?', [id, req.user.tenantId]);
+    const exist = await query('SELECT id, name, adapter_code FROM marketplace_channels WHERE id = ? AND tenant_id = ?', [id, req.user.tenantId]);
     if (!exist.rows.length) return res.status(404).json({ message: 'Kanal bulunamadı.' });
     const b = req.body;
-    if (b.name != null && ayrilmisAd(b.name))
-        return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
-    if (b.commissionRate != null && (Number(b.commissionRate) < 0 || Number(b.commissionRate) > 100))
-        return res.status(400).json({ message: 'Komisyon %0–100 arası olmalı.' });
-    if (b.fixedFee != null && Number(b.fixedFee) < 0)
-        return res.status(400).json({ message: 'İşlem ücreti negatif olamaz.' });
     let adapterCode = null;
     if (b.adapterCode !== undefined) {
         adapterCode = adaptorKoduCoz(b.adapterCode);
         if (adapterCode === false) return res.status(400).json({ message: 'Bilinmeyen veya henüz bağlanamayan pazaryeri kodu.' });
     }
+    // Ad denetimi YALNIZ ad gercekten degisiyorsa (Ayarlar her kayitta adi da gonderiyor: mevcut 'SofraMix' ya da
+    // eski 'Paket' adli kanal adi degismeden kaydedilebilmeli)
+    const yeniAd = b.name != null ? String(b.name).trim() : null;
+    if (yeniAd != null && !yeniAd) return res.status(400).json({ message: 'Kanal adı zorunlu.' });
+    if (yeniAd != null && yeniAd !== exist.rows[0].name && ayrilmisAd(yeniAd, adapterCode || exist.rows[0].adapter_code))
+        return res.status(400).json({ message: 'Bu ad ayrılmıştır, başka bir kanal adı yazın.' });
+    if (b.commissionRate != null && (Number(b.commissionRate) < 0 || Number(b.commissionRate) > 100))
+        return res.status(400).json({ message: 'Komisyon %0-100 arası olmalı.' });
+    if (b.fixedFee != null && Number(b.fixedFee) < 0)
+        return res.status(400).json({ message: 'İşlem ücreti negatif olamaz.' });
     await query(
         `UPDATE marketplace_channels
             SET name = COALESCE(?, name),
@@ -95,7 +105,7 @@ exports.updateChannel = async (req, res) => {
                 fixed_fee = COALESCE(?, fixed_fee),
                 is_active = COALESCE(?, is_active)
           WHERE id = ? AND tenant_id = ?`,
-        [b.name != null ? String(b.name).trim() : null,
+        [yeniAd,
          adapterCode,
          b.commissionRate != null ? r2(b.commissionRate) : null,
          b.fixedFee != null ? r2(b.fixedFee) : null,
@@ -135,6 +145,9 @@ exports.ingest = async (req, res) => {
         [channelId, req.user.tenantId]);
     if (!chRow.rows.length) return res.status(400).json({ message: 'Geçersiz kanal. Önce Ayarlar > Pazaryeri Kanalları\'ndan ekleyin.' });
     const channel = chRow.rows[0];
+    if (sistemKoduMu(channel.name)) {
+        return res.status(400).json({ message: `Bu kanalın adı (${channel.name}) sistem koduyla aynı; elle sipariş girmeden önce Ayarlar > Pazaryeri Kanalları'ndan kanal adını değiştirin.` });
+    }
 
     const validItems = items.filter(it => Number(it.qty) > 0 && (it.productId || (it.name && String(it.name).trim())));
     if (!validItems.length) return res.status(400).json({ message: 'En az 1 ürün gerekli.' });

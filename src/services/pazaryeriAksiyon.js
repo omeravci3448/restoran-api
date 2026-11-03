@@ -96,7 +96,12 @@ async function uygula({ tenantId, orderId, aksiyon: kod, sebep: hamSebep, user, 
             });
         });
     } catch (e) {
-        throw platformHatasi(e);
+        // Son platform islemi hata aldi: siparis 'takilmis' sayilabilir (Paket Servis'te "Yerelde kapat" acilir).
+        // Basarili islemde ya da platform durumu degisince (ingest) silinir.
+        const h = platformHatasi(e);
+        await query('UPDATE orders SET platform_hata_at = CURRENT_TIMESTAMP, platform_hata = ? WHERE id = ?',
+            [String(h.message || '').slice(0, 200), o.id]).catch(() => {});
+        throw h;
     }
 
     // Yerel gorunumu hemen guncelle; bir sonraki cekme turu zaten platformdan
@@ -106,7 +111,8 @@ async function uygula({ tenantId, orderId, aksiyon: kod, sebep: hamSebep, user, 
     let otoOdeme = 0;
     await tx(async () => {
         if (!ham) {   // teslim_edilemedi: platformda durum degismez, yerelde damga
-            await query('UPDATE orders SET teslim_sorunu_at = COALESCE(teslim_sorunu_at, CURRENT_TIMESTAMP) WHERE id = ?', [o.id]);
+            await query(`UPDATE orders SET teslim_sorunu_at = COALESCE(teslim_sorunu_at, CURRENT_TIMESTAMP),
+                                platform_hata_at = NULL, platform_hata = NULL WHERE id = ?`, [o.id]);
             return;
         }
         // Kapanis / iptal / zaman damgalari islem koduna gore (platformdan bagimsiz)
@@ -117,7 +123,8 @@ async function uygula({ tenantId, orderId, aksiyon: kod, sebep: hamSebep, user, 
                     cancelled_by = CASE WHEN ? = 'iptal' THEN ? ELSE cancelled_by END,
                     yola_cikti_at = CASE WHEN ? = 'yolda' THEN COALESCE(yola_cikti_at, CURRENT_TIMESTAMP) ELSE yola_cikti_at END,
                     hazir_at = CASE WHEN ? = 'hazir' THEN COALESCE(hazir_at, CURRENT_TIMESTAMP) ELSE hazir_at END,
-                    teslim_at = CASE WHEN ? = 'teslim' THEN COALESCE(teslim_at, CURRENT_TIMESTAMP) ELSE teslim_at END
+                    teslim_at = CASE WHEN ? = 'teslim' THEN COALESCE(teslim_at, CURRENT_TIMESTAMP) ELSE teslim_at END,
+                    platform_hata_at = NULL, platform_hata = NULL
               WHERE id = ?`,
             [ham, kod, kod, kod, kod, (user && user.id) || null, kod, kod, kod, o.id]);
         if (kod === 'yolda' || kod === 'teslim') await paket.mutfakKalemleriniKapat(o.id);

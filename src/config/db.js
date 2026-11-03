@@ -585,6 +585,14 @@ const initDb = () => {
         db.run("ALTER TABLE orders ADD COLUMN teslim_at TEXT", [], () => {});
         db.run("ALTER TABLE orders ADD COLUMN teslim_sorunu_at TEXT", [], () => {});      // SofraMix'e "teslim edilemedi" bildirildi
         db.run("ALTER TABLE orders ADD COLUMN musteri_silindi_at TEXT", [], () => {});    // KVKK: kisisel veri silindi damgasi
+        // Pazaryeri siparisi: kasadan yapilan son platform islemi hata aldi (basarili islemde / platform durumu
+        // degisince silinir). "Yerelde kapat" yalniz takilmis sipariste acilir (services/paketServis.js takilmaOf).
+        db.run("ALTER TABLE orders ADD COLUMN platform_hata_at TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN platform_hata TEXT", [], () => {});
+        // Yerel sonuc ile platformun sonraki durumu celisti (yerelde teslim + platformda iptal ya da tersi).
+        // Ciro/odeme KENDILIGINDEN degismez; kartta rozet + islem gunlugu, karar yoneticide.
+        db.run("ALTER TABLE orders ADD COLUMN platform_celiski_at TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN platform_celiski TEXT", [], () => {});
         // Ayni gun ayni isletmede iki "Paket 3" olmasin
         db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_paket_no
                 ON orders(tenant_id, paket_gunu, paket_no) WHERE paket_no IS NOT NULL`, [], () => {});

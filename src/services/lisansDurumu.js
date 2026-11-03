@@ -57,6 +57,7 @@ const YAZMAYA_IZINLI = [
     '/api/auth',         // giris/cikis/sifre
     '/api/tenant',       // fatura bilgisi duzeltme
     '/api/push/iptal',   // telefon bildirimini kapatma / cikis
+    '/api/paket/musteri/bul',   // yalniz OKUMA: telefon adres satirinda gitmesin diye POST govdesiyle
 ];
 
 function saltOkunurdaGecerMi(req) {

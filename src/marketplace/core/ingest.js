@@ -5,6 +5,7 @@ const paket = require('../../services/paketServis');
 const PaketEsleme = require('../paketEsleme');
 const kvkk = require('../../services/paketKvkk');
 const bus = require('../../services/eventBus');
+const gunluk = require('../../services/islemGunlugu');
 
 // ——— Sipariş alım boru hattı (INBOX → normalize → orders) ———
 //
@@ -62,6 +63,20 @@ async function sonrakiIsler(orderId, s) {
     } catch (e) { console.error('[ingest] teslim sonrasi isler:', e.message); }
 }
 
+// Yerel sonuc / platform son durumu celiskisi: ilk seferde damga + islem gunlugu (tek kayit)
+async function celiskiyiIsle(tenantId, o, normal) {
+    const ad = paket.kanalAdi(o.channel);
+    const metin = paket.celiskiMetni(o.status, normal, ad);
+    if (!metin) return;
+    const u = await query('UPDATE orders SET platform_celiski_at = CURRENT_TIMESTAMP, platform_celiski = ? WHERE id = ? AND platform_celiski_at IS NULL',
+        [metin, o.id]);
+    if (!u.changes) return;
+    await gunluk.kaydet({
+        tenantId, user: { id: null, name: ad + ' (otomatik)' }, islem: 'platform_celiski', hedefTur: 'order', hedefId: o.id,
+        detay: `${paket.paketEtiketi(o)} - ${paket.TL(o.total)} - ${metin}. Ciro ve ödeme kendiliğinden değiştirilmedi; yönetici kontrol etmeli.`,
+    });
+}
+
 // KVKK: islenen olayin ham yukunu bosalt (olay kaydi ve tekrar-koruma anahtari kalir; yuk islendikten
 // sonra hicbir yerde okunmuyor).
 async function yukuBosalt(eventId) {
@@ -86,7 +101,8 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
     const odemeKodu = esleme && n.payment && n.payment.methodCode ? String(n.payment.methodCode).slice(0, 40) : null;
     const zaman = paket.sqlZamani(n.platformModifiedAt);
     const existing = await query(
-        'SELECT id, status, channel_status_raw, musteri_silindi_at FROM orders WHERE tenant_id = ? AND channel = ? AND external_ref = ?',
+        `SELECT id, status, channel, channel_status_raw, musteri_silindi_at, total, external_order_no, external_ref
+           FROM orders WHERE tenant_id = ? AND channel = ? AND external_ref = ?`,
         [tenantId, channelCode, n.externalOrderId]);
 
     if (existing.rows.length) {
@@ -113,12 +129,18 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
                 total = CASE WHEN status = 'OPEN' THEN COALESCE(?, total) ELSE total END,
                 subtotal = CASE WHEN status = 'OPEN' THEN COALESCE(?, subtotal) ELSE subtotal END,
                 is_address_masked = CASE WHEN ? = 1 THEN 1 ELSE is_address_masked END,
-                odeme_sekli = COALESCE(?, odeme_sekli)
+                odeme_sekli = COALESCE(?, odeme_sekli),
+                platform_hata_at = CASE WHEN channel_status_raw IS NOT ? THEN NULL ELSE platform_hata_at END,
+                platform_hata = CASE WHEN channel_status_raw IS NOT ? THEN NULL ELSE platform_hata END
               WHERE id = ?`,
             [s, s, s, zaman, s, zaman, s, zaman, s, zaman,
                 n.platformStatusRaw, n.subChannel, n.platformModifiedAt, eventId,
                 toTL(n.money?.grandTotalKurus), toTL(n.money?.grandTotalKurus),
-                n.isAddressMasked ? 1 : 0, odemeKodu, orderId]);
+                n.isAddressMasked ? 1 : 0, odemeKodu, n.platformStatusRaw, n.platformStatusRaw, orderId]);
+        // Platform durumu degisince kasadaki son islem hatasi gecersiz (yukarida silindi). Yerelde kapanmis siparisin
+        // sonucu platformun SON durumuyla celisirse (yerelde teslim + platformda iptal ya da tersi): damga + islem
+        // gunlugu. Ciro/odeme KENDILIGINDEN DEGISMEZ: karar yoneticide (kartta rozet).
+        if (!yereldeAcik) await celiskiyiIsle(tenantId, existing.rows[0], s);
         let silinmis = !!existing.rows[0].musteri_silindi_at;
         if (kisisel && !silinmis) {
             if (m.silindi) {

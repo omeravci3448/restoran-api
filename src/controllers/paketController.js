@@ -72,7 +72,8 @@ async function teslimatUcretiYazIc(orderId, ucret) {
 const urunSayisi = async (orderId) => Number((await query(
     'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND COALESCE(source, \'\') != ?', [orderId, P.TESLIMAT_KAYNAK])).rows[0].c);
 
-// GET /api/paket -> acik siparislerin HEPSI + bugun (Istanbul) kapanan/iptal edilenler (son 300)
+// GET /api/paket -> acik siparislerin HEPSI + bugun (Istanbul) kapanan/iptal edilenler (son 300) + bugun platformla
+// celiskisi ortaya cikan (eski gunde kapanmis olsa da: kartta rozet gorunsun)
 exports.liste = async (req, res) => {
     const acik = await query(
         `SELECT o.* FROM orders o WHERE o.tenant_id = ? AND ${P.paketKosulu()} AND o.status = 'OPEN'
@@ -80,10 +81,11 @@ exports.liste = async (req, res) => {
     const biten = await query(
         `SELECT o.* FROM orders o
           WHERE o.tenant_id = ? AND ${P.paketKosulu()}
-            AND o.status IN ('CLOSED', 'CANCELLED') AND COALESCE(o.closed_at, o.opened_at) >= ?
+            AND o.status IN ('CLOSED', 'CANCELLED')
+            AND (COALESCE(o.closed_at, o.opened_at) >= ? OR o.platform_celiski_at >= ?)
           ORDER BY COALESCE(o.closed_at, o.opened_at) DESC
           LIMIT 300`,
-        [req.user.tenantId, P.istanbulGunBasiUtc()]);
+        [req.user.tenantId, P.istanbulGunBasiUtc(), P.istanbulGunBasiUtc()]);
     const siparisler = await P.gorunumler([...acik.rows, ...biten.rows]);
     // Sira: acik olanlar once (yeni gelen pazaryeri siparisi en ustte, sonra en eski acilan), bitenler en son kapanan ustte
     siparisler.sort((a, b) => {
@@ -319,15 +321,24 @@ exports.iptal = async (req, res) => {
 };
 
 // POST /api/paket/:id/yerel-kapat { sonuc: 'TESLIM' | 'IPTAL', sebep }   (yalniz sahip/mudur - route)
-// Pazaryeri siparisi takildiysa (kanal baglantisi koptu / platformda bir daha degismiyor) aktif listeden
-// kaldirmak icin. Platforma GITMEZ. TESLIM: kapanir, eksik odeme platformun bildirdigi yontemle yazilir
-// (ciro ve gun sonu tutar). IPTAL: iptal sayilir, ciroya girmez. Sebep zorunlu, islem gunlugune yazilir;
-// musteri bilgisi 30 gun sonra silinir (normal kural). Platformdan sonra gelen olay bu kapanisi DEGISTIRMEZ.
+// YALNIZ TAKILMIS pazaryeri siparisi icin (P.takilmaOf: kanal bagli degil / son platform islemi hata aldi /
+// TAKILMA_SAAT saattir platformda degismedi): saglikli kanalda kisayol olursa platform ile POS sessizce ayrisir.
+// Platforma GITMEZ. TESLIM: kapanir, eksik odeme platformun bildirdigi yontemle yazilir (ciro ve gun sonu
+// tutar). IPTAL: iptal sayilir, ciroya girmez. Sebep zorunlu, islem gunlugune yazilir; musteri bilgisi 30 gun
+// sonra silinir (normal kural). Platformdan sonra gelen olay bu kapanisi DEGISTIRMEZ; celisirse siparise
+// celiski damgasi + gunluk kaydi duser (ingest), ciro/odeme kendiliginden degismez.
 exports.yerelKapat = async (req, res) => {
     const o = await P.paketSatiri(req.params.id, req.user.tenantId);
     if (!o) return res.status(404).json({ message: 'Paket siparişi bulunamadı.' });
     if (o.channel === P.PAKET) return res.status(400).json({ message: 'Telefon siparişinde "Teslim edildi" ya da "İptal et" kullanın.' });
     if (o.status !== 'OPEN') return res.status(409).json({ message: 'Bu sipariş zaten kapanmış ya da iptal edilmiş.' });
+    const takilma = P.takilmaOf(o, await P.kanalBaglantilari(req.user.tenantId));
+    if (!takilma) {
+        const ad = P.kanalAdi(o.channel);
+        return res.status(409).json({ code: 'TAKILMA_YOK',
+            message: `Bu sipariş ${ad} ile eşleşiyor; işlemi karttaki düğmelerle yapın (platforma da gider). "Yerelde kapat" yalnız `
+                + `${ad} bağlantısı koptuğunda, son platform işlemi hata verdiğinde ya da sipariş ${P.TAKILMA_SAAT} saattir ${ad} tarafında değişmediğinde açılır.` });
+    }
     const sonuc = String((req.body || {}).sonuc || '').toUpperCase();
     if (!['TESLIM', 'IPTAL'].includes(sonuc)) return res.status(400).json({ message: 'Sonucu seçin: teslim edildi mi, iptal mi?' });
     const sebep = String((req.body || {}).sebep || '').trim().slice(0, 300);
@@ -353,7 +364,7 @@ exports.yerelKapat = async (req, res) => {
     await gunluk.kaydet({
         tenantId: req.user.tenantId, user: req.user, islem: 'yerel_kapat', hedefTur: 'order', hedefId: o.id,
         detay: `${P.paketEtiketi(o)} - ${P.TL(o.total)} - ${sonuc === 'TESLIM' ? 'teslim edildi sayıldı' : 'iptal sayıldı'} `
-            + `(platforma iletilmedi) - ${sebep}`,
+            + `(platforma iletilmedi; neden: ${P.TAKILMA_NEDEN[takilma.kod] || takilma.kod}) - ${sebep}`,
     });
     res.json({ ok: true, otoOdeme, siparis: (await P.gorunumler([await P.paketSatiri(o.id, req.user.tenantId)]))[0] });
 };

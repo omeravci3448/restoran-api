@@ -7,7 +7,8 @@ const { query, tx } = require('../config/db');
 //    (adres tarifi / isim icerebilir).
 // 2) PAZARYERI OLAY KUTUSU (marketplace_events.payload): platformun ham siparisi (ad, telefon, adres, not)
 //    burada da duruyor. Islenmis olayin yuku, ilgili siparisin kisisel bilgisi silinince (30 gun / platform
-//    silmesi / Musteriyi unut) ya da olay SAKLAMA_GUN gunden eskiyse ve siparis acik degilse bosaltilir.
+//    silmesi / Musteriyi unut) bosaltilir. SAKLAMA_GUN gunden eski olay (islenmemis 'pending' dahil: onu yeniden
+//    isleyen kod yok) siparisi acik degilse bosaltilir.
 // 3) MUSTERI DEFTERI (paket_musterileri, Patron karari 2026-11-03): siparislerdeki silme deftere dokunmaz;
 //    musteri DEFTER_SAKLAMA_GUN gun siparis vermezse kayit silinir.
 // 4) "Musteriyi unut" (KVKK silme talebi): defter kaydi + o telefondaki ACIK OLMAYAN siparislerin kisisel
@@ -16,7 +17,7 @@ const SAKLAMA_GUN = 30;
 const DEFTER_SAKLAMA_GUN = 365;
 const ARALIK_MS = 60 * 60 * 1000;   // saatte bir
 const BOS_YUK = '{"kvkk":"silindi"}';
-const ISLENMIS = "('done', 'failed', 'ignored')";   // 'pending' olay henuz islenmedi: yuku gerekli
+const ISLENMIS = "('done', 'failed', 'ignored')";   // yeni 'pending' olay isleniyor olabilir (yalniz 30 gunu gecince bosalir)
 
 // Paket Servis kanallari: telefon (PAKET_SERVIS) + esleme tablosundaki pazaryerleri (marketplace/paketEsleme.js)
 const kanallar = () => require('./paketServis').paketKanallariSql();
@@ -35,7 +36,7 @@ async function olaylariTemizle() {
         [BOS_YUK, BOS_YUK]);
     const b = await query(
         `UPDATE marketplace_events SET payload = ?
-          WHERE state IN ${ISLENMIS} AND payload != ?
+          WHERE payload != ?
             AND received_at < datetime('now', ?)
             AND NOT EXISTS (SELECT 1 FROM orders o WHERE ${OLAY_SIPARISI} AND o.status = 'OPEN')`,
         [BOS_YUK, BOS_YUK, `-${SAKLAMA_GUN} days`]);

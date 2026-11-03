@@ -81,8 +81,26 @@ function sqlZamani(ms) {
 // Uzun/egik tire metinlere girmesin (arayuz kurali): adaptor adlarinda uzun tire olabiliyor.
 const duzTire = (s) => String(s).replace(/[\u2012-\u2015\u2212]/g, '-');
 
-// Rapor, mutfak, rozet icin kanal adi: DINE_IN -> Salon, PAKET -> Paket, esleme satiri -> satirin adi,
-// adaptor kodu -> adaptorun adi, elle girilmis pazaryeri kanali -> kendi adi.
+// Sistem etiketleri (kucuk harf): Salon, Paket, esleme satirlarinin ve baglanabilir adaptorlerin ad/kodlari.
+function sistemEtiketleri() {
+    const s = new Set(['salon', 'paket', 'dine_in', PAKET.toLowerCase()]);
+    for (const k of ES.kodlar()) {
+        s.add(k);
+        const ad = (ES.satir(k) || {}).ad;
+        if (ad) s.add(duzTire(ad).toLowerCase());
+    }
+    try {
+        for (const a of require('../marketplace/registry').listAvailable()) {
+            s.add(String(a.code).toLowerCase());
+            if (a.displayName) s.add(duzTire(a.displayName).toLowerCase());
+        }
+    } catch (_) { /* kayit okunamadi: sabitler yeter */ }
+    return s;
+}
+
+// Rapor, mutfak, rozet icin kanal adi: DINE_IN -> Salon, PAKET_SERVIS -> Paket, esleme satiri -> satirin adi,
+// adaptor kodu -> adaptorun adi, elle girilmis pazaryeri kanali -> kendi adi. Elle kanalin adi bir sistem
+// etiketiyle ayniysa (ornek eski "Paket" ya da "SofraMix" adli elle kanal) raporda karismasin: "(elle kanal)".
 function kanalAdi(kanal) {
     if (!kanal || kanal === 'DINE_IN') return 'Salon';
     if (kanal === PAKET) return 'Paket';
@@ -93,7 +111,8 @@ function kanalAdi(kanal) {
         const a = reg.ADAPTERS[kanal];
         if (a && reg.listAvailable().some((x) => x.code === kanal)) return duzTire(a.displayName);
     } catch (_) { /* kayit okunamadi: ham ad */ }
-    return duzTire(kanal);
+    const ad = duzTire(kanal);
+    return sistemEtiketleri().has(ad.trim().toLowerCase()) ? `${ad} (elle kanal)` : ad;
 }
 
 // "Paket 3" / "SofraMix SMX-K7P2QA" / "<Kanal> #4101"
@@ -158,6 +177,54 @@ const dikkatMi = (o) => {
     const s = ES.satir(o.channel);
     return !!s && o.status === 'OPEN' && (s.dikkat || []).includes(normalOf(o, s));
 };
+
+// --- Takilmis pazaryeri siparisi ("Yerelde kapat" yalniz bunda) ---
+// Saglikli kanalda kasa islemleri platforma gider; "Yerelde kapat" kisayol olarak kullanilirsa platform ile
+// POS sessizce ayrisir. Bu yuzden yalniz su durumlardan biri varsa acilir (sunucu da ayni kurali zorlar):
+//   1) kanal bagli degil: aktif kanal + aktif magaza baglantisi + gecerli anahtar yok, ya da cekme dongusu
+//      ust uste TAKILMA_CEKME_HATASI kez hata aldi;
+//   2) kasadan yapilan son platform islemi hata aldi (orders.platform_hata_at);
+//   3) siparis TAKILMA_SAAT saattir platformda degismedi (platformun son degisiklik zamani).
+const TAKILMA_SAAT = 3;
+const TAKILMA_CEKME_HATASI = 3;
+
+// Kiracinin pazaryeri kanallari: Map(adaptor kodu -> bagli mi)
+async function kanalBaglantilari(tenantId) {
+    const r = await query(
+        `SELECT c.adapter_code AS kod,
+                CASE WHEN EXISTS (SELECT 1 FROM marketplace_store_links l WHERE l.channel_id = c.id AND l.is_active = 1)
+                      AND EXISTS (SELECT 1 FROM marketplace_credentials k WHERE k.channel_id = c.id AND k.status = 'active')
+                      AND COALESCE((SELECT MAX(s.consecutive_errors) FROM marketplace_sync_state s
+                                     WHERE s.channel_id = c.id AND s.resource = 'orders'), 0) < ?
+                     THEN 1 ELSE 0 END AS bagli
+           FROM marketplace_channels c
+          WHERE c.tenant_id = ? AND c.is_active = 1 AND c.adapter_code IS NOT NULL AND c.adapter_code <> ''`,
+        [TAKILMA_CEKME_HATASI, tenantId]);
+    const m = new Map();
+    for (const x of r.rows) if (x.bagli || !m.has(x.kod)) m.set(x.kod, !!x.bagli);
+    return m;
+}
+
+const sqlMs = (v) => { const t = Date.parse(String(v || '').replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(v || '')) ? '' : 'Z')); return Number.isFinite(t) ? t : null; };
+const TAKILMA_NEDEN = { baglanti: 'bağlantı yok', platform_hatasi: 'son platform işlemi hata verdi', degismedi: `${TAKILMA_SAAT} saattir platformda değişmedi` };
+
+// Acik pazaryeri siparisi takildi mi: { kod, etiket } ya da null. baglantilar: kanalBaglantilari() sonucu.
+function takilmaOf(o, baglantilar, simdi = Date.now()) {
+    if (!o || o.channel === PAKET || o.status !== 'OPEN' || !ES.satir(o.channel)) return null;
+    const ad = kanalAdi(o.channel);
+    if (!baglantilar || !baglantilar.get(o.channel)) return { kod: 'baglanti', etiket: `${ad} bağlantısı yok ya da çalışmıyor` };
+    if (o.platform_hata_at) return { kod: 'platform_hatasi', etiket: 'Son platform işlemi hata verdi' + (o.platform_hata ? ` (${o.platform_hata})` : '') };
+    const son = Number(o.platform_modified_at) || sqlMs(o.opened_at);
+    if (son && simdi - son >= TAKILMA_SAAT * 3600000) return { kod: 'degismedi', etiket: `${TAKILMA_SAAT} saattir ${ad} tarafında değişmedi` };
+    return null;
+}
+
+// Yerel sonuc ile platformun sonraki (son) durumu celisiyor mu: metin ya da null
+function celiskiMetni(yerelDurum, normal, ad) {
+    if (yerelDurum === 'CLOSED' && (normal === 'CANCELLED' || normal === 'REJECTED')) return `Yerelde teslim edildi sayıldı, ${ad} tarafında iptal edildi`;
+    if (yerelDurum === 'CANCELLED' && normal === 'DELIVERED') return `Yerelde iptal sayıldı, ${ad} tarafında teslim edildi`;
+    return null;
+}
 
 // --- Izinli aksiyonlar ---
 // Arayuz dugmeleri BU listeden cizilir, sunucu da istegi ayni listeyle denetler (tek kural).
@@ -350,7 +417,7 @@ async function kalemVeOdemeler(ids) {
     return { kalemler, odenen };
 }
 
-function gorunum(o, kalemler, odenen) {
+function gorunum(o, kalemler, odenen, baglantilar) {
     const asama = asamaOf(o);
     // kaynak: TELEFON | PAZARYERI; rozet metni kanal adindan (kaynakAd)
     const kaynak = o.channel === PAKET ? 'TELEFON' : 'PAZARYERI';
@@ -359,6 +426,7 @@ function gorunum(o, kalemler, odenen) {
     const odenenT = r2(odenen || 0);
     const k = kalemler || [];
     const odeme = o.odeme_sekli ? odemeBilgisi(o.channel, o.odeme_sekli) : null;
+    const takilma = kaynak === 'PAZARYERI' ? takilmaOf(o, baglantilar) : null;
     return {
         id: o.id,
         kaynak,
@@ -392,15 +460,23 @@ function gorunum(o, kalemler, odenen) {
         teslimSorunuAt: o.teslim_sorunu_at || null,
         teslimSorunu: kaynak === 'PAZARYERI' && teslimSorunuVar(o),
         aksiyonlar: aksiyonlarOf(o),
-        // Platforma gitmeden yerelde kapatma (kanal koptu / siparis platformda takildi): yalniz sahip/mudur
-        yerelKapatilabilir: kaynak === 'PAZARYERI' && o.status === 'OPEN',
+        // Platforma gitmeden yerelde kapatma: yalniz TAKILMIS sipariste (takilmaOf), yalniz sahip/mudur
+        takilma: takilma ? takilma.etiket : null,
+        yerelKapatilabilir: !!takilma,
+        // Yerel sonuc ile platform celisti: rozet + aciklama (ciro/odeme kendiliginden degismedi)
+        celiski: o.platform_celiski_at ? { at: o.platform_celiski_at, metin: o.platform_celiski || 'Platformla uyuşmuyor' } : null,
         duzenlenebilir: o.channel === PAKET && o.status === 'OPEN' && (o.paket_durum || 'HAZIRLANIYOR') === 'HAZIRLANIYOR',
     };
 }
 
 async function gorunumler(rows) {
     const { kalemler, odenen } = await kalemVeOdemeler(rows.map((r) => r.id));
-    return rows.map((o) => gorunum(o, kalemler.get(o.id), odenen.get(o.id)));
+    // Acik pazaryeri siparisi olan kiracilarin kanal baglantisi (takilma kurali icin) bir kez okunur
+    const baglanti = new Map();
+    for (const t of new Set(rows.filter((o) => o.channel !== PAKET && o.status === 'OPEN').map((o) => o.tenant_id))) {
+        baglanti.set(t, await kanalBaglantilari(t));
+    }
+    return rows.map((o) => gorunum(o, kalemler.get(o.id), odenen.get(o.id), baglanti.get(o.tenant_id)));
 }
 
 // Paket Servis ekranina dusen kanallar (SQL icin): telefon + esleme tablosunda satiri olan pazaryerleri.
@@ -425,5 +501,6 @@ module.exports = {
     r2, TL, odemeBilgisi, posYontemi, istanbulGunu, istanbulGunBasiUtc, sqlZamani, duzTire, kanalAdi, paketEtiketi,
     paketKanaliMi, paketKanallariSql, paketKosulu, teslimatOf, efektifHam, normalOf, hamNormal, geriMi,
     asamaOf, grupOf, dikkatMi, aksiyonlarOf, hedefHam, musteriBilgisi,
+    TAKILMA_SAAT, TAKILMA_NEDEN, kanalBaglantilari, takilmaOf, celiskiMetni, sistemEtiketleri,
     otoOdemeYazIc, otoOdemeYaz, mutfakKalemleriniKapat, gorunum, gorunumler, paketSatiri,
 };

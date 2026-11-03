@@ -181,14 +181,34 @@ function paketEklemeKapali(o) {
     return o && o.channel === PAKET && (o.paket_durum || 'HAZIRLANIYOR') !== 'HAZIRLANIYOR';
 }
 
+// Kalem silme / azaltma toplami alinan odemenin ALTINA indiremez: hesap bir daha kapanamazdi (kapanis sarti
+// odeme = toplam). Toplami yeniden yazar; asarsa 409 firlatir (tx ICINDE: degisiklik geri alinir).
+async function toplamiYazOdenenAltinaInmez(orderId) {
+    const { total } = await recomputeTotals(orderId);
+    const odenen = Number((await query('SELECT COALESCE(SUM(amount), 0) AS s FROM payments WHERE order_id = ?', [orderId])).rows[0].s);
+    if (odenen - Number(total) > 0.01) {
+        const e = new Error(`Bu siparişte ${TL(odenen)} ödeme alınmış; değişiklikle toplam ${TL(total)} olur ve ödenenin altına iner. `
+            + 'Önce fazla ödemeyi silin (yönetici), sonra tekrar deneyin.');
+        e.status = 409;
+        throw e;
+    }
+}
+
 exports.removeItem = async (req, res) => {
     const cur = await kalemiBul(req);
     if (!cur) return res.status(404).json({ message: 'Kalem yok.' });
     if (cur.source === 'TESLIMAT_UCRETI') return res.status(409).json({ message: UCRET_MESAJI });
     const izin = await kalemDuzeltmeKontrol(req, cur);
     if (izin.hata) return res.status(izin.kod).json({ message: izin.hata });
-    await query('DELETE FROM order_items WHERE id = ?', [cur.id]);
-    await recomputeTotals(req.params.id);
+    try {
+        await tx(async () => {
+            await query('DELETE FROM order_items WHERE id = ?', [cur.id]);
+            await toplamiYazOdenenAltinaInmez(req.params.id);
+        });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
     gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_sil', hedefTur: 'order_item', hedefId: cur.id,
         detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} (${TL(cur.total)}) · ${req.user.role}` });
     res.json({ message: 'Silindi.' });
@@ -211,11 +231,19 @@ exports.updateItem = async (req, res) => {
         if (izin.hata) return res.status(izin.kod).json({ message: izin.hata });
     }
     const newTotal = newQty * Number(cur.unit_price);
-    await query(
-        `UPDATE order_items SET qty = ?, total = ?, note = COALESCE(?, note), status = COALESCE(?, status)
-         WHERE id = ?`,
-        [newQty, newTotal, note, status, cur.id]);
-    await recomputeTotals(req.params.id);
+    try {
+        await tx(async () => {
+            await query(
+                `UPDATE order_items SET qty = ?, total = ?, note = COALESCE(?, note), status = COALESCE(?, status)
+                 WHERE id = ?`,
+                [newQty, newTotal, note, status, cur.id]);
+            if (azaliyor) await toplamiYazOdenenAltinaInmez(req.params.id);
+            else await recomputeTotals(req.params.id);
+        });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
     if (azaliyor) {
         gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_azalt', hedefTur: 'order_item', hedefId: cur.id,
             detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} → ×${newQty} · ${req.user.role}` });
