@@ -204,7 +204,11 @@ class SofraMixAdapter extends BaseAdapter {
                 placedAt: M.zamanaMs(o.created_at),
                 platformModifiedAt: M.zamanaMs(o.updated_at || o.guncellendi_at || o.confirmed_at || o.created_at),
                 prepTimeMinutes: null,
-                customer: { name: o.customer_name || null, phone: o.customer_phone || null, isMasked: 0 },
+                // SofraMix hesabini silen musterinin telefonu 'silindi-<id>-<hex>' yer tutucusuna, adi
+                // 'Silinen kullanici'ya doner (common.js musteriAnonimlestir): kisisel veri yok demektir.
+                customer: /^silindi-/i.test(String(o.customer_phone || ''))
+                    ? { name: null, phone: null, isMasked: 1 }
+                    : { name: o.customer_name || null, phone: o.customer_phone || null, isMasked: 0 },
                 address: adres ? {
                     district: adres.district || null,
                     line1: adres.full_address || null,

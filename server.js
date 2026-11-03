@@ -91,6 +91,7 @@ app.use('/api/payments', require('./src/routes/paymentRoutes'));
 app.use('/api/stock', require('./src/routes/stockRoutes'));
 app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
 app.use('/api/marketplace', require('./src/routes/marketplaceRoutes'));
+app.use('/api/paket', require('./src/routes/paketRoutes'));       // paket servis (telefon + SofraMix), temel paket
 app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/mutfak', require('./src/routes/mutfakRoutes'));   // mutfak ekrani (KDS)
@@ -137,6 +138,9 @@ app.listen(PORT, () => {
 
     // Pazaryeri siparislerini cekme dongusu. Bagli kanal yoksa hicbir sey yapmaz.
     require('./src/services/siparisCekici').baslat();
+
+    // KVKK: paket siparisinde musteri adi/telefon/adres kapanistan 30 gun sonra silinir (saatte bir tarar)
+    require('./src/services/paketKvkk').baslat();
 
     // Yeni restoran kaydi + SofraMix'ten paket alimi: Patron'a e-posta, yonetim APK'sina olay (60 sn'de bir tarar)
     require('./src/services/yeniKayitIzleyici').baslat();

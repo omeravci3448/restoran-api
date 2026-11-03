@@ -1,6 +1,9 @@
 const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../../config/db');
 const { toTL } = require('../money');
+const paket = require('../../services/paketServis');
+const PaketEsleme = require('../paketEsleme');
+const bus = require('../../services/eventBus');
 
 // ——— Sipariş alım boru hattı (INBOX → normalize → orders) ———
 //
@@ -49,42 +52,96 @@ async function resolveStoreLink({ channelId, externalStoreId }) {
     return r.rows[0] || null;
 }
 
+// Teslim/iptal sonrasi isler (mutfaktan dusur, eksik odemeyi tamamla). Best-effort: hata siparis
+// kaydini bozmaz, loglanir (olay 'failed' olursa tekrar islenmez, yari kalmis siparis daha kotu).
+async function sonrakiIsler(orderId, s) {
+    try {
+        if (s === 'DISPATCHED' || s === 'DELIVERED') await paket.mutfakKalemleriniKapat(orderId);
+        if (s === 'DELIVERED') await paket.otoOdemeYaz(orderId);
+    } catch (e) { console.error('[ingest] teslim sonrasi isler:', e.message); }
+}
+
 // Normalize edilmiş siparişi orders/order_items'a yaz (UPSERT).
 // Var olan sipariş: durum ve tutarlar güncellenir, kalemler YENİDEN yazılmaz.
+//
+// Paket Servis (marketplace/paketEsleme.js'te satiri olan pazaryeri; bugun SofraMix): musteri
+// adi/telefon/adres ve odeme sekli de yazilir (yeni sipariste ve guncellemede). Platform adresi
+// maskeli/silinmis gonderirse yerel kopya da silinir; KVKK silmesi yapilmis siparise (musteri_silindi_at)
+// kisisel veri bir daha yazilmaz.
+// Teslim (DELIVERED): kapanis zamani yazilir (raporlar closed_at'e bakar) + odeme kaydi eksikse
+// platformun odeme yontemiyle tamamlanir (tek sefer: kalan uzerinden).
 async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
     const n = normalized;
+    const s = n.status;
+    const esleme = PaketEsleme.satir(channelCode);
+    const kisisel = !!(esleme && esleme.musteri);
+    const m = kisisel ? paket.musteriBilgisi(n) : { silindi: false, ad: null, tel: null, adres: null };
+    const odemeKodu = esleme && n.payment && n.payment.methodCode ? String(n.payment.methodCode).slice(0, 40) : null;
+    const zaman = paket.sqlZamani(n.platformModifiedAt);
     const existing = await query(
-        'SELECT id, status FROM orders WHERE tenant_id = ? AND channel = ? AND external_ref = ?',
+        'SELECT id, status, channel_status_raw, musteri_silindi_at FROM orders WHERE tenant_id = ? AND channel = ? AND external_ref = ?',
         [tenantId, channelCode, n.externalOrderId]);
 
     if (existing.rows.length) {
         const orderId = existing.rows[0].id;
-        await query(
+        // Platform durumu yalniz ILERI gider. Kasadan "yola cikti" denildikten hemen sonra, ondan once
+        // cekilmis eski bir olay islenirse durum geri gitmesin (ekranda dugmeler geri gelirdi).
+        // Sira esleme satirinin normalize sozlugunden (satiri olmayan kanalda eski davranis).
+        const geri = paket.geriMi(channelCode, existing.rows[0].channel_status_raw, n.platformStatusRaw);
+        if (!geri) await query(
             `UPDATE orders SET
                 status = CASE WHEN ? IN ('CANCELLED','REJECTED') THEN 'CANCELLED'
                               WHEN ? = 'DELIVERED' THEN 'CLOSED' ELSE status END,
+                closed_at = CASE WHEN ? IN ('CANCELLED','REJECTED','DELIVERED') THEN COALESCE(closed_at, ?, CURRENT_TIMESTAMP) ELSE closed_at END,
+                yola_cikti_at = CASE WHEN ? = 'DISPATCHED' THEN COALESCE(yola_cikti_at, ?, CURRENT_TIMESTAMP) ELSE yola_cikti_at END,
+                hazir_at = CASE WHEN ? = 'READY' THEN COALESCE(hazir_at, ?, CURRENT_TIMESTAMP) ELSE hazir_at END,
+                teslim_at = CASE WHEN ? = 'DELIVERED' THEN COALESCE(teslim_at, ?, CURRENT_TIMESTAMP) ELSE teslim_at END,
                 channel_status_raw = ?, channel_sub = COALESCE(?, channel_sub),
                 platform_modified_at = ?, raw_payload_id = COALESCE(?, raw_payload_id),
-                total = COALESCE(?, total), subtotal = COALESCE(?, subtotal)
+                total = COALESCE(?, total), subtotal = COALESCE(?, subtotal),
+                is_address_masked = CASE WHEN ? = 1 THEN 1 ELSE is_address_masked END,
+                odeme_sekli = COALESCE(?, odeme_sekli)
               WHERE id = ?`,
-            [n.status, n.status, n.platformStatusRaw, n.subChannel, n.platformModifiedAt, eventId,
-                toTL(n.money?.grandTotalKurus), toTL(n.money?.grandTotalKurus), orderId]);
+            [s, s, s, zaman, s, zaman, s, zaman, s, zaman,
+                n.platformStatusRaw, n.subChannel, n.platformModifiedAt, eventId,
+                toTL(n.money?.grandTotalKurus), toTL(n.money?.grandTotalKurus),
+                n.isAddressMasked ? 1 : 0, odemeKodu, orderId]);
+        if (kisisel && !existing.rows[0].musteri_silindi_at) {
+            if (m.silindi) {
+                await query(`UPDATE orders SET musteri_ad = NULL, musteri_tel = NULL, musteri_adres = NULL,
+                                    musteri_silindi_at = CURRENT_TIMESTAMP WHERE id = ?`, [orderId]);
+            } else {
+                await query('UPDATE orders SET musteri_ad = ?, musteri_tel = ?, musteri_adres = ? WHERE id = ?',
+                    [m.ad, m.tel, m.adres, orderId]);
+            }
+        }
+        if (!geri) await sonrakiIsler(orderId, s);
         return { orderId, created: false };
     }
 
     const orderId = uuidv4();
+    // POS kapaliyken teslim/iptal olmus siparis ilk kez goruluyorsa ACIK acilmaz (eskiden hep OPEN aciliyordu
+    // ve oyle kaliyordu: ayni olay bir daha gelmez).
+    const yerel = ['CANCELLED', 'REJECTED'].includes(s) ? 'CANCELLED' : s === 'DELIVERED' ? 'CLOSED' : 'OPEN';
+    const simdi = paket.sqlZamani(Date.now());
+    const an = zaman || simdi;
     await tx(async () => {
         await query(
             `INSERT INTO orders
                 (id, tenant_id, table_id, channel, external_ref, status, subtotal, total, note,
                  channel_sub, channel_status_raw, delivery_mode, is_test, is_address_masked,
-                 external_order_no, platform_modified_at, raw_payload_id)
-             VALUES (?, ?, NULL, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [orderId, tenantId, channelCode, n.externalOrderId,
+                 external_order_no, platform_modified_at, raw_payload_id,
+                 closed_at, yola_cikti_at, hazir_at, teslim_at,
+                 musteri_ad, musteri_tel, musteri_adres, musteri_silindi_at, odeme_sekli)
+             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [orderId, tenantId, channelCode, n.externalOrderId, yerel,
                 toTL(n.money?.grandTotalKurus) || 0, toTL(n.money?.grandTotalKurus) || 0,
                 n.customerNote || null, n.subChannel, n.platformStatusRaw, n.deliveryMode,
                 n.isTest ? 1 : 0, n.isAddressMasked ? 1 : 0, n.externalOrderNo,
-                n.platformModifiedAt, eventId]);
+                n.platformModifiedAt, eventId,
+                yerel === 'OPEN' ? null : an,
+                s === 'DISPATCHED' ? an : null, s === 'READY' ? an : null, s === 'DELIVERED' ? an : null,
+                m.ad, m.tel, m.adres, kisisel && m.silindi ? simdi : null, odemeKodu]);
 
         for (const it of n.items || []) {
             await query(
@@ -99,6 +156,23 @@ async function upsertOrder({ tenantId, channelCode, normalized, eventId }) {
                     it.isCancelled ? 1 : 0]);
         }
     });
+    await sonrakiIsler(orderId, s);
+    // Kasaya canli uyari (SSE + ses + kart): yalniz Paket Servis ekranina dusen ACIK siparis. Ayri olay adi
+    // ('paket_siparis'): garson uygulamasi 'new_order'i "QR siparisi" diye caliyor, ona karismasin.
+    // Kisisel veri olaya KONMAZ (mutfak tableti / garson telefonu da bu akisi dinliyor).
+    if (esleme && yerel === 'OPEN') {
+        try {
+            const normal = paket.hamNormal(channelCode, n.platformStatusRaw);
+            bus.emit(tenantId, 'paket_siparis', {
+                orderId, kaynak: 'PAZARYERI', kaynakAd: paket.kanalAdi(channelCode),
+                etiket: paket.paketEtiketi({ channel: channelCode, external_order_no: n.externalOrderNo, external_ref: n.externalOrderId }),
+                orderTotal: toTL(n.money?.grandTotalKurus) || 0, addedItems: (n.items || []).length,
+                durum: n.platformStatusRaw,   // gelis anindaki durum: kasada zil bu durumdan cikilinca susar
+                onayBekliyor: normal === 'NEW',
+                dikkat: (esleme.dikkat || []).includes(normal),
+            });
+        } catch (_) { /* uyari best-effort */ }
+    }
     return { orderId, created: true };
 }
 

@@ -1,4 +1,8 @@
 const { query } = require('../config/db');
+const { kanalAdi } = require('../services/paketServis');
+
+// Kanal kirilimi: Salon (DINE_IN) / Paket (telefon paketi, PAKET) / Pazaryeri (SofraMix ve digerleri).
+// "Pazaryeri" toplami paketi ICERMEZ.
 
 // SQLite CURRENT_TIMESTAMP "YYYY-MM-DD HH:MM:SS" formatı kullandığı için
 // karşılaştırmayı substr ile günlük bazda yapıyoruz
@@ -17,7 +21,8 @@ exports.daySummary = async (req, res) => {
             COUNT(*) AS order_count,
             COALESCE(SUM(total), 0) AS revenue,
             COALESCE(SUM(CASE WHEN channel = 'DINE_IN' THEN total ELSE 0 END), 0) AS dine_in_revenue,
-            COALESCE(SUM(CASE WHEN channel != 'DINE_IN' THEN total ELSE 0 END), 0) AS marketplace_revenue
+            COALESCE(SUM(CASE WHEN channel = 'PAKET' THEN total ELSE 0 END), 0) AS paket_revenue,
+            COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', 'PAKET') THEN total ELSE 0 END), 0) AS marketplace_revenue
            FROM orders
           WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 10) = ?`,
         [t, day]);
@@ -47,6 +52,7 @@ exports.daySummary = async (req, res) => {
            JOIN orders o ON o.id = oi.order_id
            LEFT JOIN products p ON p.id = oi.product_id
           WHERE o.tenant_id = ? AND o.status = 'CLOSED' AND substr(o.closed_at, 1, 10) = ?
+            AND COALESCE(oi.source, '') != 'TESLIMAT_UCRETI'   -- paket teslimat ucreti urun degil
           GROUP BY oi.product_name
           ORDER BY revenue DESC
           LIMIT 20`,
@@ -91,7 +97,8 @@ exports.daySummary = async (req, res) => {
     res.json({
         day,
         totals: totalsWithProfit,
-        byChannel: byChannel.rows,
+        // label: ekranda gorunen ad (Salon / Paket / SofraMix / elle girilen kanalin adi)
+        byChannel: byChannel.rows.map(c => ({ ...c, label: kanalAdi(c.channel) })),
         byPayment: byPayment.rows,
         topProducts: topProducts.rows.map(p => ({
             ...p,
@@ -112,7 +119,8 @@ exports.monthSummary = async (req, res) => {
                 COUNT(*) AS cnt,
                 COALESCE(SUM(total), 0) AS revenue,
                 COALESCE(SUM(CASE WHEN channel = 'DINE_IN' THEN total ELSE 0 END), 0) AS dine_in,
-                COALESCE(SUM(CASE WHEN channel != 'DINE_IN' THEN total ELSE 0 END), 0) AS marketplace
+                COALESCE(SUM(CASE WHEN channel = 'PAKET' THEN total ELSE 0 END), 0) AS paket,
+                COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', 'PAKET') THEN total ELSE 0 END), 0) AS marketplace
            FROM orders
           WHERE tenant_id = ? AND status = 'CLOSED' AND substr(closed_at, 1, 7) = ?
           GROUP BY day
@@ -153,11 +161,12 @@ exports.monthSummary = async (req, res) => {
         revenue: s.revenue + Number(r.revenue),
         cnt: s.cnt + Number(r.cnt),
         dine_in: s.dine_in + Number(r.dine_in),
+        paket: s.paket + Number(r.paket),
         marketplace: s.marketplace + Number(r.marketplace),
         cost: s.cost + Number(r.cost),
         marketplace_cost: s.marketplace_cost + Number(r.marketplace_cost),
         profit: s.profit + Number(r.profit)
-    }), { revenue: 0, cnt: 0, dine_in: 0, marketplace: 0, cost: 0, marketplace_cost: 0, profit: 0 });
+    }), { revenue: 0, cnt: 0, dine_in: 0, paket: 0, marketplace: 0, cost: 0, marketplace_cost: 0, profit: 0 });
 
     const topProducts = await query(
         `SELECT oi.product_name AS name,
@@ -168,6 +177,7 @@ exports.monthSummary = async (req, res) => {
            JOIN orders o ON o.id = oi.order_id
            LEFT JOIN products p ON p.id = oi.product_id
           WHERE o.tenant_id = ? AND o.status = 'CLOSED' AND substr(o.closed_at, 1, 7) = ?
+            AND COALESCE(oi.source, '') != 'TESLIMAT_UCRETI'   -- paket teslimat ucreti urun degil
           GROUP BY oi.product_name
           ORDER BY revenue DESC
           LIMIT 30`,

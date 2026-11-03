@@ -569,6 +569,51 @@ const initDb = () => {
         db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_channel_ref
                 ON orders(tenant_id, channel, external_ref) WHERE external_ref IS NOT NULL`, [], () => {});
 
+        // --- PAKET SERVIS (telefon siparisi channel='PAKET' + SofraMix siparisleri ayni ekranda) ---
+        // Musteri adi/telefon/adres YALNIZ paket siparisinde tutulur; siparis kapandiktan ya da iptal
+        // edildikten 30 gun sonra services/paketKvkk.js siler (siparis ve tutarlar kalir, musteri_silindi_at
+        // damgasi atilir). SofraMix adresi maskeli/silinmis gonderirse yerel kopya hemen silinir.
+        db.run("ALTER TABLE orders ADD COLUMN paket_no INTEGER", [], () => {});           // gunluk artan no (Paket 3)
+        db.run("ALTER TABLE orders ADD COLUMN paket_gunu TEXT", [], () => {});            // paket_no'nun gunu (Istanbul, YYYY-MM-DD)
+        db.run("ALTER TABLE orders ADD COLUMN paket_durum TEXT", [], () => {});           // HAZIRLANIYOR|YOLDA|HAZIR|TESLIM (telefon siparisi)
+        db.run("ALTER TABLE orders ADD COLUMN musteri_ad TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN musteri_tel TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN musteri_adres TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN odeme_sekli TEXT", [], () => {});           // kapida_nakit|kapida_kart|online_iyzico
+        db.run("ALTER TABLE orders ADD COLUMN yola_cikti_at TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN hazir_at TEXT", [], () => {});              // gel-al: musteriyi bekliyor
+        db.run("ALTER TABLE orders ADD COLUMN teslim_at TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN teslim_sorunu_at TEXT", [], () => {});      // SofraMix'e "teslim edilemedi" bildirildi
+        db.run("ALTER TABLE orders ADD COLUMN musteri_silindi_at TEXT", [], () => {});    // KVKK: kisisel veri silindi damgasi
+        // Ayni gun ayni isletmede iki "Paket 3" olmasin
+        db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_paket_no
+                ON orders(tenant_id, paket_gunu, paket_no) WHERE paket_no IS NOT NULL`, [], () => {});
+        // Veri onarimi (idempotent): eski cekme kodu, ILK GORULDUGUNDE zaten teslim/iptal olmus SofraMix siparisini
+        // ACIK yaziyordu ve oyle kaliyordu; Paket Servis'te sonsuza dek "aktif" gorunurdu. Durum duzeltilir,
+        // kapanis zamanina DOKUNULMAZ (gecmis gun raporlari degismesin).
+        db.run(`UPDATE orders SET status = CASE channel_status_raw WHEN 'teslim' THEN 'CLOSED' ELSE 'CANCELLED' END
+                 WHERE channel = 'soframix' AND status = 'OPEN' AND channel_status_raw IN ('teslim', 'iptal')`, [], () => {});
+
+        // - PAKET MUSTERI DEFTERI (Patron karari 2026-11-03: telefon yazilinca ad/adres kendiliginden gelsin) -
+        // Yalniz TELEFON (PAKET) siparislerinden beslenir; SofraMix musterisi GIRMEZ. Kiraci basina telefon
+        // (son 10 hane) tekil. Siparislerdeki 30 gunluk silme deftere dokunmaz; musteri 365 gun siparis
+        // vermezse kayit kendiliginden silinir (services/paketKvkk.js). "Musteriyi unut" (KVKK talebi) kaydi
+        // ve kapanmis siparislerdeki kisisel bilgiyi siler.
+        db.run(`CREATE TABLE IF NOT EXISTS paket_musterileri (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            tel_norm TEXT NOT NULL,
+            tel TEXT,
+            ad TEXT,
+            adresler TEXT,                     -- JSON dizi, son kullanilan basta (en fazla 5)
+            siparis_sayisi INTEGER DEFAULT 0,
+            son_siparis_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, tel_norm),
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_paket_musteri_son ON paket_musterileri(son_siparis_at)", [], () => {});
+
         // order_items: pazaryeri kalem alanları
         db.run("ALTER TABLE order_items ADD COLUMN external_item_id TEXT", [], () => {});
         db.run("ALTER TABLE order_items ADD COLUMN external_product_id TEXT", [], () => {});

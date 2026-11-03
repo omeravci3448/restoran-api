@@ -1,5 +1,10 @@
 const { query } = require('../config/db');
 const bus = require('../services/eventBus');
+const { paketEtiketi, TESLIMAT_ETIKET, teslimatOf } = require('../services/paketServis');
+
+// Masasiz siparisin (telefon paketi, SofraMix) mutfak karti etiketi: "Paket 3", "SofraMix SMX-K7P2QA".
+// tableName'e YAZILMAZ (garson uygulamasi tableName'i kendi bildiriminde kullaniyor, oraya dokunulmadi).
+const etiketOf = (r) => (r.table_id ? null : paketEtiketi(r));
 
 // ——— MUTFAK EKRANI (KDS) ———
 // Kalem durumu: NEW/SEEN (bekliyor) -> PREPARING (hazirlaniyor) -> READY (hazir) -> SERVED (servis edildi).
@@ -26,7 +31,7 @@ async function kuyrukSatirlari(tenantId) {
         `SELECT oi.id, oi.order_id, oi.product_name, oi.qty, oi.note, oi.status, oi.created_at,
                 oi.prep_started_at, oi.ready_at, oi.modifiers_json, oi.source,
                 COALESCE(c.istasyon, 'MUTFAK') AS istasyon,
-                o.table_id, o.channel, o.opened_at, o.external_ref,
+                o.table_id, o.channel, o.opened_at, o.external_ref, o.external_order_no, o.paket_no, o.delivery_mode,
                 t.name AS table_name, t.code AS table_code, t.section
            FROM order_items oi
            JOIN orders o ON o.id = oi.order_id
@@ -35,6 +40,7 @@ async function kuyrukSatirlari(tenantId) {
            LEFT JOIN tables t ON t.id = o.table_id
           WHERE o.tenant_id = ? AND o.status = 'OPEN' AND COALESCE(oi.is_cancelled, 0) = 0
             AND oi.status IN ('NEW', 'SEEN', 'PREPARING', 'READY')
+            AND COALESCE(oi.source, '') != 'TESLIMAT_UCRETI'   -- paket teslimat ucreti mutfaga dusmez
           ORDER BY oi.created_at`, [tenantId]);
     return r.rows;
 }
@@ -55,6 +61,7 @@ function kartla(rows) {
         if (!k) {
             k = { orderId: r.order_id, tableId: r.table_id, tableName: r.table_name, tableCode: r.table_code, section: r.section,
                   channel: r.channel, externalRef: r.external_ref, openedAt: r.opened_at, enEski: r.created_at,
+                  etiket: etiketOf(r), teslimat: r.table_id ? null : TESLIMAT_ETIKET[teslimatOf(r)],
                   items: [], bekleyen: 0, hazirlaniyor: 0, hazir: 0 };
             map.set(r.order_id, k);
         }
@@ -76,7 +83,10 @@ function kartla(rows) {
 
 // GET /api/mutfak/kuyruk?istasyon=HEPSI|MUTFAK|BAR  (her rol okur; garson "hazir" rozetleri icin de kullanir)
 exports.kuyruk = async (req, res) => {
-    const rows = istasyonSuz(await kuyrukSatirlari(req.user.tenantId), req.query.istasyon);
+    let rows = istasyonSuz(await kuyrukSatirlari(req.user.tenantId), req.query.istasyon);
+    // Garson uygulamasi paket siparisini GORMEZ (Patron karari): garson kuyrugu "hazir" rozeti/bildirimi icin
+    // okuyor; masasiz (paket / SofraMix) kalemler ona gitmez.
+    if (req.user.role === 'WAITER') rows = rows.filter(r => r.table_id);
     const kartlar = kartla(rows);
     const sayac = { bekleyen: 0, hazirlaniyor: 0, hazir: 0 };
     for (const k of kartlar) { sayac.bekleyen += k.bekleyen; sayac.hazirlaniyor += k.hazirlaniyor; sayac.hazir += k.hazir; }
@@ -96,7 +106,8 @@ exports.kalemDurum = async (req, res) => {
     const gs = gecisAl(req, res); if (!gs) return;
     const { durum, g } = gs;
     const it = (await query(
-        `SELECT oi.id, oi.order_id, oi.product_name, oi.qty, oi.status, o.status AS order_status, t.name AS table_name, t.code AS table_code
+        `SELECT oi.id, oi.order_id, oi.product_name, oi.qty, oi.status, o.status AS order_status, t.name AS table_name, t.code AS table_code,
+                o.table_id, o.channel, o.paket_no, o.external_order_no, o.external_ref
            FROM order_items oi JOIN orders o ON o.id = oi.order_id LEFT JOIN tables t ON t.id = o.table_id
           WHERE oi.id = ? AND o.tenant_id = ?`, [req.params.itemId, req.user.tenantId])).rows[0];
     if (!it) return res.status(404).json({ message: 'Kalem yok.' });
@@ -107,7 +118,7 @@ exports.kalemDurum = async (req, res) => {
     await query(`UPDATE order_items SET ${g.set} WHERE id = ?`, [it.id]);
     bus.emit(req.user.tenantId, 'item_status', {
         orderId: it.order_id, itemId: it.id, name: it.product_name, qty: it.qty, status: durum,
-        tableName: it.table_name, tableCode: it.table_code, by: req.user.name || req.user.email,
+        tableName: it.table_name, tableCode: it.table_code, etiket: etiketOf(it) || undefined, by: req.user.name || req.user.email,
     });
     res.json({ ok: true, status: durum });
 };
@@ -117,7 +128,8 @@ exports.siparisDurum = async (req, res) => {
     const gs = gecisAl(req, res); if (!gs) return;
     const { durum, g } = gs;
     const o = (await query(
-        `SELECT o.id, o.status, t.name AS table_name, t.code AS table_code
+        `SELECT o.id, o.status, t.name AS table_name, t.code AS table_code,
+                o.table_id, o.channel, o.paket_no, o.external_order_no, o.external_ref
            FROM orders o LEFT JOIN tables t ON t.id = o.table_id WHERE o.id = ? AND o.tenant_id = ?`,
         [req.params.orderId, req.user.tenantId])).rows[0];
     if (!o) return res.status(404).json({ message: 'Sipariş yok.' });
@@ -130,7 +142,7 @@ exports.siparisDurum = async (req, res) => {
     await query(`UPDATE order_items SET ${g.set} WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
     bus.emit(req.user.tenantId, 'item_status', {
         orderId: o.id, toplu: true, adet: ids.length, status: durum,
-        tableName: o.table_name, tableCode: o.table_code, by: req.user.name || req.user.email,
+        tableName: o.table_name, tableCode: o.table_code, etiket: etiketOf(o) || undefined, by: req.user.name || req.user.email,
     });
     res.json({ ok: true, adet: ids.length });
 };
