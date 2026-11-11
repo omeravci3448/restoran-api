@@ -69,6 +69,36 @@ function bagimlilikSaglaniyor(m, liste) {
     return true;
 }
 
+// --- Lisans alim / yenileme / yukseltme onayinda KORUNAN moduller (tek yer) ---
+// KARAR (2026-11-12, inceleme K1): onayda yeni modul listesi = odenen moduller + isletmede olup SU AN SATIN
+// ALINAMAYAN moduller (gizli katalog satiri, katalogda olmayan eski kod, 'ALL' dahil). Boylece satista olmayan
+// "Masadan Siparis" yenilemede kapanmaz.
+//  - Mevcut lisans deneme (TIER_DENEME) ise koruma YOK (deneme odenmis bir hak degil). Tek istisna: isletmenin
+//    aktif pazaryeri kanali varsa MARKETPLACE korunur (yoksa SofraMix siparisleri gorunmez olur).
+//  - Korunanlar da bagimlilik kuralina uyar: QR_SIPARIS yalniz listede BASE + MENU_DIGITAL varsa, MARKETPLACE
+//    yalniz BASE varsa kalir.
+// girdi: mevcut (isletmenin bugunku listesi), odenen (alinan secim), satinAlinabilir (Set: satistaki modul
+// kodlari), deneme (bool), aktifKanal (bool). Doner: korunan kodlar (odenende olmayanlar), sirayla.
+function korunacakModuller({ mevcut, odenen, satinAlinabilir, deneme, aktifKanal }) {
+    const mev = modulListesi(mevcut);
+    const yeni = modulListesi(odenen);
+    const satista = satinAlinabilir instanceof Set ? satinAlinabilir : new Set(satinAlinabilir || []);
+    let aday = deneme
+        ? (aktifKanal && varMi(mev, 'MARKETPLACE') ? ['MARKETPLACE'] : [])
+        : mev.filter((m) => !satista.has(m));
+    aday = Array.from(new Set(aday)).filter((m) => !yeni.includes(m));
+    const korunan = [];
+    let degisti = true;
+    while (degisti) {
+        degisti = false;
+        for (const m of aday) {
+            if (korunan.includes(m)) continue;
+            if (bagimlilikSaglaniyor(m, [...yeni, ...korunan])) { korunan.push(m); degisti = true; }
+        }
+    }
+    return korunan;
+}
+
 // 0/'0'/false kapali; 1/NULL/undefined acik
 function acikMi(v) {
     return !(v === 0 || v === '0' || v === false);
@@ -105,4 +135,4 @@ function menuKipiMi(moduller) {
     return !varMi(moduller, 'BASE');
 }
 
-module.exports = { AD, BAGIMLILIK, modulListesi, varMi, bagimliliklariTamamla, bagimlilikSaglaniyor, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };
+module.exports = { AD, BAGIMLILIK, modulListesi, varMi, bagimliliklariTamamla, bagimlilikSaglaniyor, korunacakModuller, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };

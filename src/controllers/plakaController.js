@@ -11,7 +11,10 @@ const { rootaBildir } = require('../services/rootBildirim');
 // Hediye ve ucretli plaka talebi, canli onizleme, talep listesi, iptal ve "odemeyi yaptim".
 // Kural ve hesaplar services/plakaHak.js'te; cizim services/plakaCizim.js'te.
 
-const hata = (status, code, message) => Object.assign(new Error(message), { status, code });
+const hata = (status, code, message, ek) => Object.assign(new Error(message), { status, code, ek });
+const has = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+// Ayni isletmeden bu sure icinde ayni masa listesiyle ikinci talep (cift tiklama / yeniden gonderim) 409
+const MUKERRER_SN = 120;
 
 async function isletme(tenantId) {
     const r = await query(
@@ -89,7 +92,7 @@ exports.onizleme = async (req, res) => {
     const m = r.rows[0];
     const kod = m.kisa_kod || await K.masayaAta(m.id);
     const ay = await H.ayarlar();
-    const olcu = C.OLCU[req.query.olcu] ? req.query.olcu : ay.olcu;
+    const olcu = has(C.OLCU, req.query.olcu) ? req.query.olcu : ay.olcu;
     const logo = C.logoYukle(t.id, t.logo_url);
     const y = C.plakaYerlesimi({ olcu, logo, isletmeAdi: t.business_name, masaAdi: m.name, altMetin: M.okutunMetni(t), adres: K.kisaAdres(kod) });
     res.json({ ...C.onizlemeJson(y), kisaKod: kod, logo: logoOzeti(logo) });
@@ -132,6 +135,19 @@ exports.olustur = async (req, res) => {
     try {
         // Tek transaction: ayni anda iki talep hediye hakkini iki kez kullanamaz (1 set kurali)
         sonuc = await tx(async () => {
+            // Cift gonderim korumasi: kisa surede ayni masa listesiyle acik bir talep varsa ikincisi acilmaz
+            const anahtar = masalar.map((m) => m.id).sort().join(',');
+            const son = await query(
+                `SELECT id, talep_no, masalar_json FROM plaka_talepleri
+                  WHERE tenant_id = ? AND durum NOT IN ('IPTAL', 'REDDEDILDI')
+                    AND created_at >= datetime('now', ?)`, [t.id, `-${MUKERRER_SN} seconds`]);
+            for (const x of son.rows) {
+                let ids = [];
+                try { ids = JSON.parse(x.masalar_json || '[]').map((m) => m.id); } catch (_) { ids = []; }
+                if (ids.sort().join(',') === anahtar) {
+                    throw hata(409, 'MUKERRER_TALEP', `Bu masalar için talebiniz az önce alındı (talep no ${x.talep_no}).`, { id: x.id, talepNo: x.talep_no });
+                }
+            }
             const hd = await H.hediyeDurumu(t.id);
             const kalan = hd.durum === 'VAR' ? hd.adet : 0;
             const d = H.dagit(masalar.length, kalan, ay);
@@ -157,7 +173,7 @@ exports.olustur = async (req, res) => {
             return { id, talepNo: no, durum, kural: hd.kural, ...d };
         });
     } catch (e) {
-        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message });
+        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message, ...(e.ek || {}) });
         throw e;
     }
 
@@ -176,14 +192,19 @@ exports.olustur = async (req, res) => {
     res.status(201).json(talepHazirla(r.rows[0]));
 };
 
-// POST /api/plaka/talepler/:id/iptal  - isletme yalniz Alindi / Odeme bekleniyor iken
+// POST /api/plaka/talepler/:id/iptal  - isletme yalniz Alindi iken ya da odemesini HENUZ BILDIRMEDIGI odeme
+// bekleyen talepte. "Odemeyi yaptim" dendiyse yalniz root iptal eder (para yolda olabilir).
 exports.iptal = async (req, res) => {
     const r = await query(
         `UPDATE plaka_talepleri SET durum = 'IPTAL', iptal_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND tenant_id = ? AND durum IN ('ALINDI', 'ODEME_BEKLENIYOR')`, [req.params.id, req.user.tenantId]);
+          WHERE id = ? AND tenant_id = ?
+            AND (durum = 'ALINDI' OR (durum = 'ODEME_BEKLENIYOR' AND odeme_bildirildi_at IS NULL))`, [req.params.id, req.user.tenantId]);
     if (!r.changes) {
-        const v = await query('SELECT durum FROM plaka_talepleri WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
+        const v = await query('SELECT durum, odeme_bildirildi_at FROM plaka_talepleri WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
         if (!v.rows.length) return res.status(404).json({ message: 'Talep bulunamadı.' });
+        if (v.rows[0].durum === 'ODEME_BEKLENIYOR' && v.rows[0].odeme_bildirildi_at) {
+            return res.status(409).json({ code: 'ODEME_BILDIRILDI', message: 'Ödeme bildiriminiz alındığı için talep buradan iptal edilemez. İptal için bizimle iletişime geçin.' });
+        }
         return res.status(409).json({ code: 'IPTAL_EDILEMEZ', message: 'Bu talep hazırlık aşamasına geçtiği için iptal edilemez. Değişiklik için bizimle iletişime geçin.' });
     }
     const x = await query('SELECT * FROM plaka_talepleri WHERE id = ?', [req.params.id]);

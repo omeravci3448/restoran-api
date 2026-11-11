@@ -60,12 +60,12 @@ exports.list = async (req, res) => {
           ORDER BY t.section, LENGTH(t.code), t.code`,
         [req.user.tenantId]
     );
-    // Plakasi basilan (hazirlaniyor / kargoda / teslim) masalar: silme penceresi uyarsin, plakadaki karekod
-    // masa silinince calismaz. Talepler masa listesinin KOPYASINI tutar (masalar_json).
+    // Plaka talebi kapanmamis (iptal ya da red DISINDAKI her durum: alindi, odeme, hazirlik, kargo, teslim) masalar:
+    // silme penceresi uyarsin, plakadaki karekod masa silinince calismaz. Talepler masa listesinin KOPYASINI tutar.
     const basilan = new Set();
     try {
         const p = await query(
-            "SELECT masalar_json FROM plaka_talepleri WHERE tenant_id = ? AND durum IN ('HAZIRLANIYOR', 'KARGODA', 'TESLIM_EDILDI')",
+            "SELECT masalar_json FROM plaka_talepleri WHERE tenant_id = ? AND durum NOT IN ('IPTAL', 'REDDEDILDI')",
             [req.user.tenantId]);
         for (const x of p.rows) { try { for (const m of JSON.parse(x.masalar_json || '[]')) basilan.add(m.id); } catch (_) {} }
     } catch (_) { /* plaka tablosu yoksa (eski veritabani) uyari cikmaz */ }
@@ -269,17 +269,36 @@ exports.remove = async (req, res) => {
     res.json({ message: 'Masa silindi.' });
 };
 
-// QR kod PNG döndür (her masa için)
+// QR kod PNG döndür (her masa için). Kisa adresle (/q/<KOD>): daha seyrek karekod, qr_token yenilense de calisir.
+// Eski /m/<slug>/<qr_token> adresleri calismaya devam eder (once basilmis karekodlar).
 exports.qrPng = async (req, res) => {
+    const K = require('../services/kisaKod');
     const r = await query(
-        'SELECT t.qr_token, te.slug FROM tables t JOIN tenants te ON te.id = t.tenant_id WHERE t.id = ? AND t.tenant_id = ?',
+        'SELECT t.id, t.kisa_kod, t.qr_token, te.slug FROM tables t JOIN tenants te ON te.id = t.tenant_id WHERE t.id = ? AND t.tenant_id = ?',
         [req.params.id, req.user.tenantId]
     );
     if (!r.rows.length) return res.status(404).json({ message: 'Masa yok.' });
-    const base = req.query.publicBase || process.env.QR_PUBLIC_BASE || 'https://restoran.mdayazilim.com';
-    const url = `${base}/m/${r.rows[0].slug}/${r.rows[0].qr_token}`;
-    const png = await QRCode.toBuffer(url, { width: 480, margin: 1 });
+    const m = r.rows[0];
+    const base = String(req.query.publicBase || K.kamuAdresi()).replace(/\/+$/, '');
+    let kod = m.kisa_kod && K.normalle(m.kisa_kod) ? m.kisa_kod : null;
+    if (!kod) { try { await K.eksikleriDoldur(req.user.tenantId); kod = (await query('SELECT kisa_kod FROM tables WHERE id = ?', [m.id])).rows[0].kisa_kod; } catch (_) { kod = null; } }
+    const url = kod ? `${base}/q/${kod}` : `${base}/m/${m.slug}/${m.qr_token}`;
+    const png = await QRCode.toBuffer(url, { width: 480, margin: 2, errorCorrectionLevel: 'Q' });
     res.type('image/png').send(png);
+};
+
+// POST /api/tables/:id/kisa-kod-yenile (sahip/mudur + yonetici sifresi). Eski kod artik cozulmez: basili plakanin
+// karekodu calismaz, yeniden bastirmak gerekir (arayuz bunu sorar).
+exports.kisaKodYenile = async (req, res) => {
+    const K = require('../services/kisaKod');
+    const r = await query('SELECT id, name, kisa_kod, is_active FROM tables WHERE id = ? AND tenant_id = ?', [req.params.id, req.user.tenantId]);
+    if (!r.rows.length || !r.rows[0].is_active) return res.status(404).json({ message: 'Masa bulunamadı.' });
+    const eski = r.rows[0].kisa_kod || null;
+    const kod = await K.yenile(r.rows[0].id);
+    G.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kisa_kod_yenile', hedefTur: 'table', hedefId: r.rows[0].id,
+        detay: r.rows[0].name + ': ' + (eski || '-') + ' -> ' + kod });
+    res.json({ kisaKod: kod, kisaAdres: K.kisaAdres(kod), eskiKod: eski,
+        message: 'Kısa kod yenilendi. Basılı plakanın karekodu artık çalışmaz; yeniden bastırmanız gerekir.' });
 };
 
 exports.regenerateToken = async (req, res) => {

@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/tableController');
-const { protect, requireRole } = require('../middleware/authMiddleware');
+const { protect, requireRole, requireManagerPin } = require('../middleware/authMiddleware');
 
 router.use(protect);
 router.get('/', ctrl.list);
@@ -12,5 +12,7 @@ router.put('/:id', requireRole('OWNER', 'MANAGER'), ctrl.update);
 router.delete('/:id', requireRole('OWNER', 'MANAGER'), ctrl.remove);
 router.get('/:id/qr.png', ctrl.qrPng);
 router.post('/:id/regenerate-qr', requireRole('OWNER', 'MANAGER'), ctrl.regenerateToken);
+// Kisa kodu yenile: basili plakanin karekodu calismaz olur, bu yuzden yonetici sifresi de istenir
+router.post('/:id/kisa-kod-yenile', requireRole('OWNER', 'MANAGER'), requireManagerPin, ctrl.kisaKodYenile);
 
 module.exports = router;

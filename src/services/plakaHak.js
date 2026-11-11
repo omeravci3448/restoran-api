@@ -6,14 +6,14 @@ const M = require('./lisansModul');
 // --- Masa plakasi: ayarlar, hediye kurallari, hediye hakki, hediye/ucretli dagilimi ---
 //
 // HEDIYE (Patron, 2026-11-11 - "odeme yapmamis isletmeye vermek zarar"):
-//   1) Onayli YILLIK odeme sart (deneme ASLA): lisans_odemeleri'nde 'onaylandi' kayit ve en az ~1 yillik
-//      sure (onay_gun >= 360; eski kayitta donem_bitis - islenen_at >= 360 gun) ya da tutari > 0 olan
-//      islenmis SofraMix yillik odemesi (pos_provizyon).
+//   1) Onayli YILLIK odeme sart (deneme ASLA): lisans_odemeleri'nde tutari > 0 olan 'onaylandi' kayit ve en az
+//      ~1 yillik sure (onay_gun >= 360; eski kayitta donem_bitis - islenen_at >= 360 gun) ya da tutari > 0 olan
+//      islenmis SofraMix yillik odemesi (pos_provizyon). 0 TL onaylanan kayit hediye hakki vermez.
 //   2) VE en az bir AKTIF "hediye plaka kurali"na uyma (root panelinden): gerekli moduller (lisans hepsini
 //      icermeli), istege bagli en az yillik odeme tutari, en cok plaka. Uyan kurallardan en buyuk siniri gecer.
 //   Root isletme bazinda elle gecersiz kilar: tenants.plaka_hediye_hakki NULL = otomatik, 1 = ver, 0 = kaldir.
 //   Elle verilen hak her seyin onune gecer (Patron'un bilincli karari).
-// ADET: aktif masa sayisi kadar, en cok kuralin siniri. Isletme basina 1 set: iptal ya da reddedilmemis bir
+// ADET: en kucuk(aktif masa, lisans masa siniri, kuralin en cok degeri). Isletme basina 1 set: iptal ya da reddedilmemis bir
 //   hediye talebi varsa hak kullanilmistir; reddedilen/iptal edilen talep hakki geri verir.
 // Ek ve yedek plakalar, kurala uymayan isletmelerin plakalari UCRETLI. Birim fiyat girilmemisse ucretli
 // talep kapalidir.
@@ -137,7 +137,7 @@ async function odemeOlcutu(tenantId) {
     let sonuc = null;
     const y = await query(
         `SELECT * FROM lisans_odemeleri
-          WHERE tenant_id = ? AND durum = 'onaylandi'
+          WHERE tenant_id = ? AND durum = 'onaylandi' AND COALESCE(tutar, 0) > 0
             AND ((onay_gun IS NOT NULL AND onay_gun >= 360)
               OR (onay_gun IS NULL AND donem_bitis IS NOT NULL AND islenen_at IS NOT NULL
                   AND julianday(donem_bitis) - julianday(islenen_at) >= 360))
@@ -185,7 +185,7 @@ async function aktifMasaSayisi(tenantId) {
 //   KURAL_DISI     - yillik odeme var ama paket hicbir aktif hediye kuralina uymuyor: plakalar ucretli
 //   KALDIRILDI     - root elle kaldirdi
 async function hediyeDurumu(tenantId) {
-    const t = (await query('SELECT id, license_modules, plaka_hediye_hakki FROM tenants WHERE id = ?', [tenantId])).rows[0];
+    const t = (await query('SELECT id, license_modules, license_table_limit, plaka_hediye_hakki FROM tenants WHERE id = ?', [tenantId])).rows[0];
     if (!t) return null;
     const masa = await aktifMasaSayisi(tenantId);
     const kullanilan = await hediyeTalebi(tenantId);
@@ -223,9 +223,12 @@ async function hediyeDurumu(tenantId) {
     else if (kaynak === 'elle_kaldir') durum = 'KALDIRILDI';
     else durum = 'YILLIK_PAKETTE';
 
+    // Adet = en kucuk(aktif masa, lisans masa siniri, kuralin en cok degeri). null masa siniri = sinirsiz.
+    const lisansSiniri = t.license_table_limit == null ? Infinity : Number(t.license_table_limit);
     return {
         durum, hak, kaynak,
-        adet: durum === 'VAR' ? Math.min(masa, sinir) : 0,
+        adet: durum === 'VAR' ? Math.max(0, Math.min(masa, lisansSiniri, sinir)) : 0,
+        lisansMasaSiniri: Number.isFinite(lisansSiniri) ? lisansSiniri : null,
         ustSinir: sinir || null,
         aktifMasa: masa,
         kural: kural ? { id: kural.id, ad: kural.ad, enCokPlaka: kural.enCokPlaka } : null,
@@ -260,13 +263,15 @@ async function kuralOnizleme({ birimMaliyet, kargoMaliyet }) {
     const km = Math.max(0, Number(kargoMaliyet) || 0);
     const kl = await kurallar();
     const t = await query(
-        `SELECT t.id, t.license_modules,
+        `SELECT t.id, t.license_modules, t.license_table_limit,
                 (SELECT COUNT(*) FROM tables x WHERE x.tenant_id = t.id AND x.is_active = 1) AS masa
            FROM tenants t WHERE t.is_active = 1`);
     const adaylar = [];
     for (const x of t.rows) {
         const o = await odemeOlcutu(x.id);
-        if (o) adaylar.push({ moduller: x.license_modules, masa: Number(x.masa) || 0, odeme: o.tutar });
+        // Hediye adedi lisans masa siniriyla da sinirli (hediyeDurumu ile ayni)
+        const masa = Math.min(Number(x.masa) || 0, x.license_table_limit == null ? Infinity : Number(x.license_table_limit));
+        if (o) adaylar.push({ moduller: x.license_modules, masa, odeme: o.tutar });
     }
     return {
         birimMaliyet: bm, kargoMaliyet: km, yillikOdemeliIsletme: adaylar.length,

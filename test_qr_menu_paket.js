@@ -11,7 +11,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { spawn } = require('child_process');
 const { v4: uuid } = require('uuid');
-const { query, initDb, modulGecisi, GECIS_ISARETI } = require('./src/config/db');
+const { query, initDb, modulGecisi, GECIS_ISARETI, MODUL_GECISI_SQL } = require('./src/config/db');
+const QRCode = require('qrcode');
 
 const PORT = 46121, TABAN = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = 'qr-menu-modul-test-jwt';
@@ -77,6 +78,7 @@ async function temizle() {
     for (const r of t.rows) {
         await query('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ?)', [r.id]).catch(() => {});
         for (const tb of ['payments', 'orders', 'waiter_calls', 'qr_bekleyen_siparisler', 'plaka_talepleri', 'lisans_odemeleri', 'pos_provizyon',
+            'marketplace_credentials', 'marketplace_store_links', 'marketplace_channels',
             'root_olaylar', 'tables', 'products', 'categories', 'license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari',
             'deneme_kayitlari', 'deneme_giris_jetonlari', 'push_abonelikleri', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch((e) => console.log('  temizlik', tb, e.message));
@@ -118,8 +120,21 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     const eskiBos = await kiraciKur({ ad: 'Eski Boş', hamModul: null });
     const eskiBozuk = await kiraciKur({ ad: 'Eski Bozuk', hamModul: 'bozuk{' });
     const eskiAll = await kiraciKur({ ad: 'Eski ALL', moduller: ['ALL'] });
+    const eskiGarsonsuz = await kiraciKur({ ad: 'Eski Garsonsuz', moduller: ['BASE', 'MENU_DIGITAL'] });
+    const eskiYalnizMenu = await kiraciKur({ ad: 'Eski Yalnız Menü', moduller: ['MENU_DIGITAL'] });
     await query('DELETE FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
+    // D8: bir adim hata verirse hicbir adim yazilmaz, isaret konmaz
+    MODUL_GECISI_SQL.splice(MODUL_GECISI_SQL.length - 1, 0, 'UPDATE yok_boyle_tablo SET x = 1');
+    let gecisHatasi = null;
+    try { await modulGecisi(); } catch (e) { gecisHatasi = e; }
+    MODUL_GECISI_SQL.splice(MODUL_GECISI_SQL.length - 2, 1);
+    ok('D8: adim hatasinda gecis geri alinir (moduller degismez, isaret yok)', !!gecisHatasi && JSON.stringify(await modulleri(eskiGarsonsuz.id)) === '["BASE","MENU_DIGITAL"]'
+        && (await query('SELECT 1 FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI])).rows.length === 0, gecisHatasi && gecisHatasi.message);
     ok('gecis calisti (isaret yoktu)', (await modulGecisi()) === true);
+    ok('Y1: MENU_DIGITAL olup GARSON olmayana GARSON eklendi (garson cagir kapanmaz)', JSON.stringify(await modulleri(eskiGarsonsuz.id)) === '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]',
+        await modulleri(eskiGarsonsuz.id));
+    ok('Y1: yalniz QR Menu eski kiraci -> BASE + QR_SIPARIS + GARSON', JSON.stringify(await modulleri(eskiYalnizMenu.id)) === '["MENU_DIGITAL","BASE","QR_SIPARIS","GARSON"]',
+        await modulleri(eskiYalnizMenu.id));
     ok('BASE + MENU_DIGITAL -> QR_SIPARIS eklendi', JSON.stringify(await modulleri(eskiTam.id)) === '["BASE","MENU_DIGITAL","GARSON","QR_SIPARIS"]', await modulleri(eskiTam.id));
     ok('BASE olmayan eski kiraci -> BASE + QR_SIPARIS (POS ve QR siparis bugunku gibi acik)', JSON.stringify(await modulleri(eskiMenu.id)) === '["MENU_DIGITAL","GARSON","BASE","QR_SIPARIS"]', await modulleri(eskiMenu.id));
     ok('modul listesi bos -> ["BASE"]', JSON.stringify(await modulleri(eskiBos.id)) === '["BASE"]');
@@ -142,7 +157,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('varsayilan: uc anahtar acik, fiili ozellikler acik, modulleri var', p0.qr_siparis_acik === 1 && p0.qr_garson_acik === 1 && p0.qr_hesap_acik === 1
         && p0.qr_ozellikleri.siparis && p0.qr_modulleri.siparis && p0.qr_modulleri.garson && p0.menu_kipi === false, p0);
     const { masa: m1, urun } = await masaVeUrun(tamS, 'T1');
-    ok('yeni masaya kisa kod verildi', /^[ACDEFHJKMNPQRTUVWXY34679]{6}$/.test(m1.kisaKod || ''), m1);
+    ok('yeni masaya 8 haneli kisa kod verildi', /^[ACDEFHJKMNPQRTUVWXY34679]{8}$/.test(m1.kisaKod || ''), m1);
     const tok1 = (await query('SELECT qr_token FROM tables WHERE id = ?', [m1.id])).rows[0].qr_token;
     const pub = (k, tok, yol, body) => js(`/api/public/m/${k.slug}/${tok}${yol}`, body ? { body } : {});
     const mn = await pub(tam, tok1, '/menu');
@@ -302,12 +317,66 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     await query("UPDATE orders SET status = 'CLOSED' WHERE table_id = ?", [m1.id]);
     await js('/api/tables/' + m1.id, { token: tamS, method: 'DELETE' });
     const c3 = await js('/api/public/q/' + km.kisa_kod);
-    ok('pasif (silinmis) masada 404 KISA_KOD_YOK', c3.status === 404 && c3.d.code === 'KISA_KOD_YOK', c3);
+    ok('pasif (silinmis) masada 404 KISA_KOD_PASIF (masa kullanilmiyor)', c3.status === 404 && c3.d.code === 'KISA_KOD_PASIF', c3);
     const kodlar = (await query('SELECT kisa_kod FROM tables WHERE tenant_id IN (?, ?, ?)', [tam.id, yalnizMenu.id, menuGarson.id])).rows.map((x) => x.kisa_kod);
     ok('tum masalarin kodu var ve tekil', kodlar.every(Boolean) && new Set(kodlar).size === kodlar.length, kodlar);
     const K = require('./src/services/kisaKod');
     ok('alfabede karisan karakter yok (0 O 1 I L 2 Z 5 S 8 B G)', !/[0O1IL2Z5S8BG]/.test(K.ALFABE) && K.ALFABE.length === 24);
     ok('kisa adres bicimi', K.kisaAdres('ACDEF3') === 'https://restoran.mdayazilim.com/q/ACDEF3');
+    ok('O2: kisa kodlar 8 hane', K.UZUNLUK === 8 && kodlar.every((k) => k.length === 8), kodlar);
+
+    console.log('\n=== 11) QR Indir kisa adres, kisa kodu yenile, siparis cekme ===');
+    const { masa: m2t } = await masaVeUrun(tamS, 'T2');
+    const m2 = (await query('SELECT id, kisa_kod FROM tables WHERE id = ?', [m2t.id])).rows[0];
+    const qrp = await fetch(TABAN + '/api/tables/' + m2.id + '/qr.png', { headers: { Authorization: 'Bearer ' + tamS } });
+    const beklenen = await QRCode.toBuffer('https://restoran.mdayazilim.com/q/' + m2.kisa_kod, { width: 480, margin: 2, errorCorrectionLevel: 'Q' });
+    ok('D10: tek masa QR Indir kisa adresi basar (/q/<KOD>)', qrp.status === 200 && Buffer.from(await qrp.arrayBuffer()).equals(beklenen));
+    const PIN = '246813';
+    await query('UPDATE tenants SET manager_pin = ? WHERE id = ?', [await bcrypt.hash(PIN, 4), tam.id]);
+    const ky0 = await js('/api/tables/' + m2.id + '/kisa-kod-yenile', { token: tamS, method: 'POST' });
+    ok('O2: kisa kodu yenile yonetici sifresi ister (403 MANAGER_PIN_REQUIRED)', ky0.status === 403 && ky0.d.code === 'MANAGER_PIN_REQUIRED', ky0);
+    ok('O2: kasiyer kisa kodu yenileyemez (403)', (await js('/api/tables/' + m2.id + '/kisa-kod-yenile', { token: tamK, method: 'POST', headers: { 'x-manager-pin': PIN } })).status === 403);
+    const ky1 = await js('/api/tables/' + m2.id + '/kisa-kod-yenile', { token: tamS, method: 'POST', headers: { 'x-manager-pin': PIN } });
+    ok('O2: sahip + sifre: yeni 8 haneli kod, uyari mesaji', ky1.status === 200 && ky1.d.kisaKod.length === 8 && ky1.d.kisaKod !== m2.kisa_kod
+        && /yeniden bastırmanız/.test(ky1.d.message), ky1.d);
+    ok('O2: eski kod artik cozulmez (404), yenisi cozulur', (await js('/api/public/q/' + m2.kisa_kod)).status === 404 && (await js('/api/public/q/' + ky1.d.kisaKod)).status === 200);
+    await query('UPDATE tenants SET manager_pin = NULL WHERE id = ?', [tam.id]);
+    // D4: Adisyon ve Kasa olmayan isletmede siparis cekilmez
+    const kanalKur = async (tid) => {
+        const kid = 'qrpk-kanal-' + crypto.randomBytes(4).toString('hex');
+        await query("INSERT INTO marketplace_channels (id, tenant_id, name, is_active, adapter_code) VALUES (?, ?, 'Sandbox', 1, 'sandbox')", [kid, tid]);
+        await query("INSERT INTO marketplace_store_links (id, tenant_id, channel_id, external_store_id, is_active) VALUES (?, ?, ?, ?, 1)", [kid + '-l', tid, kid, 'm-' + kid]);
+        await query("INSERT INTO marketplace_credentials (id, tenant_id, channel_id, cipher_blob, iv, auth_tag, status) VALUES (?, ?, ?, 'x', 'x', 'x', 'active')", [kid + '-k', tid, kid]);
+        return kid;
+    };
+    const kTam = await kanalKur(tam.id);
+    const kMenu = await kanalKur(menuGarson.id);
+    const tara = await require('./src/services/siparisCekici').taranacaklar();
+    ok('D4: siparis cekme BASE olan isletmeyi tarar, BASE olmayani atlar', tara.some((k) => k.channel_id === kTam) && !tara.some((k) => k.channel_id === kMenu),
+        tara.map((k) => k.channel_id));
+
+    console.log('\n=== 12) Kisa kod oran siniri (en sonda: ayni IP) ===');
+    ok('O1: IPv6 /64 anahtari', K.ipAnahtari('2001:db8:abcd:12:1::5') === '2001:db8:abcd:12::/64' && K.ipAnahtari('2001:0db8:abcd:0012:ffff:1:2:3') === '2001:db8:abcd:12::/64'
+        && K.ipAnahtari('::ffff:10.1.2.3') === '10.1.2.3' && K.ipAnahtari('fe80::1%eth0') === 'fe80:0:0:0::/64', [K.ipAnahtari('2001:db8:abcd:12:1::5'), K.ipAnahtari('fe80::1%eth0')]);
+    // Sunucu tek vekil arkasinda (trust proxy 1): X-Forwarded-For bu bolume kendi IP anahtarini verir
+    const ipA = { 'X-Forwarded-For': '10.77.' + crypto.randomInt(1, 250) + '.' + crypto.randomInt(1, 250) };
+    const qk = (kod, h) => js('/api/public/q/' + kod, { headers: h });
+    const gecerli = await Promise.all(Array.from({ length: 40 }, () => qk(ky1.d.kisaKod, ipA)));
+    ok('O1: gecerli kod sinirlanmaz (40 istek, hepsi 200)', gecerli.every((x) => x.status === 200), gecerli.map((x) => x.status).filter((c) => c !== 200));
+    const pasifMasa = (await query('SELECT kisa_kod FROM tables WHERE tenant_id = ? AND is_active = 0 AND kisa_kod IS NOT NULL LIMIT 1', [tam.id])).rows[0];
+    const pasifler = await Promise.all(Array.from({ length: 5 }, () => qk(pasifMasa.kisa_kod, ipA)));
+    ok('O1: silinmis masanin plakasi 404 KISA_KOD_PASIF ve bos deneme sayilmaz', pasifler.every((x) => x.status === 404 && x.d.code === 'KISA_KOD_PASIF'), pasifler[0]);
+    const bos = await Promise.all(Array.from({ length: 40 }, (_, i) => qk('ACDEFHJ' + K.ALFABE[i % K.ALFABE.length], ipA)));
+    const s404 = bos.filter((x) => x.status === 404).length, s429 = bos.filter((x) => x.status === 429).length;
+    ok('O1: ayni anda 40 bos deneme: sayac beklemeden once artar, tam 30 tanesi 404, 10 tanesi 429', s404 === 30 && s429 === 10, { s404, s429 });
+    ok('O1: sinir asilinca bu IP gecerli kodda da 429 alir (tarama durur)', (await qk(ky1.d.kisaKod, ipA)).status === 429);
+    // IPv6: ayni /64 icindeki adresler tek anahtar
+    const v6a = { 'X-Forwarded-For': '2001:db8:77:' + crypto.randomInt(1, 9999).toString(16) + '::1' };
+    const v6b = { 'X-Forwarded-For': v6a['X-Forwarded-For'].replace('::1', '::abcd') };
+    const v6c = { 'X-Forwarded-For': v6a['X-Forwarded-For'].replace('2001:db8:77:', '2001:db8:78:') };
+    for (let i = 0; i < 30; i++) await qk('ACDEFHJ3', v6a);
+    ok('O1: IPv6 ayni /64 icindeki baska adres de durur (429)', (await qk(ky1.d.kisaKod, v6b)).status === 429);
+    ok('O1: baska /64 etkilenmez (200)', (await qk(ky1.d.kisaKod, v6c)).status === 200);
 
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);

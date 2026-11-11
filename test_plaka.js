@@ -24,9 +24,9 @@ const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
     : (fail++, console.log('  FAIL ' + n + (e !== undefined ? ' :: ' + JSON.stringify(e).slice(0, 300) : ''))); };
 const uyu = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function js(yol, { token, body, method } = {}) {
+async function js(yol, { token, body, method, headers } = {}) {
     const r = await fetch(TABAN + yol, { method: method || (body ? 'POST' : 'GET'),
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(headers || {}) },
         body: body ? JSON.stringify(body) : undefined });
     let d = null; try { d = await r.json(); } catch (_) { d = null; }
     return { status: r.status, d };
@@ -250,8 +250,8 @@ async function temizle() {
     console.log('\n=== 3) Isletme durumu ve onizleme ===');
     const Y = yillik.jet.OWNER;
     const d0 = (await js('/api/plaka/durum', { token: Y })).d;
-    ok('durum: hediye VAR 25, ucretli kapali, 30 aktif masa (kisa kodlu)', d0.hediye.durum === 'VAR' && d0.hediye.adet === 25 && d0.fiyat.ucretliAcik === false
-        && d0.masalar.length === 30 && d0.masalar.every((m) => /^[A-Z0-9]{6}$/.test(m.kisaKod)), { h: d0.hediye, f: d0.fiyat, n: d0.masalar.length });
+    ok('durum: hediye VAR 25, ucretli kapali, 30 aktif masa (8 haneli kisa kodlu)', d0.hediye.durum === 'VAR' && d0.hediye.adet === 25 && d0.fiyat.ucretliAcik === false
+        && d0.masalar.length === 30 && d0.masalar.every((m) => /^[A-Z0-9]{8}$/.test(m.kisaKod)), { h: d0.hediye, f: d0.fiyat, n: d0.masalar.length });
     ok('durum: logo yok, isletme bilgisi on dolu', d0.logo.var === false && d0.isletme.telefon === '0532 111 22 33' && /Atatürk/.test(d0.isletme.adres), d0.logo);
     ok('kasiyer plaka sayfasina giremez (403)', (await js('/api/plaka/durum', { token: yillik.jet.CASHIER })).status === 403);
     ok('mudur girebilir (200)', (await js('/api/plaka/durum', { token: yillik.jet.MANAGER })).status === 200);
@@ -316,6 +316,8 @@ async function temizle() {
     const od = await js(`/api/plaka/talepler/${t5.d.id}/odeme`, { token: Y, body: { ref: 'Havale 1234' } });
     ok('"Odemeyi yaptim" 200', od.status === 200 && !!od.d.odeme_bildirildi_at && od.d.odeme_ref === 'Havale 1234', od.d);
     ok('ikinci bildirim 409', (await js(`/api/plaka/talepler/${t5.d.id}/odeme`, { token: Y, body: {} })).status === 409);
+    const ipOd = await js(`/api/plaka/talepler/${t5.d.id}/iptal`, { token: Y, method: 'POST' });
+    ok('O3: odemesi bildirilen talebi isletme iptal edemez (409 ODEME_BILDIRILDI)', ipOd.status === 409 && ipOd.d.code === 'ODEME_BILDIRILDI', ipOd);
     ok('hediye talebinde odeme bildirimi 409', (await js(`/api/plaka/talepler/${t2.d.id}/odeme`, { token: Y, body: {} })).status === 409);
     const ol = (await query("SELECT tur, ref, detay FROM root_olaylar WHERE tenant_id = ? ORDER BY id", [yillik.id])).rows;
     ok('root olaylari: plaka_talebi (3) + plaka_odeme (1)', ol.filter((x) => x.tur === 'plaka_talebi').length === 3 && ol.filter((x) => x.tur === 'plaka_odeme').length === 1
@@ -392,6 +394,59 @@ async function temizle() {
     const yz = await ikili('/api/public/plaka-yazi/Inter-Bold.ttf');
     ok('onizleme yazi tipi herkese acik (ttf)', yz.status === 200 && yz.buf.length > 100000 && yz.buf.readUInt32BE(0) === 0x00010000, yz.status);
     ok('yazi klasoru disina cikilamaz', (await ikili('/api/public/plaka-yazi/..%2f..%2fconfig%2fdb.js')).status === 404);
+
+    console.log('\n=== 10) Inceleme duzeltmeleri ===');
+    // O4: 0 TL onaylanan yillik kayit hediye hakki vermez
+    const sifir = await kiraciKur({ ad: 'Sıfır Tutar', masa: 3 });
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, donem_bitis, islenen_at, onay_gun)
+                 VALUES (?, ?, 'TIER_6_10', '[]', 0, 'onaylandi', ?, datetime('now'), 365)`, [uuid(), sifir.id, GELECEK]);
+    ok('O4: 0 TL onayli yillik kayit hediye hakki vermez (YILLIK_PAKETTE)', (await hak(sifir.id)).durum === 'YILLIK_PAKETTE');
+    // D5: adet = en kucuk(aktif masa, lisans masa siniri, kural)
+    const sinirli = await kiraciKur({ ad: 'Masa Sınırlı', masa: 8 });
+    await odemeEkle(sinirli.id, { onayGun: 365 });
+    await query('UPDATE tenants SET license_table_limit = 5 WHERE id = ?', [sinirli.id]);
+    const h5b = await hak(sinirli.id);
+    ok('D5: hediye adedi lisans masa siniriyla sinirli (8 masa, sinir 5 -> 5)', h5b.durum === 'VAR' && h5b.adet === 5 && h5b.lisansMasaSiniri === 5, h5b);
+    // O6: yonetici sifresi ayarliysa plaka POST uclari sifre ister
+    const S = sinirli.jet.OWNER;
+    await js('/api/tenant/me', { token: S, method: 'PUT', body: { logoUrl: PNG_BUYUK } });
+    await query('UPDATE tenants SET manager_pin = ? WHERE id = ?', [await bcrypt.hash('135790', 4), sinirli.id]);
+    const PIN = { 'x-manager-pin': '135790' };
+    const sd = (await js('/api/plaka/durum', { token: S })).d;
+    const iki = sd.masalar.slice(0, 2).map((m) => m.id);
+    const pinSiz = await js('/api/plaka/talepler', { token: S, body: { tableIds: iki, ...teslimat } });
+    ok('O6: yonetici sifresi ayarliyken sifresiz talep 403 MANAGER_PIN_REQUIRED', pinSiz.status === 403 && pinSiz.d.code === 'MANAGER_PIN_REQUIRED', pinSiz);
+    ok('O6: yanlis sifreyle de 403', (await js('/api/plaka/talepler', { token: S, headers: { 'x-manager-pin': '000000' }, body: { tableIds: iki, ...teslimat } })).status === 403);
+    const tp1 = await js('/api/plaka/talepler', { token: S, headers: PIN, body: { tableIds: iki, ...teslimat } });
+    ok('O6: sifreyle talep 201 (2 hediye)', tp1.status === 201 && tp1.d.hediye_adet === 2, tp1);
+    // D9: cift gonderim
+    const tp2 = await js('/api/plaka/talepler', { token: S, headers: PIN, body: { tableIds: iki.slice().reverse(), ...teslimat } });
+    ok('D9: ayni masalarla hemen ikinci talep 409 MUKERRER_TALEP (ilk talebin kimligiyle)', tp2.status === 409 && tp2.d.code === 'MUKERRER_TALEP' && tp2.d.id === tp1.d.id, tp2);
+    ok('O6: sifresiz iptal 403', (await js(`/api/plaka/talepler/${tp1.d.id}/iptal`, { token: S, method: 'POST' })).status === 403);
+    // O5: ALINDI durumundaki talep de silme uyarisi verir
+    const msl = (await js('/api/tables', { token: S })).d;
+    ok('O5: ALINDI talepteki masalar silme uyarili (plaka_basildi)', msl.filter((m) => m.plaka_basildi === 1).length === 2, msl.map((m) => m.plaka_basildi));
+    const silinen = iki[0];
+    const sil = await js('/api/tables/' + silinen, { token: S, method: 'DELETE' });
+    const rdet = (await js(`/api/root/plaka/talepler/${tp1.d.id}`, { token: rj })).d;
+    ok('O5: root ayrintisi silinen masayi isaretler (aktif false, digeri aktif)', sil.status === 200 && rdet.masalar.find((m) => m.id === silinen).aktif === false
+        && rdet.masalar.find((m) => m.id === iki[1]).aktif === true, rdet.masalar);
+    const pdfS = await ikili(`/api/root/plaka/talepler/${tp1.d.id}/baski.pdf`, rj);
+    ok('O5: silinen masali talebin baski dosyasi uretilir (2 plaka + kapak)', pdfS.status === 200 && sayfaSay(pdfS.buf) === 3, pdfS.status);
+    // O2 (root): kisa kodu yenile, ayrinti ve baski guncel kodu kullanir
+    const eskiKod = rdet.masalar.find((m) => m.id === iki[1]).guncelKisaKod;
+    const rk = await js(`/api/root/masalar/${iki[1]}/kisa-kod-yenile`, { token: rj, method: 'POST' });
+    const rdet2 = (await js(`/api/root/plaka/talepler/${tp1.d.id}`, { token: rj })).d;
+    ok('O2: root kisa kodu yeniler (8 hane, farkli), ayrinti guncel kodu gosterir', rk.status === 200 && rk.d.kisaKod.length === 8 && rk.d.kisaKod !== eskiKod
+        && rdet2.masalar.find((m) => m.id === iki[1]).guncelKisaKod === rk.d.kisaKod, rk.d);
+    ok('O2: eski kod artik cozulmez, yenisi cozulur', (await js('/api/public/q/' + eskiKod)).status === 404 && (await js('/api/public/q/' + rk.d.kisaKod)).status === 200);
+    ok('O2: kiraci jetonu root kisa kod ucuna giremez (403)', (await js(`/api/root/masalar/${iki[1]}/kisa-kod-yenile`, { token: Y, method: 'POST' })).status === 403);
+    ok('O2: silinmis masada root kisa kod yenileme 404', (await js(`/api/root/masalar/${silinen}/kisa-kod-yenile`, { token: rj, method: 'POST' })).status === 404);
+    // D1: __proto__ / constructor parametreleri 500 vermez
+    ok('D1: onizleme olcu=constructor 200 (varsayilan olcuyle)', (await js(`/api/plaka/onizleme?tableId=${iki[1]}&olcu=constructor`, { token: S })).status === 200);
+    ok('D1: root durum islem=constructor 400', (await js(`/api/root/plaka/talepler/${tp1.d.id}/durum`, { token: rj, body: { islem: 'constructor' } })).status === 400);
+    ok('D1: root durum islem=__proto__ 400', (await js(`/api/root/plaka/talepler/${tp1.d.id}/durum`, { token: rj, body: { islem: '__proto__' } })).status === 400);
+    ok('D1: baski olcu=__proto__ 200', (await ikili(`/api/root/plaka/talepler/${tp1.d.id}/baski.pdf?olcu=__proto__`, rj)).status === 200);
 
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);

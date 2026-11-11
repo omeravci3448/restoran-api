@@ -306,8 +306,10 @@ const trTarih = (s) => {
 // --- Baski dosyasi: kapak (A4) + her plaka ayri sayfada, gercek olcude ---
 // girdi: { talepNo, tarih, isletmeAdi, olcu, logo, altMetin, masalar: [{ ad, kisaKod, hediye }], hediyeAdet, ucretliAdet }
 async function plakaPdf(g) {
-    const O = OLCU[g.olcu] || OLCU['80x80'];
-    const olcuAdi = (g.olcu in OLCU ? g.olcu : '80x80').replace('x', ' x ');
+    const olcuKodu = Object.prototype.hasOwnProperty.call(OLCU, g.olcu) ? g.olcu : '80x80';
+    const O = OLCU[olcuKodu];
+    const olcuAdi = olcuKodu.replace('x', ' x ');
+    const pasifSayisi = g.masalar.filter((m) => m.pasif).length;
     const ofs = TASMA + KENAR;
     const sayfaG = O.gen + 2 * ofs, sayfaY = O.yuk + 2 * ofs;
     const doc = yeniBelge({ Title: `Masa plakaları - ${g.isletmeAdi} - Talep ${g.talepNo}`, Subject: 'Masa plakası baskı dosyası' });
@@ -334,25 +336,38 @@ async function plakaPdf(g) {
         yy += 6.2;
     }
     if (g.logoUyari) { yy += 1; const s = sigdir('Not: ' + g.logoUyari, 3.0, false, 174, 2.4); solMetin(doc, s.metin, 18, yy, s.punto, false, 'koyu'); yy += 6; }
+    if (pasifSayisi) {
+        yy += 1;
+        const s = sigdir(`Dikkat: ${pasifSayisi} masa talepten sonra işletme tarafından silinmiş (listede ! ile işaretli); bu plakaların karekodu çalışmaz. Basmadan önce işletmeyle görüşün.`, 3.0, true, 174, 2.2);
+        solMetin(doc, s.metin, 18, yy, s.punto, true, 'koyu'); yy += 6;
+    }
     yy += 4;
     solMetin(doc, 'Plakalar', 18, yy, 4.2, true, 'koyu'); yy += 3;
     doc.save().lineWidth(0.4).strokeColor([0, 0, 0, 30]).moveTo(mm(18), mm(yy)).lineTo(mm(192), mm(yy)).stroke().restore();
     yy += 6;
     // 3 sutun, sutun basina en cok 30 satir (tek sayfa): fazlasi ozetlenir
-    const sutunX = [18, 76, 134], satirH = 5.4, maxSatir = Math.max(1, Math.floor((285 - yy) / satirH));
+    const sutunX = [18, 76, 134], satirH = 5.4, maxSatir = Math.max(1, Math.floor((280 - yy) / satirH));
     const kapasite = sutunX.length * maxSatir;
     const gosterilen = g.masalar.length > kapasite ? g.masalar.slice(0, kapasite - 1) : g.masalar;
     gosterilen.forEach((m, i) => {
         const s = Math.floor(i / maxSatir), r = i % maxSatir;
         const ad = sigdir(`${i + 2}. ${m.ad}`, 3.0, false, 40, 2.2);
         solMetin(doc, ad.metin, sutunX[s], yy + r * satirH, ad.punto, false, 'koyu');
-        solMetin(doc, m.kisaKod + (m.hediye ? '' : ' *'), sutunX[s] + 42, yy + r * satirH, 2.8, true, 'orta');
+        solMetin(doc, (m.pasif ? '! ' : '') + m.kisaKod + (m.hediye ? '' : ' *'), sutunX[s] + 42, yy + r * satirH, 2.8, true, 'orta');
     });
     if (gosterilen.length < g.masalar.length) {
         const s = Math.floor(gosterilen.length / maxSatir), r = gosterilen.length % maxSatir;
         solMetin(doc, `ve ${g.masalar.length - gosterilen.length} plaka daha`, sutunX[s], yy + r * satirH, 3.0, true, 'orta');
     }
-    solMetin(doc, 'Sayılar sayfa numarasıdır. * ücretli plaka. Bu dosya MDA Restoran POS tarafından üretildi.', 18, 289, 2.6, false, 'gri');
+    // Matbaaya not (kapagin altinda)
+    const matbaa = 'Matbaa için: her plaka ayrı sayfadadır; TrimBox kesim çizgisidir, 3 mm taşma payı bırakılmıştır. Listedeki sayılar '
+        + 'sayfa numarasıdır (* ücretli plaka). Karekodu küçültmeyin, renklendirmeyin ve sessiz alanını kırpmayın; seri baskıdan önce bir '
+        + 'plakayı telefonla okutarak deneyin.';
+    const kes = matbaa.lastIndexOf(' ', 118);
+    const n1 = sigdir(matbaa.slice(0, kes), 2.6, false, 174, 2.0);
+    const n2 = sigdir(matbaa.slice(kes + 1), 2.6, false, 174, 2.0);
+    solMetin(doc, n1.metin, 18, 285, n1.punto, false, 'gri');
+    solMetin(doc, n2.metin, 18, 289, n2.punto, false, 'gri');
 
     // Plaka sayfalari
     g.masalar.forEach((m, i) => {
@@ -360,11 +375,11 @@ async function plakaPdf(g) {
         const d = doc.page.dictionary.data;
         d.TrimBox = [mm(ofs), mm(ofs), mm(ofs + O.gen), mm(ofs + O.yuk)];
         d.BleedBox = [mm(ofs - TASMA), mm(ofs - TASMA), mm(ofs + O.gen + TASMA), mm(ofs + O.yuk + TASMA)];
-        const y = plakaYerlesimi({ olcu: g.olcu, logo: g.logo, isletmeAdi: g.isletmeAdi, masaAdi: m.ad, altMetin: g.altMetin, adres: m.adres });
+        const y = plakaYerlesimi({ olcu: olcuKodu, logo: g.logo, isletmeAdi: g.isletmeAdi, masaAdi: m.ad, altMetin: g.altMetin, adres: m.adres });
         plakaCiz(doc, y, g.logo, ofs, ofs);
         kesimIsaretleri(doc, ofs, O.gen, O.yuk);
         // Matbaa etiketi alt kenar boslugunda, kesim isaretlerinin arasinda (genislik kesim olcusunden dar)
-        const etiket = sigdir(`Talep ${g.talepNo} · sayfa ${i + 2}/${g.masalar.length + 1} · ${m.kisaKod} · ${olcuAdi} mm`, 1.8, false, O.gen - 8, 1.4);
+        const etiket = sigdir(`Talep ${g.talepNo} · sayfa ${i + 2}/${g.masalar.length + 1} · ${m.kisaKod} · ${olcuAdi} mm${m.pasif ? ' · MASA SİLİNDİ' : ''}`, 1.8, false, O.gen - 8, 1.4);
         ortaliMetin(doc, etiket.metin, sayfaG / 2, sayfaY - 2.4, etiket.punto, false, 'gri');
     });
     return bitir(doc);

@@ -232,7 +232,7 @@ exports.purchase = async (req, res) => {
             `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama, tur, yeni_toplam, kredi_tutari,
                                            kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis)
              VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, req.user.tenantId, tier, JSON.stringify(tk.modules), tk.odenecek, String(customerNote || '').slice(0, 300),
+            [id, req.user.tenantId, tier, JSON.stringify(tk.odenenModuller), tk.odenecek, String(customerNote || '').slice(0, 300),
                 tk.tur, tk.yeniToplam, tk.krediTutari, tk.kalanGun, tk.krediKaynak,
                 tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis]);
         return {};
@@ -246,14 +246,16 @@ exports.purchase = async (req, res) => {
     isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni ödeme bildirimi: ' + i.ad, [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['E-posta', i.eposta], ['Telefon', i.tel],
         ['Tür', TUR_AD[tk.tur] || tk.tur],
-        ['Masa paketi', tk.tierRow.displayName + ' (' + tier + ')'], ['Modüller', tk.modules.map((m) => MODUL_AD[m] || m).join(', ')],
+        ['Masa paketi', tk.tierRow.displayName + ' (' + tier + ')'], ['Modüller', tk.odenenModuller.map((m) => MODUL_AD[m] || m).join(', ')],
+        ...(tk.korunanModuller.length ? [['Korunan (ücretsiz)', tk.korunanModuller.map((m) => (m === 'ALL' ? 'Tüm modüller' : MODUL_AD[m] || m)).join(', ')]] : []),
         ['Yıllık toplam', LT.TL(tk.yeniToplam)],
         ...(tk.tur === 'yukseltme' ? [['Kalan süre kredisi', tk.kalanGun + ' gün, ' + LT.TL(tk.krediTutari)
             + (tk.krediKaynak === 'katalog' ? ' (bu dönem için onaylı ödeme yok: katalog fiyatından)' : ' (son onaylı ödemeden)')]] : []),
         ['Ödenecek', LT.TL(tk.odenecek)],
     ])).catch(() => {});
     res.status(201).json({
-        id, tier, modules: tk.modules, total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
+        id, tier, modules: tk.modules, odenenModuller: tk.odenenModuller, korunanModuller: tk.korunanModuller,
+        total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
         kalanGun: tk.kalanGun, krediTutari: tk.krediTutari, aciklama: tk.aciklama, status: 'PENDING_PAYMENT',
         iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
         message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',

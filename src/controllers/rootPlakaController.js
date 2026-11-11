@@ -3,6 +3,7 @@ const H = require('../services/plakaHak');
 const C = require('../services/plakaCizim');
 const K = require('../services/kisaKod');
 const M = require('../services/lisansModul');
+const has = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
 
 // --- Plaka Talepleri (root paneli) ---
 // Liste, ayrinti, durum gecisleri, not, baski dosyasi (PDF) ve plaka ayarlari.
@@ -23,9 +24,30 @@ const GECIS = {
     reddet: { kaynak: ['ALINDI', 'ODEME_BEKLENIYOR', 'ODEME_ALINDI', 'HAZIRLANIYOR'], hedef: 'REDDEDILDI', alan: 'red_at' },
 };
 
-function hazirla(x) {
+// Talepteki masalarin BUGUNKU durumu: aktif mi, kisa kodu ne (kisa kod yenilendiyse baskida yenisi kullanilir)
+async function masaDurumlari(talepler) {
+    const ids = new Set();
+    for (const x of talepler) { try { for (const m of JSON.parse(x.masalar_json || '[]')) if (m && m.id) ids.add(String(m.id)); } catch (_) {} }
+    const dizi = Array.from(ids);
+    const harita = new Map();
+    for (let i = 0; i < dizi.length; i += 500) {
+        const parca = dizi.slice(i, i + 500);
+        const r = await query(`SELECT id, is_active, kisa_kod FROM tables WHERE id IN (${parca.map(() => '?').join(', ')})`, parca);
+        for (const t of r.rows) harita.set(t.id, { aktif: Number(t.is_active) === 1, kisaKod: t.kisa_kod });
+    }
+    return harita;
+}
+
+function hazirla(x, harita) {
     let masalar = [];
     try { masalar = JSON.parse(x.masalar_json || '[]'); } catch (_) { masalar = []; }
+    if (harita) {
+        masalar = masalar.map((m) => {
+            const g = harita.get(String(m.id));
+            // Masa silinmis (ya da kaydi yok): plakadaki karekod calismaz, ayrintida ve baski kapaginda isaretlenir
+            return { ...m, aktif: !!(g && g.aktif), guncelKisaKod: g && g.kisaKod ? g.kisaKod : m.kisaKod };
+        });
+    }
     const { masalar_json: _m, ...kalan } = x;
     const moduller = M.modulListesi(x.moduller);
     const { mevcut_moduller: mm, ...dig } = kalan;
@@ -46,7 +68,8 @@ exports.liste = async (req, res) => {
         ORDER BY CASE p.durum WHEN 'ALINDI' THEN 0 WHEN 'ODEME_ALINDI' THEN 1 WHEN 'ODEME_BEKLENIYOR' THEN 2
                               WHEN 'HAZIRLANIYOR' THEN 3 WHEN 'KARGODA' THEN 4 ELSE 5 END, p.created_at DESC
         LIMIT 300`, p);
-    res.json(r.rows.map(hazirla));
+    const harita = await masaDurumlari(r.rows);
+    res.json(r.rows.map((x) => hazirla(x, harita)));
 };
 
 // Islem bekleyen talep sayisi (sekme rozeti): yeni, odemesi alinmis, "odemeyi yaptim" denmis
@@ -61,14 +84,14 @@ exports.sayac = async (_req, res) => {
 exports.getir = async (req, res) => {
     const r = await query(`${SEC} WHERE p.id = ?`, [req.params.id]);
     if (!r.rows.length) return res.status(404).json({ message: 'Talep bulunamadı.' });
-    res.json(hazirla(r.rows[0]));
+    res.json(hazirla(r.rows[0], await masaDurumlari(r.rows)));
 };
 
 // POST /api/root/plaka/talepler/:id/durum  { islem, kargoFirma, takipNo, sebep }
 exports.durum = async (req, res) => {
     const b = req.body || {};
+    if (!has(GECIS, b.islem)) return res.status(400).json({ message: 'Geçersiz işlem.' });
     const g = GECIS[b.islem];
-    if (!g) return res.status(400).json({ message: 'Geçersiz işlem.' });
     const set = ['durum = ?', `${g.alan} = CURRENT_TIMESTAMP`, 'updated_at = CURRENT_TIMESTAMP'];
     const p = [g.hedef];
     if (b.islem === 'kargoda') {
@@ -92,7 +115,7 @@ exports.durum = async (req, res) => {
             message: `Bu talep "${H.DURUM_AD[v.rows[0].durum] || v.rows[0].durum}" durumunda; bu işlem yapılamaz.` });
     }
     const x = await query(`${SEC} WHERE p.id = ?`, [req.params.id]);
-    res.json(hazirla(x.rows[0]));
+    res.json(hazirla(x.rows[0], await masaDurumlari(x.rows)));
 };
 
 // POST /api/root/plaka/talepler/:id/not  { not }  - yalniz root gorur
@@ -107,26 +130,39 @@ exports.not = async (req, res) => {
 exports.baski = async (req, res) => {
     const r = await query(`${SEC} WHERE p.id = ?`, [req.params.id]);
     if (!r.rows.length) return res.status(404).json({ message: 'Talep bulunamadı.' });
-    const x = hazirla(r.rows[0]);
+    const x = hazirla(r.rows[0], await masaDurumlari(r.rows));
     const t = (await query(
         'SELECT id, business_name, logo_url, license_modules, qr_siparis_acik, qr_garson_acik, qr_hesap_acik FROM tenants WHERE id = ?',
         [x.tenant_id])).rows[0] || { id: x.tenant_id, business_name: x.business_name || 'İşletme' };
     // Talep anindaki logo; dosyasi silinmisse (logo sonradan degistirildiyse) guncel logo
     let logo = C.logoYukle(t.id, x.logo_url);
     if ((!logo || !logo.uygun) && t.logo_url && t.logo_url !== x.logo_url) logo = C.logoYukle(t.id, t.logo_url);
-    const olcu = C.OLCU[req.query.olcu] ? req.query.olcu : (C.OLCU[x.olcu] ? x.olcu : '80x80');
+    const olcu = has(C.OLCU, req.query.olcu) ? req.query.olcu : (has(C.OLCU, x.olcu) ? x.olcu : '80x80');
     const buf = await C.plakaPdf({
         talepNo: x.talep_no, tarih: x.created_at, isletmeAdi: t.business_name, olcu,
         logo: logo && logo.uygun ? logo : null,
         logoUyari: logo && !logo.uygun ? logo.uyari : (!logo ? 'İşletmenin logosu yok; logo yerine işletme adı basıldı.' : null),
         altMetin: M.okutunMetni(t),
-        masalar: x.masalar.map((m) => ({ ad: m.ad, kisaKod: m.kisaKod, hediye: !!m.hediye, adres: K.kisaAdres(m.kisaKod) })),
+        // Guncel kisa kod (talepten sonra "Kisa kodu yenile" dendiyse yenisi); silinmis masa kapakta isaretli
+        masalar: x.masalar.map((m) => ({ ad: m.ad, kisaKod: m.guncelKisaKod, hediye: !!m.hediye, pasif: !m.aktif, adres: K.kisaAdres(m.guncelKisaKod) })),
         hediyeAdet: x.hediye_adet, ucretliAdet: x.ucretli_adet,
     });
     res.set('Content-Type', 'application/pdf');
     res.set('Content-Disposition', `attachment; filename="plaka-talep-${x.talep_no}.pdf"`);
     res.set('Cache-Control', 'no-store');
     res.send(buf);
+};
+
+// POST /api/root/masalar/:id/kisa-kod-yenile - root: kayip/calinan plaka gibi durumlarda masanin kisa kodunu yeniler.
+// Eski kod artik cozulmez (basili plakanin karekodu calismaz); talep baskisi guncel kodu kullanir.
+exports.masaKisaKodYenile = async (req, res) => {
+    const r = await query('SELECT id, tenant_id, name, kisa_kod, is_active FROM tables WHERE id = ?', [req.params.id]);
+    if (!r.rows.length || !r.rows[0].is_active) return res.status(404).json({ message: 'Masa bulunamadı ya da silinmiş.' });
+    const eski = r.rows[0].kisa_kod || null;
+    const kod = await K.yenile(r.rows[0].id);
+    console.log('[root] kisa kod yenilendi:', r.rows[0].tenant_id, r.rows[0].name, eski, '->', kod);
+    res.json({ kisaKod: kod, kisaAdres: K.kisaAdres(kod), eskiKod: eski,
+        message: `${r.rows[0].name}: kısa kod yenilendi (${kod}). Basılı plakanın karekodu artık çalışmaz.` });
 };
 
 // GET/PUT /api/root/plaka/ayarlar  { birimFiyat, kargoUcreti, olcu, maliyetBirim, maliyetKargo }

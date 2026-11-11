@@ -626,14 +626,18 @@ exports.lisansOdemeleri = async (req, res) => {
           ORDER BY CASE o.durum WHEN 'beklemede' THEN 0 ELSE 1 END, o.created_at DESC
           LIMIT 200`, durum ? [durum] : []);
     const tam = await require('../services/lisansKatalog').tamKatalog();
-    res.json(r.rows.map(x => {
+    res.json(await Promise.all(r.rows.map(async (x) => {
         const m = M.modulListesi(x.moduller);
         const mevcut = M.modulListesi(x.mevcut_moduller);
         const ek = {};
         if (x.durum === 'beklemede') {
-            const t = { license_tier: x.mevcut_tier, license_modules: x.mevcut_moduller, license_end_date: x.license_end_date };
+            const t = { id: x.tenant_id, license_tier: x.mevcut_tier, license_modules: x.mevcut_moduller, license_end_date: x.license_end_date };
+            // Onayda yazilacak liste: odenen + korunan (o anki lisansa gore; bkz lisansModul.korunacakModuller)
+            const onay = await LT.onayModulleri(x, t, tam);
+            ek.korunacak_moduller = onay.korunan;
+            ek.yeni_moduller_onizleme = onay.moduller;
             ek.lisans_degisiklikleri = LT.lisansDegisiklikleri(x, t, tam);
-            ek.kalkacak_moduller = mevcut.filter((k) => !m.includes(k));
+            ek.kalkacak_moduller = mevcut.filter((k) => !M.varMi(onay.moduller, k));
             ek.yeni_bitis_onizleme = LT.onayBitisi({ tur: x.tur, mevcutBitis: x.license_end_date, gun: 365 });
         }
         return {
@@ -642,7 +646,7 @@ exports.lisansOdemeleri = async (req, res) => {
             tier_ad: LT.tierAdi(tam, x.tier), onceki_tier_ad: x.onceki_tier ? LT.tierAdi(tam, x.onceki_tier) : null,
             mevcut_tier_ad: LT.tierAdi(tam, x.mevcut_tier), ...ek,
         };
-    }));
+    })));
 };
 
 // Onay = LISANSIN UZADIGI TEK AN. Bildirimin kendisi lisansa dokunmuyordu.
@@ -665,7 +669,11 @@ exports.lisansOdemeOnayla = async (req, res) => {
 
             const bitis = LT.onayBitisi({ tur: o.tur, mevcutBitis: t.license_end_date, gun });
             // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse "aldim ama yok" der.
-            const moduller = M.modulListesi(o.moduller);
+            // Yeni liste = odenen + korunan (satista olmayan mevcut moduller; deneme ise yalniz aktif kanal varsa
+            // MARKETPLACE). Korunan hesap BU ANKI lisansa gore: deploy oncesi acilmis kayitlar da Masadan Siparis'i
+            // kaybetmez (lisansModul.korunacakModuller).
+            const tam = await require('../services/lisansKatalog').tamKatalog();
+            const { moduller } = await LT.onayModulleri(o, t, tam);
             // Masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda yoksa (eski
             // kayit) sinira dokunulmaz.
             const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;

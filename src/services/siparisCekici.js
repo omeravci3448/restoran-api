@@ -56,16 +56,28 @@ async function imlecYaz(k, { cursor, hata }) {
 
 // Hangi kanallar taranacak? Adaptore BAGLI, kimlik bilgisi KAYITLI ve magaza
 // baglantisi AKTIF olanlar. Bu uc sartin biri eksikse kanal zaten calismaz.
+// Moduler lisans: isletmede Adisyon ve Kasa (BASE) yoksa siparis CEKILMEZ (POS uclari kapali, siparis gorunmez
+// olurdu; MARKETPLACE de BASE'e bagli). Atlanan isletme bir kez gunluge yazilir; BASE gelince yeniden taranir.
+const bazsizGunlukte = new Set();
 async function taranacaklar() {
     const r = await query(
         `SELECT c.id AS channel_id, c.tenant_id, c.adapter_code, c.name,
-                l.id AS store_link_id, l.external_store_id
+                l.id AS store_link_id, l.external_store_id, t.license_modules
            FROM marketplace_channels c
            JOIN marketplace_store_links l ON l.channel_id = c.id AND l.is_active = 1
+           JOIN tenants t ON t.id = c.tenant_id
           WHERE c.is_active = 1 AND c.adapter_code IS NOT NULL AND c.adapter_code <> ''
             AND EXISTS (SELECT 1 FROM marketplace_credentials k
                          WHERE k.channel_id = c.id AND k.status = 'active')`);
-    return r.rows;
+    const M = require('./lisansModul');
+    return r.rows.filter((k) => {
+        if (M.varMi(k.license_modules, 'BASE')) { bazsizGunlukte.delete(k.tenant_id); return true; }
+        if (!bazsizGunlukte.has(k.tenant_id)) {
+            bazsizGunlukte.add(k.tenant_id);
+            console.log('[siparis-cekme] atlandi: isletmede Adisyon ve Kasa yok, siparis cekilmiyor', k.tenant_id);
+        }
+        return false;
+    }).map(({ license_modules: _l, ...k }) => k);
 }
 
 // Tek kanal icin bir tur.

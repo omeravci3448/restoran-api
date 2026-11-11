@@ -3,7 +3,8 @@
 // (en az 0), teklifin talep aninda KILITLENMESI (katalog sonradan degisse de), onaya kadar lisansin HIC degismemesi,
 // onayda bitis (ilk/yukseltme: onay gunu + 365; yenileme: mevcut bitisin uzerine), donem icinde azaltma 409,
 // gizli modullerin (Masadan Siparis, Pazaryeri) korunmasi, root listesindeki "talepten sonra degisti" uyarisi,
-// cift onay korumasi, red. Sunucuyu KENDI baslatir.  Calistir: node test_lisans_yukseltme.js
+// cift onay korumasi, red; K1: onayda korunan moduller (gecmis kiraci yenilemesi, deploy oncesi bekleyen kayit,
+// ALL, deneme korumasiz + aktif pazaryeri kanali istisnasi). Sunucuyu KENDI baslatir.  Calistir: node test_lisans_yukseltme.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
@@ -78,7 +79,7 @@ let katalogYedek = null;
 async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
-        for (const tb of ['lisans_odemeleri', 'root_olaylar', 'license_cache', 'islem_gunlugu', 'users'])
+        for (const tb of ['lisans_odemeleri', 'root_olaylar', 'license_cache', 'islem_gunlugu', 'marketplace_credentials', 'marketplace_store_links', 'marketplace_channels', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
@@ -211,15 +212,16 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('donem bilgisi: deneme', (await js('/api/license/yenileme-kanali', { token: u6.token })).d.donem.durum === 'deneme');
     const q6 = (await js('/api/license/quote', { token: u6.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d;
     ok('teklif: tur ilk, toplam 5000, kredi yok', q6.tur === 'ilk' && q6.total === 5000 && q6.odenecek === 5000 && q6.krediTutari === 0, q6);
-    ok('denemedeki gizli moduller korunur (Masadan Siparis, Pazaryeri), secilmeyen Garson/Stok gelmez', ayniKume(q6.korunanModuller, ['QR_SIPARIS', 'MARKETPLACE'])
-        && !q6.modules.includes('GARSON') && !q6.modules.includes('STOK'), q6.modules);
+    ok('K1: denemede koruma yok (Masadan Siparis / Pazaryeri gelmez), secilmeyen Garson/Stok gelmez', q6.korunanModuller.length === 0
+        && ayniKume(q6.modules, ['BASE', 'MENU_DIGITAL']), q6.modules);
     const q6b = (await js('/api/license/quote', { token: u6.token, body: { tier: 'TIER_1_5', modules: ['MENU_DIGITAL'] } })).d;
-    ok('yalniz QR Menu: bagimliligi karsilanmayan gizli moduller korunmaz', JSON.stringify(q6b.modules) === '["MENU_DIGITAL"]' && q6b.total === 1000, q6b);
+    ok('yalniz QR Menu: tek modul, toplam 1000', JSON.stringify(q6b.modules) === '["MENU_DIGITAL"]' && q6b.total === 1000, q6b);
     const al6 = await js('/api/license/purchase', { token: u6.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
     const on6 = await onayla(al6.d.id);
     const t6 = await kiraci(u6.id);
     ok('ilk alim onayi: bugun + 365 (kalan 5 deneme gunu eklenmez)', on6.status === 200 && on6.d.tur === 'ilk' && yakin(t6.license_end_date, Date.now() + 365 * GUN), t6.license_end_date);
     ok('... paket 6-10 Masa (sinir 10), deneme bitti', t6.license_tier === 'TIER_6_10' && Number(t6.license_table_limit) === 10);
+    ok('K1: deneme -> satin alma onayi: yalniz odenen moduller (Masadan Siparis, Pazaryeri korunmaz)', ayniKume(JSON.parse(t6.license_modules), ['BASE', 'MENU_DIGITAL']), t6.license_modules);
 
     console.log('\n=== 7) Kilitli teklif + talepten sonra elle degisiklik uyarisi ===');
     const b7 = bitisGun(200);
@@ -262,9 +264,59 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('red: lisans aynen kalir', rd10.status === 200 && t10.license_tier === once10.license_tier && t10.license_modules === once10.license_modules
         && t10.license_end_date === once10.license_end_date, t10);
     const u11 = await kiraciKur({ ad: 'Tum', tier: 'TIER_20_PLUS', moduller: ['ALL'], bitis: bitisGun(200) });
-    ok('ALL donem icinde: tek modul secimi 409', (await js('/api/license/quote', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE'] } })).status === 409);
-    const q11 = (await js('/api/license/quote', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK'] } })).d;
-    ok('ALL: satistaki hepsi secilince erken yenileme, gizliler korunur', q11.tur === 'yenileme' && ayniKume(q11.korunanModuller, ['QR_SIPARIS', 'MARKETPLACE']), q11);
+    const q11 = (await js('/api/license/quote', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE'] } })).d;
+    ok('K1: ALL korunur (satin alinamaz): tek modul secimi de erken yenileme, korunanlarda ALL', q11.tur === 'yenileme' && q11.korunanModuller.includes('ALL'), q11);
+    const al11 = await js('/api/license/purchase', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE'] } });
+    await onayla(al11.d.id);
+    ok('K1: ALL kiraci onaydan sonra ALL korunur', JSON.parse((await kiraci(u11.id)).license_modules).includes('ALL'), (await kiraci(u11.id)).license_modules);
+
+    console.log('\n=== 10) K1: onayda korunan moduller ===');
+    // Gecmis kiraci (gecis sonrasi bicim: BASE + MENU_DIGITAL + QR_SIPARIS + GARSON) yenileme -> onay
+    const g1 = await kiraciKur({ ad: 'Gecmis', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON'], bitis: bitisGun(20) });
+    const gal = await js('/api/license/purchase', { token: g1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } });
+    ok('kayitta yalniz ODENEN moduller (Masadan Siparis yok), yanitta korunan onizlemesi', gal.status === 201
+        && JSON.stringify(JSON.parse((await kayit(gal.d.id)).moduller).sort()) === JSON.stringify(['BASE', 'GARSON', 'MENU_DIGITAL'])
+        && JSON.stringify(gal.d.korunanModuller) === '["QR_SIPARIS"]', gal.d);
+    const rg = await rootKaydi(gal.d.id);
+    ok('root listesi: korunacak Masadan Siparis, kalkacak modul yok', JSON.stringify(rg.korunacak_moduller) === '["QR_SIPARIS"]' && rg.kalkacak_moduller.length === 0, rg);
+    await onayla(gal.d.id);
+    ok('K1: gecmis kiraci -> yenileme -> onay: QR_SIPARIS kalir', JSON.parse((await kiraci(g1.id)).license_modules).includes('QR_SIPARIS'), (await kiraci(g1.id)).license_modules);
+    // Deploy oncesi acilmis bekleyen kayit (tur / kopya yok, moduller eski sepetten)
+    const g2 = await kiraciKur({ ad: 'Eski Bekleyen', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS'], bitis: bitisGun(20) });
+    const b2 = (await kiraci(g2.id)).license_end_date;
+    const eskiId = 'yks-eski-' + crypto.randomBytes(4).toString('hex');
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama) VALUES (?, ?, 'TIER_6_10', '["BASE","MENU_DIGITAL"]', 5000, 'beklemede', 'eski sepet')`, [eskiId, g2.id]);
+    const re = await rootKaydi(eskiId);
+    ok('eski kayit root listesinde: tur yok, uyari yok, korunacak Masadan Siparis', re && re.tur == null && re.lisans_degisiklikleri.length === 0
+        && JSON.stringify(re.korunacak_moduller) === '["QR_SIPARIS"]', re);
+    const one = await onayla(eskiId);
+    const tg2 = await kiraci(g2.id);
+    ok('K1: deploy oncesi bekleyen kaydin onayi: QR_SIPARIS kalir, bitisin uzerine 1 yil (eski davranis)', one.status === 200
+        && JSON.parse(tg2.license_modules).includes('QR_SIPARIS') && yakin(tg2.license_end_date, new Date(b2).getTime() + 365 * GUN, 2000), tg2);
+    // Deneme + aktif pazaryeri kanali: yalniz MARKETPLACE korunur
+    const d1 = await kiraciKur({ ad: 'Deneme Kanal', tier: 'TIER_DENEME', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'MARKETPLACE'], bitis: bitisGun(5) });
+    const kanal = 'yks-kanal-' + crypto.randomBytes(4).toString('hex');
+    await query("INSERT INTO marketplace_channels (id, tenant_id, name, is_active, adapter_code) VALUES (?, ?, 'SofraMix', 1, 'soframix')", [kanal, d1.id]);
+    await query("INSERT INTO marketplace_store_links (id, tenant_id, channel_id, external_store_id, is_active) VALUES (?, ?, ?, ?, 1)", [kanal + '-l', d1.id, kanal, 'm-' + kanal]);
+    await query("INSERT INTO marketplace_credentials (id, tenant_id, channel_id, cipher_blob, iv, auth_tag, status) VALUES (?, ?, ?, 'x', 'x', 'x', 'active')", [kanal + '-k', d1.id, kanal]);
+    const qd1 = (await js('/api/license/quote', { token: d1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d;
+    ok('K1: deneme + aktif pazaryeri kanali: yalniz Pazaryeri korunur (Masadan Siparis korunmaz)', JSON.stringify(qd1.korunanModuller) === '["MARKETPLACE"]', qd1.korunanModuller);
+    const ald1 = await js('/api/license/purchase', { token: d1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
+    const rd1 = await rootKaydi(ald1.d.id);
+    ok('root listesi: denemede kalkacaklar (Masadan Siparis, Garson, Stok), korunacak Pazaryeri', ayniKume(rd1.kalkacak_moduller, ['QR_SIPARIS', 'GARSON', 'STOK'])
+        && JSON.stringify(rd1.korunacak_moduller) === '["MARKETPLACE"]', rd1);
+    await onayla(ald1.d.id);
+    ok('K1: deneme -> satin alma (aktif kanal): BASE + QR Menu + Pazaryeri', ayniKume(JSON.parse((await kiraci(d1.id)).license_modules), ['BASE', 'MENU_DIGITAL', 'MARKETPLACE']),
+        (await kiraci(d1.id)).license_modules);
+    // Kanal pasifse koruma yok
+    const d2 = await kiraciKur({ ad: 'Deneme Pasif Kanal', tier: 'TIER_DENEME', moduller: ['BASE', 'MENU_DIGITAL', 'MARKETPLACE'], bitis: bitisGun(5) });
+    const kanal2 = 'yks-kanal-' + crypto.randomBytes(4).toString('hex');
+    await query("INSERT INTO marketplace_channels (id, tenant_id, name, is_active, adapter_code) VALUES (?, ?, 'SofraMix', 0, 'soframix')", [kanal2, d2.id]);
+    ok('K1: deneme + pasif kanal: koruma yok', (await js('/api/license/quote', { token: d2.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).d.korunanModuller.length === 0);
+    // Korunan modul bagimlilik kuralina uyar: BASE secilmezse Masadan Siparis kalmaz
+    const g3 = await kiraciKur({ ad: 'Bagimlilik', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS'], bitis: bitisGun(10) });
+    const qg3 = (await js('/api/license/quote', { token: g3.token, body: { tier: 'TIER_6_10', modules: ['MENU_DIGITAL'] } })).d;
+    ok('K1: yenilemede Adisyon ve Kasa birakilirsa Masadan Siparis korunmaz (bagimlilik)', qg3.korunanModuller.length === 0 && JSON.stringify(qg3.modules) === '["MENU_DIGITAL"]', qg3);
 
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);

@@ -78,5 +78,6 @@ router.get('/plaka/talepler/:id', protectRoot, plaka.getir);
 router.get('/plaka/talepler/:id/baski.pdf', protectRoot, plaka.baski);
 router.post('/plaka/talepler/:id/durum', protectRoot, plaka.durum);
 router.post('/plaka/talepler/:id/not', protectRoot, plaka.not);
+router.post('/masalar/:id/kisa-kod-yenile', protectRoot, plaka.masaKisaKodYenile);
 
 module.exports = router;

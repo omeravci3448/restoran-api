@@ -30,8 +30,9 @@ async function temizle() {
 async function kur(adapterCode) {
     const tenantId = uuid();
     await query(
-        `INSERT INTO tenants (id, slug, business_code, business_name, license_end_date, is_active)
-         VALUES (?, ?, ?, ?, ?, 1)`,
+        // Moduler lisans: siparis cekme yalniz Adisyon ve Kasa (BASE) olan isletmede calisir (gecis sonrasi bicim)
+        `INSERT INTO tenants (id, slug, business_code, business_name, license_end_date, license_modules, is_active)
+         VALUES (?, ?, ?, ?, ?, '["BASE","MARKETPLACE"]', 1)`,
         [tenantId, 'cekme-' + uuid().slice(0, 8), '6' + String(Math.floor(Math.random() * 100000)).padStart(5, '0'),
             AD, new Date(Date.now() + 365 * 86400000).toISOString()]);
     const channelId = uuid();

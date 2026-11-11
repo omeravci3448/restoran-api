@@ -11,25 +11,9 @@ const { ensureRootUser } = require('./src/controllers/rootController');
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
-// Server start'ta: tüm tenant'ların license_table_limit'i hub'dan tazele
-// (eski seed'lerde NULL kalabilir, ya da hub'da tier limiti değişebilir)
-async function backfillTableLimits() {
-    try {
-        const r = await query('SELECT id, license_tier FROM tenants WHERE license_tier IS NOT NULL');
-        if (!r.rows.length) return;
-        const cat = await hubService.getModulesAndTiers();
-        for (const t of r.rows) {
-            const tier = cat.tiers.find(x => x.name === t.license_tier);
-            if (tier !== undefined) {
-                await query('UPDATE tenants SET license_table_limit = ? WHERE id = ?',
-                    [tier.tableLimit ?? null, t.id]);
-            }
-        }
-        console.log('[mda-restoran] tier limit backfill tamamlandı:', r.rows.length, 'tenant güncellendi');
-    } catch (e) {
-        console.log('[mda-restoran] tier limit backfill atlandı (hub erişimi yok):', e.message);
-    }
-}
+// NOT (2026-11-12): acilista hub katalogundan license_table_limit yazan is (backfillTableLimits) KALDIRILDI.
+// POS artik hub'a bagli degil; bu is, root onayinda yerel katalogdan yazilan masa sinirini her yeniden
+// baslatmada hub'daki eski degerle eziyordu. Masa siniri yalniz yerel katalogdan ve odeme onayindan gelir.
 
 const app = express();
 // Traefik arkasindayiz. Bu ayar OLMADAN req.ip herkes icin ayni degeri (Docker
@@ -119,8 +103,6 @@ initDb();
 const PORT = process.env.PORT || 5400;
 app.listen(PORT, () => {
     console.log(`[mda-restoran] backend ${PORT} portunda — ${process.env.NODE_ENV || 'dev'}`);
-    // 5sn sonra backfill — DB init bitsin
-    setTimeout(() => { backfillTableLimits(); }, 5000);
     // Root (ekosistem yöneticisi) kurulumu — ROOT_EMAIL/ROOT_PASSWORD yoksa
     // kullanıcı HİÇ oluşmaz ve panel kapalı kalır (güvenli varsayılan).
     setTimeout(async () => {

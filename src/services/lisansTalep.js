@@ -18,6 +18,9 @@ const { fiyatla, yuvarla, hata } = require('./lisansFiyat');
 //         (yillik deger: yukseltme kaydinda yeni_toplam, digerlerinde tutar).
 //         Bu donem icin onayli odeme yoksa: mevcut paketin BUGUNKU katalog fiyati (indirimli) x kalan gun / 365.
 // ONAYA KADAR lisans, moduller ve bitis tarihi HIC DEGISMEZ: talep yalniz lisans_odemeleri'ne kayit acar.
+// Kayittaki moduller ODENEN secimdir. Onayda yeni liste = odenen + korunan (satista olmayan mevcut moduller;
+// deneme ise yalniz aktif pazaryeri kanali varsa MARKETPLACE). Korunan hesap ONAY ANINDAKI lisansa gore yapilir
+// (lisansModul.korunacakModuller): deploy oncesi acilmis bekleyen kayitlar da Masadan Siparis'i kaybetmez.
 // SofraMix kanali bu akisa girmez (licenseController: WRONG_CHANNEL).
 
 const GUN_MS = 86400000;
@@ -49,6 +52,39 @@ const sinir = (x) => (x == null ? Infinity : Number(x));   // masa siniri: null 
 const modulAdi = (tam, m) => ((tam.find((x) => x.tur === 'MODUL' && x.kod === m) || {}).ad) || M.AD[m] || m;
 const tierAdi = (tam, k) => (k ? (((tam.find((x) => x.tur === 'TIER' && x.kod === k) || {}).ad) || k) : '-');
 
+// Satistaki (satin alinabilir) modul kodlari
+const satistakiModuller = (tam) => new Set(tam.filter((x) => x.tur === 'MODUL' && Number(x.gorunur) === 1).map((x) => x.kod));
+
+// Isletmenin aktif pazaryeri kanali var mi (siparis cekme dongusunun taradigi kosullar: kanal aktif ve adaptorlu,
+// magaza baglantisi aktif, kimlik bilgisi aktif)
+async function aktifPazaryeriKanali(tenantId) {
+    try {
+        const r = await query(
+            `SELECT 1 FROM marketplace_channels c
+               JOIN marketplace_store_links l ON l.channel_id = c.id AND l.is_active = 1
+              WHERE c.tenant_id = ? AND c.is_active = 1 AND c.adapter_code IS NOT NULL AND c.adapter_code <> ''
+                AND EXISTS (SELECT 1 FROM marketplace_credentials k WHERE k.channel_id = c.id AND k.status = 'active')
+              LIMIT 1`, [tenantId]);
+        return r.rows.length > 0;
+    } catch (_) { return false; }
+}
+
+// Onayda (ve teklif onizlemesinde) korunacak moduller. t: { id, license_tier, license_modules }
+async function korunanHesapla(t, odenen, tam) {
+    const deneme = t.license_tier === 'TIER_DENEME';
+    const aktifKanal = deneme ? await aktifPazaryeriKanali(t.id) : false;
+    return M.korunacakModuller({
+        mevcut: t.license_modules, odenen, satinAlinabilir: satistakiModuller(tam), deneme, aktifKanal,
+    });
+}
+
+// Onayda yazilacak modul listesi: odenen (kayittaki secim) + korunan
+async function onayModulleri(o, t, tam) {
+    const odenen = M.modulListesi(o.moduller);
+    const korunan = await korunanHesapla(t, odenen, tam);
+    return { odenen, korunan, moduller: [...odenen, ...korunan] };
+}
+
 // Isletmenin bugunku lisansi + katalog bilgisi
 async function kiraciDurumu(tenantId, simdi = new Date()) {
     const t = (await query(
@@ -58,18 +94,19 @@ async function kiraciDurumu(tenantId, simdi = new Date()) {
     const tam = await K.tamKatalog();
     const modulSatirlari = tam.filter((x) => x.tur === 'MODUL');
     const katalogKodlari = new Set(modulSatirlari.map((x) => x.kod));
-    const gizli = new Set(modulSatirlari.filter((x) => Number(x.gorunur) !== 1).map((x) => x.kod));
+    const satista = satistakiModuller(tam);
     const ham = M.modulListesi(t.license_modules);
     // 'ALL' butun katalog modulleri demek
     const sahip = ham.includes('ALL') ? modulSatirlari.map((x) => x.kod) : ham.filter((m) => m !== 'ALL');
-    // Satista olmayan (gizli ya da katalogda olmayan eski kod) ama sahip olunan moduller: alimda korunur
-    const korunacak = sahip.filter((m) => gizli.has(m) || !katalogKodlari.has(m));
+    // Sahip olunan ama satista olmayan moduller (gizli ya da katalogda olmayan eski kod): satin alinamaz,
+    // istekte gelirse secim sayilmaz; onayda korunur (deneme haric)
+    const satistaOlmayan = ham.filter((m) => !satista.has(m));
     const mevcutTier = t.license_tier ? (tam.find((x) => x.tur === 'TIER' && x.kod === t.license_tier) || null) : null;
     // Masa siniri karsilastirmasi: paket katalogdaysa paketin siniri (eski kayitlarda sutun bos kalmis olabilir),
     // degilse sutundaki deger. null = sinirsiz.
     const mevcutLimit = mevcutTier ? mevcutTier.masa_limiti : t.license_table_limit;
     return {
-        t, tam, katalogKodlari, gizli, sahip, korunacak, mevcutTier, mevcutLimit: mevcutLimit == null ? null : Number(mevcutLimit),
+        t, tam, katalogKodlari, satista, sahip, satistaOlmayan, mevcutTier, mevcutLimit: mevcutLimit == null ? null : Number(mevcutLimit),
         deneme: t.license_tier === 'TIER_DENEME', kalanGun: kalanGunHesapla(t.license_end_date, simdi),
     };
 }
@@ -94,7 +131,8 @@ async function donemBilgisi(tenantId, simdi = new Date()) {
         durum, kalanGun: kd.kalanGun, yenilemeEsigiGun: YENILEME_ESIGI_GUN,
         bitis: kd.t.license_end_date || null,
         yenilemeAcilis: durum === 'donemIci' ? yenilemeAcilisi(kd) : null,
-        mevcut: { tier: kd.t.license_tier || null, masaLimiti: kd.mevcutLimit, moduller: kd.sahip, korunan: kd.korunacak },
+        mevcut: { tier: kd.t.license_tier || null, masaLimiti: kd.mevcutLimit, moduller: kd.sahip,
+                  korunan: kd.deneme ? [] : kd.satistaOlmayan.filter((m) => m !== 'ALL' && kd.katalogKodlari.has(m)) },
     };
 }
 
@@ -168,11 +206,18 @@ function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor }) 
 // Teklif: fiyat + tur + kredi + odenecek. Donem icinde azaltma 409 DONEM_ICI_AZALTMA.
 async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const kd = await kiraciDurumu(tenantId, simdi);
-    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, korunacak: kd.korunacak });
+    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: kd.satistaOlmayan });
     const donem = donemTuru(kd);
+    // Onayda korunacaklar (onizleme; onayda o anki lisansa gore yeniden hesaplanir)
+    const korunan = await korunanHesapla(kd.t, f.modules, kd.tam);
+    const sonListe = [...f.modules, ...korunan];
+    for (const m of korunan) {
+        const satir = kd.tam.find((x) => x.tur === 'MODUL' && x.kod === m);
+        if (satir) f.breakdown.push({ name: m, displayName: satir.ad || M.AD[m] || m, type: 'MODULE', price: 0, korunan: true });
+    }
     // Karsilastirma katalogdaki modullerle (katalogda olmayan eski kodlar zaten korunur)
     const karsilastir = kd.sahip.filter((m) => kd.katalogKodlari.has(m));
-    const cikan = karsilastir.filter((m) => !f.modules.includes(m));
+    const cikan = karsilastir.filter((m) => !M.varMi(sonListe, m));
     const eklenen = f.modules.filter((m) => !kd.sahip.includes(m));
     const yeniLimit = f.tableLimit == null ? null : Number(f.tableLimit);
     const limitKuculur = sinir(yeniLimit) < sinir(kd.mevcutLimit);
@@ -204,7 +249,8 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const odenecek = Math.max(0, yuvarla(yeniToplam - krediTutari));
     const degisiyor = eklenen.length > 0 || cikan.length > 0 || (kd.t.license_tier || null) !== tier;
     return {
-        ...f, tur, donem, yeniToplam, krediTutari, odenecek,
+        ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan,
+        tur, donem, yeniToplam, krediTutari, odenecek,
         kalanGun: tur === 'yukseltme' ? kredi.kalanGun : kd.kalanGun,
         krediKaynak: tur === 'yukseltme' ? kredi.kaynak : null,
         krediAyrinti: tur === 'yukseltme' ? { yillikDeger: kredi.yillikDeger, donemGun: kredi.donemGun } : null,
@@ -248,4 +294,5 @@ function lisansDegisiklikleri(o, t, tam) {
 module.exports = {
     YENILEME_ESIGI_GUN, YIL_GUN, tarihOku, kalanGunHesapla, kiraciDurumu, donemTuru, donemBilgisi, mevcutPaketDegeri,
     krediHesapla, teklifHazirla, onayBitisi, lisansDegisiklikleri, TL, TARIH, tierAdi, modulAdi,
+    satistakiModuller, aktifPazaryeriKanali, korunanHesapla, onayModulleri,
 };

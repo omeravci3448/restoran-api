@@ -92,7 +92,10 @@ const tx = (fn) => _runLocked(() => _als.run({ inTx: true }, async () => {
 //  1) Modul listesi bos ya da bozuk -> ["BASE"]: bugune kadar POS her isletmede acikti (BASE hic denetlenmiyordu)
 //  2) BASE'i (ya da ALL'u) olmayan isletmeye BASE: POS uclari artik BASE istiyor
 //  3) BASE + MENU_DIGITAL olan isletmeye QR_SIPARIS: QR'dan siparis bugune kadar modulsuz acikti
-// JSON islevleri bozuk metinde hata vermesin diye her yerde json_valid ile korunur.
+//  4) MENU_DIGITAL olup GARSON'u (ya da ALL'u) olmayan isletmeye GARSON: QR menudeki "Garson cagir" bugune kadar
+//     modulsuz acikti; artik GARSON istiyor (inceleme Y1: kimsede ozellik kapanmasin)
+// Adimlar ve isaret TEK ISLEMDE (tx): biri hata verirse hicbiri yazilmaz, isaret konmaz; bir sonraki acilista
+// bastan denenir. JSON islevleri bozuk metinde hata vermesin diye her yerde json_valid ile korunur.
 const GECIS_ISARETI = 'gecis_moduler_lisans_v1';
 const _dizi = (k) => `(CASE WHEN json_valid(${k}) THEN ${k} ELSE '[]' END)`;
 const _isaretYok = `NOT EXISTS (SELECT 1 FROM sistem_ayarlari WHERE anahtar = '${GECIS_ISARETI}')`;
@@ -109,33 +112,30 @@ const MODUL_GECISI_SQL = [
         AND EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value = 'BASE')
         AND EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value = 'MENU_DIGITAL')
         AND NOT EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value IN ('QR_SIPARIS', 'ALL'))`,
+    `UPDATE tenants SET license_modules = json_insert(license_modules, '$[#]', 'GARSON')
+      WHERE ${_isaretYok} AND json_valid(license_modules)
+        AND EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value = 'MENU_DIGITAL')
+        AND NOT EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value IN ('GARSON', 'ALL'))`,
     `INSERT OR IGNORE INTO sistem_ayarlari (anahtar, deger) VALUES ('${GECIS_ISARETI}', datetime('now'))`,
 ];
-// initDb icinden: sirali ve geri cagirmali; isaret yalniz uc adim da basariliysa konur (yarim kalirsa
-// bir sonraki acilista yeniden dener; adimlar zaten "eksikse ekle" bicimindedir).
-function modulGecisiBaslat(conn) {
-    const [a, b, c, isaret] = MODUL_GECISI_SQL;
-    conn.get('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI], (e0, r0) => {
-        if (e0 || r0) return;
-        const hata = (n) => (e) => { console.error(`[db] modul gecisi adim ${n}:`, e.message); };
-        conn.run(a, [], (e1) => {
-            if (e1) return hata(1)(e1);
-            conn.run(b, [], (e2) => {
-                if (e2) return hata(2)(e2);
-                conn.run(c, [], (e3) => {
-                    if (e3) return hata(3)(e3);
-                    conn.run(isaret, [], (e4) => { if (e4) hata(4)(e4); else console.log('[db] moduler lisans gecisi tamamlandi'); });
-                });
-            });
-        });
+// Gecis: adimlar + isaret tek islemde. Isaret varsa hicbir sey yapmaz, false doner (testler de bunu cagirir).
+async function modulGecisi() {
+    return tx(async () => {
+        const v = await query('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
+        if (v.rows.length) return false;
+        for (const s of MODUL_GECISI_SQL) await query(s);
+        return true;
     });
 }
-// Ayni gecis, testler icin (async). Isaret varsa hicbir sey yapmaz, false doner.
-async function modulGecisi() {
-    const v = await query('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
-    if (v.rows.length) return false;
-    for (const s of MODUL_GECISI_SQL) await query(s);
-    return true;
+// initDb kuyrugunun SONUNA konur: geri cagrisi geldiginde onceki CREATE/ALTER/tohum komutlari bitmistir;
+// gecis bundan sonra kendi islemiyle (BEGIN IMMEDIATE ... COMMIT) calisir.
+function modulGecisiBaslat(conn) {
+    conn.get('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI], (e0, r0) => {
+        if (e0 || r0) return;
+        modulGecisi()
+            .then((yapildi) => { if (yapildi) console.log('[db] moduler lisans gecisi tamamlandi'); })
+            .catch((e) => console.error('[db] moduler lisans gecisi geri alindi (sonraki acilista yeniden denenecek):', e.message));
+    });
 }
 
 const initDb = () => {
@@ -416,8 +416,6 @@ const initDb = () => {
         for (const [id, ac] of modulAciklama) {
             db.run("UPDATE lisans_katalog SET aciklama = ? WHERE id = ? AND (aciklama IS NULL OR aciklama = '')", [ac, id], () => {});
         }
-        // GECIS (bir kez): mevcut isletmeler bugunku davranisini korur. Bkz MODUL_GECISI_SQL.
-        modulGecisiBaslat(db);
 
         // — SOFRAMIX DENEME DEVRI: tek kullanimlik nonce + kisa omurlu giris jetonu —
         // Nonce VERITABANINDA: bellekte tutulsaydi yeniden baslatma / ikinci kopya
@@ -1046,6 +1044,10 @@ const initDb = () => {
         db.run("CREATE INDEX IF NOT EXISTS idx_plaka_tenant ON plaka_talepleri(tenant_id, created_at)", [], () => {});
         db.run("CREATE INDEX IF NOT EXISTS idx_plaka_durum ON plaka_talepleri(durum, created_at)", [], () => {});
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_plaka_talep_no ON plaka_talepleri(talep_no) WHERE talep_no IS NOT NULL", [], () => {});
+
+        // GECIS (bir kez, tek islemde): mevcut isletmeler bugunku davranisini korur. Bkz MODUL_GECISI_SQL.
+        // Kuyrugun en sonunda: tablolar ve katalog tohumu hazir olduktan sonra.
+        modulGecisiBaslat(db);
     });
 };
 
