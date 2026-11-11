@@ -4,11 +4,14 @@ const H = require('./magazaHesap');
 const MA = require('./magazaAyar');
 const MU = require('./magazaUrun');
 const B = require('./magazaBildirim');
+const E = require('./magazaEposta');
 
 // --- Magaza siparisleri ---
 //
 // Akis: ODEME_BEKLENIYOR -> ODEME_ALINDI -> HAZIRLANIYOR -> KARGODA -> TESLIM_EDILDI
 //   - Isletme yalniz ODEME_BEKLENIYOR iken IPTAL edebilir.
+//   - Odeme bildirilmemis siparis N gun sonra SISTEM tarafindan IPTAL edilir (magazaZamanlayici.js; 0 = kapali).
+//   - Odeme alindi / kargoya verildi / reddedildi / otomatik iptal: isletmeye e-posta (magazaEposta.js).
 //   - Root REDDEDILDI yapabilir (kargodan once, sebep zorunlu); sebebi isletme gorur.
 //   - Root, stoktaki urunde HAZIRLANIYOR adimini atlayip dogrudan kargoya verebilir.
 //   - Geri donus yok: yanlis isaretleme root tarafinda yeni bir islem gerektirir (bkz. rapor).
@@ -296,6 +299,24 @@ async function durumDegistir({ id, hedef, govde, rootAd }) {
         if (hedef === DURUM.REDDEDILDI) await stokIade(s.id);
         await gecmisYaz(s.id, hedef, aciklama, 'ROOT', rootAd);
     });
+    // Isletmeye e-posta: odeme alindi, kargoya verildi, reddedildi. Yan is: beklenmez, hata akisi durdurmaz.
+    if (E.TURLER.includes(hedef)) E.durumBildir(String(id), hedef).catch(() => {});
+}
+
+// Sistem iptali (magazaZamanlayici.js): odeme bildirilmemis ve sinirdan eski siparis. Kosul UPDATE icinde yeniden
+// denetlenir; arada 'odemeyi yaptim' ya da root islemi geldiyse siparise dokunulmaz (false doner).
+async function sistemIptal({ id, sebep, sinir }) {
+    return tx(async () => {
+        const z = simdi();
+        const r = await query(
+            `UPDATE magaza_siparisler SET durum = 'IPTAL', kapanis_at = ?, kapatan = 'SISTEM', kapanis_sebebi = ?, updated_at = ?
+              WHERE id = ? AND durum = 'ODEME_BEKLENIYOR' AND odeme_bildirildi_at IS NULL AND created_at <= ?`,
+            [z, String(sebep).slice(0, 500), z, String(id), sinir]);
+        if (r.changes !== 1) return false;
+        await stokIade(String(id));
+        await gecmisYaz(String(id), DURUM.IPTAL, sebep, 'SISTEM', 'Otomatik iptal');
+        return true;
+    });
 }
 
 // Ic not, fatura isareti, kargo bilgisi duzeltmesi (yalniz kargodaki/teslim edilmis sipariste).
@@ -392,6 +413,10 @@ async function isletmeAyrinti(id, tenantId) {
     };
     if (s.durum === DURUM.ODEME_BEKLENIYOR) {
         out.odeme = { ...(await MA.odemeBilgisi()), odemeAciklamasi: noMetin(s.no) };
+        const gun = (await MA.oku()).otomatikIptalGun;
+        if (gun && !s.odeme_bildirildi_at) {
+            out.otomatikIptal = { gun, tarih: new Date(new Date(s.created_at).getTime() + gun * 86400000).toISOString() };
+        }
     }
     return out;
 }
@@ -464,6 +489,6 @@ async function rootAyrinti(id) {
 
 module.exports = {
     DURUM, DURUM_AD, KAPALI, ROOT_GECIS, ODEME_YONTEMLERI, ACIK_SIPARIS_SINIRI, FILTRE,
-    sepetCoz, siparisOlustur, odemeBildir, isletmeIptal, durumDegistir, rootGuncelle,
+    sepetCoz, siparisOlustur, odemeBildir, isletmeIptal, durumDegistir, sistemIptal, rootGuncelle,
     isletmeListe, isletmeAyrinti, aktifSayisi, rootListe, rootAyrinti, sayilar,
 };

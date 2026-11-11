@@ -17,7 +17,7 @@ const PORT = 45991, TABAN = `http://127.0.0.1:${PORT}`;
 const ROOT_EPOSTA = 'rootmagaza@ornek.test', ROOT_PAROLA = 'MagazaTestParola123';
 const AD_A = 'Magaza Test Lokanta', AD_B = 'Magaza Test Kafe';
 const ONEK = 'MGTEST ';
-const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari',
+const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari', 'magaza_otomatik_iptal_gun',
     'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
 const UNVAN_A = 'Magaza Test Gida Ticaret Ltd. Sti.';
 const VKN_A = '4840847211';
@@ -261,6 +261,7 @@ async function temizle() {
         && O1.kalemler[0].birimKurus === 3333 && O1.kalemler[0].kdvOrani === 20 && O1.kalemler[0].toplamKurus === 7999, O1.kalemler);
     ok('odeme bilgisi: IBAN + tutar + aciklama siparis no', O1.odeme && O1.odeme.iban.startsWith('TR00') && O1.odeme.odemeAciklamasi === O1.noMetin, O1.odeme);
     ok('isletme yanitinda fatura bilgisi YOK', !('fatura' in O1) && !JSON.stringify(O1).includes(VKN_A) && !JSON.stringify(O1).includes(UNVAN_A), Object.keys(O1));
+    ok('odeme bildirilmemis sipariste otomatik iptal tarihi (varsayilan 7 gun)', !!O1.otomatikIptal && O1.otomatikIptal.gun === 7, O1.otomatikIptal);
     ok('kabul ani + surum + metin kopyasi kaydedildi', !!O1.kosullar.kabulAt && O1.kosullar.surum === h.d.kosullar.surum && O1.kosullar.metin === h.d.kosullar.metin, O1.kosullar);
     ok('stok ayrildi: 5 -> 3', (await R('/urunler')).d.urunler.find(x => x.id === p2.id).stokAdedi === 3);
     const olay1 = await bekle(async () => (await query("SELECT * FROM root_olaylar WHERE tur = 'magaza_siparis' AND ref = ?", [O1.id])).rows[0]);
@@ -309,6 +310,7 @@ async function temizle() {
     console.log('\n=== 10) "Odemeyi yaptim" + bildirim ===');
     d = await MA_('/siparisler/' + O1.id + '/odeme-bildir', { body: { referans: 'DEKONT-77' } });
     ok('odeme bildirildi 200', d.status === 200 && !!d.d.odemeBildirildiAt && d.d.odemeReferans === 'DEKONT-77' && d.d.durum === 'ODEME_BEKLENIYOR', d.d);
+    ok('odeme bildirildikten sonra otomatik iptal tarihi yok', !d.d.otomatikIptal, d.d.otomatikIptal);
     ok('ikinci bildirim 409', (d = await MA_('/siparisler/' + O1.id + '/odeme-bildir', { body: {} })).status === 409 && d.d.code === 'ZATEN_BILDIRILDI', d);
     const olay2 = await bekle(async () => (await query("SELECT * FROM root_olaylar WHERE tur = 'magaza_odeme' AND ref = ?", [O1.id])).rows[0]);
     ok('root_olaylar: magaza_odeme yazildi', !!olay2 && olay2.detay.startsWith('Mağaza ödemesi bildirildi'), olay2);
@@ -444,6 +446,11 @@ async function temizle() {
     ok('gecersiz sira listesi 400', (await R('/urunler/sirala', { body: { sira: 'x' } })).status === 400);
 
     console.log('\n=== 16) Satis kosullari surumu + ayar denetimi ===');
+    await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'magaza_otomatik_iptal_gun'");
+    ok('otomatik iptal suresi varsayilan 7', (await R('/ayarlar')).d.otomatikIptalGun === 7);
+    ok('otomatik iptal suresi 400 (366)', (await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 366 } })).status === 400);
+    ok('otomatik iptal suresi 0 = kapali kabul', (await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 0 } })).d.otomatikIptalGun === 0);
+    await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 7 } });
     ok('gecersiz kargo ucreti 400', (await R('/ayarlar', { method: 'PUT', body: { kargoUcret: 'abc' } })).status === 400);
     ok('gecersiz bildirim e-postasi 400', (await R('/ayarlar', { method: 'PUT', body: { bildirimEposta: 'eposta-degil' } })).status === 400);
     a = await R('/ayarlar', { method: 'PUT', body: { satisKosullari: 'Özel satış koşulları metni.\n\n1. Madde' } });

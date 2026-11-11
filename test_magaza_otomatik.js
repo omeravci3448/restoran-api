@@ -1,0 +1,266 @@
+// MDA Yazilim Magazasi (2. tur): isletmeye e-posta (odeme alindi, kargoya verildi, reddedildi, otomatik iptal;
+// sahte tasiyiciyla; gonderim hatasi akisi durdurmaz; alicisi gecersiz isletmede gonderim atlanir), odenmeyen
+// siparisin otomatik iptali (sure ayari, 0 = kapali, odeme bildirilmisse iptal yok, stok iadesi, tekrar
+// calistirmada cift iade yok, gecmis + sebep), lisansi salt-okunur moda dusmus isletmede magaza uclarinin acik
+// olmasi (KAPALI lisansta kapali kalir).
+// Sunucu AYNI SURECTE calisir (sahte e-posta tasiyicisi enjekte edilebilsin).  Calistir: node test_magaza_otomatik.js
+const PORT = 45992, TABAN = `http://127.0.0.1:${PORT}`;
+const ROOT_EPOSTA = 'rootmagaza2@ornek.test', ROOT_PAROLA = 'MagazaOtomatikParola123';
+Object.assign(process.env, {
+    PORT: String(PORT), JWT_SECRET: 'magaza-otomatik-test-jwt', ROOT_EMAIL: ROOT_EPOSTA, ROOT_PASSWORD: ROOT_PAROLA,
+    HUB_URL: 'http://127.0.0.1:9', NODE_ENV: 'development', POS_PANEL_URL: 'http://panel.test',
+});
+process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
+const fs = require('fs');
+const path = require('path');
+const { query } = require('./src/config/db');
+const totp = require('./src/services/totp');
+const L = require('./src/services/lisansDurumu');
+const E = require('./src/services/magazaEposta');
+const Z = require('./src/services/magazaZamanlayici');
+const { UPLOADS_DIR } = require('./src/services/imageService');
+
+const AD = { A: 'Magaza Oto Lokanta', B: 'Magaza Oto Kafe', C: 'Magaza Oto Pastane' };
+const EPOSTA = { A: 'oto-a@ornek.test', B: 'oto-b@ornek.test', C: 'oto-c@ornek.test' };
+const ONEK = 'MGOTO ';
+const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari',
+    'magaza_otomatik_iptal_gun', 'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
+
+let pass = 0, fail = 0;
+const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
+    : (fail++, console.log('  FAIL ' + n + (e !== undefined ? ' :: ' + JSON.stringify(e).slice(0, 400) : ''))); };
+const uyu = (ms) => new Promise(r => setTimeout(r, ms));
+async function bekle(kosul, ms = 5000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { const r = await Promise.resolve().then(kosul).catch(() => null); if (r) return r; await uyu(100); }
+    return null;
+}
+async function js(yol, { token, body, method, headers } = {}) {
+    const r = await fetch(TABAN + yol, { method: method || (body ? 'POST' : 'GET'),
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(headers || {}) },
+        body: body ? JSON.stringify(body) : undefined });
+    let d = null; try { d = await r.json(); } catch (_) { d = null; }
+    return { status: r.status, d };
+}
+
+// --- Sahte e-posta tasiyicisi + gunluk yakalama ---
+const gelen = [];
+let tasiyiciModu = 'ok';            // ok | firlat | basarisiz
+E.tasiyiciAyarla({
+    sendMail: async (m) => {
+        if (tasiyiciModu === 'firlat') throw new Error('SMTP baglantisi kurulamadi (sahte)');
+        if (tasiyiciModu === 'basarisiz') return { sent: false, error: 'sahte red' };
+        gelen.push(m);
+        return { sent: true };
+    },
+});
+const gunluk = [];
+const eskiHata = console.error, eskiUyari = console.warn;
+console.error = (...a) => { gunluk.push(a.join(' ')); eskiHata.apply(console, a); };
+console.warn = (...a) => { gunluk.push(a.join(' ')); eskiUyari.apply(console, a); };
+const posta = (alici, parca) => gelen.find(m => m.to === alici && m.subject.includes(parca));
+
+let ayarYedek = {};
+async function ayarlariYedekle() {
+    const r = await query(`SELECT anahtar, deger FROM sistem_ayarlari WHERE anahtar IN (${AYARLAR.map(() => '?').join(',')})`, AYARLAR);
+    ayarYedek = Object.fromEntries(r.rows.map(x => [x.anahtar, x.deger]));
+}
+async function ayarlariGeriYukle() {
+    for (const k of AYARLAR) {
+        if (Object.prototype.hasOwnProperty.call(ayarYedek, k)) await query('UPDATE sistem_ayarlari SET deger = ? WHERE anahtar = ?', [ayarYedek[k], k]);
+        else await query('DELETE FROM sistem_ayarlari WHERE anahtar = ?', [k]);
+    }
+}
+async function temizle() {
+    const t = await query(`SELECT id FROM tenants WHERE business_name IN (?, ?, ?)`, [AD.A, AD.B, AD.C]);
+    for (const r of t.rows) {
+        const sip = await query('SELECT id FROM magaza_siparisler WHERE tenant_id = ?', [r.id]).catch(() => ({ rows: [] }));
+        for (const s of sip.rows) {
+            await query('DELETE FROM magaza_siparis_gecmisi WHERE siparis_id = ?', [s.id]);
+            await query('DELETE FROM magaza_siparis_kalemleri WHERE siparis_id = ?', [s.id]);
+            await query('DELETE FROM magaza_siparisler WHERE id = ?', [s.id]);
+        }
+        await query('DELETE FROM root_olaylar WHERE tenant_id = ?', [r.id]).catch(() => {});
+        for (const tb of ['tables', 'license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari', 'users'])
+            await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
+        await query('DELETE FROM tenants WHERE id = ?', [r.id]);
+    }
+    const u = await query("SELECT id FROM magaza_urunler WHERE ad LIKE 'MGOTO %'").catch(() => ({ rows: [] }));
+    for (const x of u.rows) {
+        const res = await query('SELECT yol FROM magaza_urun_resimleri WHERE urun_id = ?', [x.id]);
+        for (const y of res.rows) fs.rmSync(path.join(UPLOADS_DIR, 'magaza', path.basename(y.yol)), { force: true });
+        await query('DELETE FROM magaza_urun_resimleri WHERE urun_id = ?', [x.id]);
+        await query('DELETE FROM magaza_urunler WHERE id = ?', [x.id]);
+    }
+    const ru = await query('SELECT id FROM root_users WHERE email = ?', [ROOT_EPOSTA]);
+    for (const x of ru.rows) await query('DELETE FROM root_cihazlar WHERE root_id = ?', [x.id]).catch(() => {});
+    await query('DELETE FROM root_users WHERE email = ?', [ROOT_EPOSTA]);
+}
+const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString();
+
+(async () => {
+    require('./server.js');                                     // ayni surecte dinlemeye baslar (initDb dahil)
+    for (let i = 0; i < 40; i++) { try { if ((await fetch(TABAN + '/health')).ok) break; } catch (_) {} await uyu(250); }
+    Z.durdur();                                                 // zamanlayiciyi test yonetir (elle otomatikIptal)
+    await uyu(700);
+    await temizle();
+    await ayarlariYedekle();
+    await uyu(6000);                                            // ensureRootUser 5 sn sonra
+
+    console.log('=== Hazirlik: root, uc isletme, urunler, ayarlar ===');
+    let r = await js('/api/root/login', { body: { email: ROOT_EPOSTA, password: ROOT_PAROLA } });
+    r = await js('/api/root/totp/kurulum', { body: { code: totp.kodUret(r.d.sir, totp.suankiAdim()) }, token: r.d.kurulumJetonu });
+    const ROOT = r.d && r.d.token;
+    ok('root oturumu', !!ROOT, r);
+    const ac = async (k) => {
+        const t = await js('/api/root/tenants', { token: ROOT, body: { businessName: AD[k], ownerEmail: EPOSTA[k], ownerPassword: 'sahip12345',
+            phone: '0272 111 22 33', address: 'Dumlupınar Mah. Kurtuluş Cad. No 12, Merkez, Afyonkarahisar' } });
+        const g = await js('/api/auth/login', { body: { email: EPOSTA[k], businessCode: t.d.businessCode, password: 'sahip12345' } });
+        return { id: t.d.id, token: g.d.token };
+    };
+    const A = await ac('A'), B = await ac('B'), C = await ac('C');
+    ok('uc isletme acildi', !!(A.token && B.token && C.token));
+    await query("UPDATE tenants SET owner_email = 'pasta@ornek.local' WHERE id = ?", [C.id]);   // gecersiz alici
+    const R = (yol, o = {}) => js('/api/root/magaza' + yol, { token: ROOT, ...o });
+    const M = (tok) => (yol, o = {}) => js('/api/magaza' + yol, { token: tok, ...o });
+    await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('iban', 'TR00 0000 0000 0000 0000 0000 00') ON CONFLICT(anahtar) DO UPDATE SET deger = excluded.deger");
+    await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'magaza_otomatik_iptal_gun'");
+    const a = await R('/ayarlar', { method: 'PUT', body: { acik: true, kargoUcret: 0, kargoUcretsizEsik: 0 } });
+    ok('varsayilan otomatik iptal suresi 7 gun', a.status === 200 && a.d.otomatikIptalGun === 7, a.d && a.d.otomatikIptalGun);
+    const P1 = (await R('/urunler', { body: { ad: ONEK + 'Stoklu Rulo', fiyat: 100, kdvOrani: 20, stokAdedi: 10, yayin: 'YAYINDA' } })).d;
+    const P2 = (await R('/urunler', { body: { ad: ONEK + 'Yazici', fiyat: 50, kdvOrani: 20, yayin: 'YAYINDA' } })).d;
+    ok('urunler', !!(P1.id && P2.id));
+    const stok = async () => (await query('SELECT stok_adedi FROM magaza_urunler WHERE id = ?', [P1.id])).rows[0].stok_adedi;
+    const surum = (await M(A.token)('/hazirlik')).d.kosullar.surum;
+    const siparis = async (tok, kalemler) => (await M(tok)('/siparisler', { body: {
+        kalemler, kosullarKabul: true, kosullarSurum: surum,
+        teslimat: { alici: 'Ahmet Yılmaz', telefon: '0532 111 22 33', adres: 'Dumlupınar Mah. Kurtuluş Cad. No 12, Merkez, Afyonkarahisar' },
+        fatura: { tip: 'KURUMSAL', unvan: 'Test Gıda Ltd. Şti.', vergiDairesi: 'Tınaztepe', vergiNo: '1234567890' } } })).d;
+    const D = (id, govde) => R('/siparisler/' + id + '/durum', { body: govde });
+
+    console.log('\n=== 1) Isletmeye e-posta (sahte tasiyici) ===');
+    const O1 = await siparis(A.token, [{ urunId: P1.id, adet: 2 }]);
+    ok('O1 olustu, stok 10 -> 8', !!O1.id && await stok() === 8, O1);
+    await D(O1.id, { durum: 'ODEME_ALINDI' });
+    let m = await bekle(() => posta(EPOSTA.A, O1.noMetin + ': ödemeniz alındı'));
+    ok('odeme alindi e-postasi isletme sahibine', !!m && m.to === EPOSTA.A, gelen.map(x => [x.to, x.subject]));
+    ok('icerik: isletme adi + siparis no + Magaza > Siparislerim yolu + siparis baglantisi',
+        !!m && m.html.includes(AD.A) && m.html.includes(O1.noMetin) && m.html.includes('Mağaza &gt; Siparişlerim')
+        && m.html.includes('http://panel.test/magaza?siparis=' + O1.id) && m.text.includes('Mağaza > Siparişlerim'), m && m.text);
+    ok('konu kurumsal onekli', !!m && m.subject === '[MDA Yazılım] Sipariş ' + O1.noMetin + ': ödemeniz alındı', m && m.subject);
+    let sayi = gelen.length;
+    await D(O1.id, { durum: 'HAZIRLANIYOR' });
+    await uyu(400);
+    ok('hazirlaniyor icin e-posta yok', gelen.length === sayi, gelen.length - sayi);
+    await D(O1.id, { durum: 'KARGODA', kargoFirma: 'Aras <Kargo>', kargoTakipNo: 'AR998877' });
+    m = await bekle(() => posta(EPOSTA.A, O1.noMetin + ' kargoya verildi'));
+    ok('kargoya verildi e-postasi: firma + takip no (HTML kacislanmis)', !!m && m.html.includes('Aras &lt;Kargo&gt;') && !m.html.includes('Aras <Kargo>')
+        && m.html.includes('AR998877') && m.text.includes('Kargo firması: Aras <Kargo>') && m.text.includes('Takip numarası: AR998877'), m && m.text);
+    sayi = gelen.length;
+    await D(O1.id, { durum: 'TESLIM_EDILDI' });
+    await uyu(400);
+    ok('teslim edildi icin e-posta yok', gelen.length === sayi);
+    const O2 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    await D(O2.id, { durum: 'REDDEDILDI', sebep: 'Ödeme ulaşmadı & sipariş kapatıldı' });
+    m = await bekle(() => posta(EPOSTA.A, O2.noMetin + ' reddedildi'));
+    ok('reddedildi e-postasi: sebep', !!m && m.html.includes('Ödeme ulaşmadı &amp; sipariş kapatıldı') && m.text.includes('Sebep: Ödeme ulaşmadı & sipariş kapatıldı'), m && m.text);
+
+    console.log('\n=== 2) Gonderim hatasi akisi durdurmaz ===');
+    const O3 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    tasiyiciModu = 'firlat';
+    let gunlukOnce = gunluk.length;
+    let d = await D(O3.id, { durum: 'ODEME_ALINDI' });
+    ok('tasiyici hata firlatsa da durum degisti (200)', d.status === 200 && d.d.durum === 'ODEME_ALINDI', d);
+    ok('hata gunluge yazildi', !!await bekle(() => gunluk.slice(gunlukOnce).find(x => x.includes('[magaza] e-posta gonderilemedi'))), gunluk.slice(gunlukOnce));
+    tasiyiciModu = 'basarisiz';
+    gunlukOnce = gunluk.length;
+    d = await D(O3.id, { durum: 'KARGODA', kargoFirma: 'PTT Kargo', kargoTakipNo: 'PTT123' });
+    ok('tasiyici {sent:false} donse de durum degisti (200)', d.status === 200 && d.d.durum === 'KARGODA', d);
+    ok('basarisiz gonderim gunluge yazildi', !!await bekle(() => gunluk.slice(gunlukOnce).find(x => x.includes('[magaza] e-posta gonderilemedi') && x.includes('sahte red'))));
+    tasiyiciModu = 'ok';
+    const OC = await siparis(C.token, [{ urunId: P2.id, adet: 1 }]);
+    gunlukOnce = gunluk.length; sayi = gelen.length;
+    d = await D(OC.id, { durum: 'ODEME_ALINDI' });
+    ok('alicisi gecersiz isletme: durum degisti, e-posta gonderilmedi, uyari yazildi', d.status === 200 && d.d.durum === 'ODEME_ALINDI'
+        && !!await bekle(() => gunluk.slice(gunlukOnce).find(x => x.includes('bildirim atlandi'))) && gelen.length === sayi);
+    const dogrudan = await E.durumBildir('yok-boyle-siparis', 'ODEME_ALINDI');
+    ok('olmayan siparis icin durumBildir hata firlatmaz', dogrudan && dogrudan.gonderildi === false && dogrudan.sebep === 'SIPARIS_YOK', dogrudan);
+
+    console.log('\n=== 3) Odenmeyen siparisin otomatik iptali ===');
+    const O4 = await siparis(B.token, [{ urunId: P1.id, adet: 3 }]);
+    const O5 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
+    const O6 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
+    ok('stok 8 -> 3 (O4: 3, O5: 1, O6: 1)', await stok() === 3, await stok());
+    ok('odeme bildirilmemis siparis ayrintisinda otomatik iptal tarihi (7 gun)', (d = await M(B.token)('/siparisler/' + O6.id)).d.otomatikIptal
+        && d.d.otomatikIptal.gun === 7 && Math.abs(new Date(d.d.otomatikIptal.tarih) - (new Date(d.d.createdAt).getTime() + 7 * 86400000)) < 1000, d.d.otomatikIptal);
+    await M(B.token)('/siparisler/' + O5.id + '/odeme-bildir', { body: { referans: 'DEKONT-1' } });
+    ok('odeme bildirilmis sipariste otomatik iptal tarihi yok', !(await M(B.token)('/siparisler/' + O5.id)).d.otomatikIptal);
+    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id IN (?, ?)', [gunOnce(8), O4.id, O5.id]);
+    sayi = gelen.length;
+    let z = await Z.otomatikIptal();
+    ok('8 gunluk, odeme bildirilmemis O4 iptal; odeme bildirilmis O5 ve yeni O6 dokunulmadi',
+        !z.kapali && z.iptal.length === 1 && z.iptal[0] === O4.id, z);
+    d = await M(B.token)('/siparisler/' + O4.id);
+    ok('O4: IPTAL, kapatan SISTEM, sebep', d.d.durum === 'IPTAL' && d.d.kapatan === 'SISTEM'
+        && d.d.kapanisSebebi === 'Ödeme 7 gün içinde ulaşmadığı için sipariş iptal edildi.' && !!d.d.kapanisAt, d.d);
+    ok('stok geri dondu: 3 -> 6', await stok() === 6, await stok());
+    ok('O5 hala odeme bekliyor (odeme bildirilmis)', (await M(B.token)('/siparisler/' + O5.id)).d.durum === 'ODEME_BEKLENIYOR');
+    ok('O6 hala odeme bekliyor (7 gun dolmadi)', (await M(B.token)('/siparisler/' + O6.id)).d.durum === 'ODEME_BEKLENIYOR');
+    d = await R('/siparisler/' + O4.id);
+    ok('gecmise yazildi (IPTAL, SISTEM)', d.d.gecmis.some(x => x.olay === 'IPTAL' && x.kim === 'SISTEM' && x.aciklama.startsWith('Ödeme 7 gün')), d.d.gecmis);
+    m = posta(EPOSTA.B, O4.noMetin + ' iptal edildi');
+    ok('otomatik iptal e-postasi: sebep', !!m && m.text.includes('Sebep: Ödeme 7 gün içinde ulaşmadığı için sipariş iptal edildi.') && m.html.includes(AD.B), gelen.slice(sayi).map(x => x.subject));
+    z = await Z.otomatikIptal();
+    ok('ikinci tarama: iptal yok, cift stok iadesi yok', z.iptal.length === 0 && await stok() === 6, [z, await stok()]);
+    ok('ayar 0 kabul edilir', (await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 0 } })).d.otomatikIptalGun === 0);
+    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id = ?', [gunOnce(30), O6.id]);
+    z = await Z.otomatikIptal();
+    ok('0 = kapali: 30 gunluk siparis bile iptal edilmedi', z.kapali === true && (await M(B.token)('/siparisler/' + O6.id)).d.durum === 'ODEME_BEKLENIYOR', z);
+    ok('kapaliyken ayrintida otomatik iptal tarihi yok', !(await M(B.token)('/siparisler/' + O6.id)).d.otomatikIptal);
+    ok('gecersiz sure 400 (366, -1, 2,5, yazi)', (await Promise.all([366, -1, 2.5, 'abc'].map(v => R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: v } }))))
+        .every(x => x.status === 400));
+    await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 3 } });
+    const O7 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
+    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id = ?', [new Date(Date.now() - (3 * 86400000 - 3600000)).toISOString(), O7.id]);
+    tasiyiciModu = 'firlat';
+    gunlukOnce = gunluk.length;
+    z = await Z.otomatikIptal();
+    ok('sure 3 gun: 30 gunluk O6 iptal, 3 gunu dolmamis O7 dokunulmadi', z.iptal.length === 1 && z.iptal[0] === O6.id
+        && (await M(B.token)('/siparisler/' + O7.id)).d.durum === 'ODEME_BEKLENIYOR', z);
+    ok('sebep yeni sureyle', (await M(B.token)('/siparisler/' + O6.id)).d.kapanisSebebi === 'Ödeme 3 gün içinde ulaşmadığı için sipariş iptal edildi.');
+    ok('e-posta hatasi otomatik iptali durdurmadi + gunluge yazildi', gunluk.slice(gunlukOnce).some(x => x.includes('[magaza] e-posta gonderilemedi')));
+    tasiyiciModu = 'ok';
+    ok('stok: O6 iadesi (6 - O7 1 + O6 1 = 6)', await stok() === 6, await stok());
+
+    console.log('\n=== 4) Lisansi salt-okunur isletmede magaza uclari acik ===');
+    ok('lisans kurali: POST /api/magaza/* gecer, POST /api/orders gecmez',
+        L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/siparisler/x/iptal' }) === true
+        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/sepet' }) === true
+        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/orders' }) === false);
+    await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [gunOnce(1), A.id]);
+    const me = await js('/api/auth/me', { token: A.token });
+    ok('A artik SALT_OKUNUR', me.status === 200 && me.d.lisansDurum === 'SALT_OKUNUR', me.d && me.d.lisansDurum);
+    ok('baska modulde yazma hala kapali (POST /api/tables 403 LICENSE_READONLY)', (d = await js('/api/tables', { token: A.token, body: { code: 'Z1', name: 'Z1' } })).status === 403
+        && d.d.code === 'LICENSE_READONLY', d);
+    ok('GET /api/magaza/durum 200', (await M(A.token)('/durum')).status === 200);
+    ok('POST /api/magaza/sepet 200', (d = await M(A.token)('/sepet', { body: { kalemler: [{ urunId: P2.id, adet: 1 }] } })).status === 200 && d.d.kalemler.length === 1, d);
+    const O8 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    ok('yeni siparis olusturulabilir (201)', !!(O8 && O8.id), O8);
+    ok('odeme bildirimi yapilabilir', (d = await M(A.token)('/siparisler/' + O8.id + '/odeme-bildir', { body: {} })).status === 200 && !!d.d.odemeBildirildiAt, d);
+    const O9 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    ok('iptal edilebilir', (d = await M(A.token)('/siparisler/' + O9.id + '/iptal', { body: {} })).status === 200 && d.d.durum === 'IPTAL', d);
+    await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [gunOnce(10), A.id]);
+    ok('lisans tamamen KAPALI: magaza da kapali (403 LICENSE_EXPIRED)', (d = await M(A.token)('/durum')).status === 403 && d.d.code === 'LICENSE_EXPIRED', d);
+
+    E.tasiyiciAyarla(null);
+    console.error = eskiHata; console.warn = eskiUyari;
+    await temizle();
+    await ayarlariGeriYukle();
+    console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);
+    process.exit(fail ? 1 : 0);
+})().catch(async (e) => {
+    console.error = eskiHata; console.warn = eskiUyari;
+    console.error('COKTU:', e);
+    try { await temizle(); await ayarlariGeriYukle(); } catch (_) {}
+    process.exit(1);
+});

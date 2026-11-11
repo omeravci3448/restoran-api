@@ -57,6 +57,7 @@ async function ayarYaniti() {
         acik: a.acik,
         kargoUcretKurus: a.kargoUcretKurus,
         kargoEsikKurus: a.kargoEsikKurus,
+        otomatikIptalGun: a.otomatikIptalGun,
         satisKosullari: a.kosullarMetni,
         kosullarVarsayilan: a.kosullarVarsayilan,
         kosullarSurum: a.kosullarSurum,

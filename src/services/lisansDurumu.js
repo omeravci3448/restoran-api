@@ -58,6 +58,7 @@ const YAZMAYA_IZINLI = [
     '/api/tenant',       // fatura bilgisi duzeltme
     '/api/push/iptal',   // telefon bildirimini kapatma / cikis
     '/api/paket/musteri/bul',   // yalniz OKUMA: telefon adres satirinda gitmesin diye POST govdesiyle
+    '/api/magaza',              // MDA Yazilim magazasi: suresi dolan isletme eski siparisinin odemesini bildirebilsin / iptal edebilsin
 ];
 
 function saltOkunurdaGecerMi(req) {

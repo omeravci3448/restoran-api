@@ -14,8 +14,11 @@ const ANAHTAR = {
     kargoUcret: 'magaza_kargo_ucret_kurus',
     kargoEsik: 'magaza_kargo_esik_kurus',
     kosullar: 'magaza_satis_kosullari',
+    otomatikIptalGun: 'magaza_otomatik_iptal_gun',
 };
 const KOSULLAR_EN_UZUN = 20000;
+// Odeme bildirimi yapilmamis siparis bu kadar gun sonra kendiliginden iptal olur (magazaZamanlayici.js); 0 = kapali.
+const VARSAYILAN_OTOMATIK_IPTAL_GUN = 7;
 
 // Varsayilan satis kosullari (B2B). Patron panelden degistirebilir; bos kaydedilirse bu metne doner.
 const VARSAYILAN_KOSULLAR = [
@@ -64,8 +67,11 @@ async function oku() {
     const kargoEsikKurus = Math.max(0, parseInt(await A.oku(ANAHTAR.kargoEsik, '0'), 10) || 0);
     const kayitli = String(await A.oku(ANAHTAR.kosullar, '') || '').trim();
     const kosullarMetni = kayitli || VARSAYILAN_KOSULLAR;
+    const gunHam = String(await A.oku(ANAHTAR.otomatikIptalGun, '') || '').trim();
+    const gun = gunHam === '' ? VARSAYILAN_OTOMATIK_IPTAL_GUN : parseInt(gunHam, 10);
     return {
         acik, kargoUcretKurus, kargoEsikKurus,
+        otomatikIptalGun: Number.isInteger(gun) && gun >= 0 ? gun : VARSAYILAN_OTOMATIK_IPTAL_GUN,
         kosullarMetni, kosullarSurum: surumOf(kosullarMetni), kosullarVarsayilan: !kayitli,
     };
 }
@@ -98,6 +104,11 @@ async function guncelle(g = {}) {
         if (k === null || k < 0 || k > 1000000000) throw hata(400, 'Ücretsiz kargo eşiği geçersiz.');
         yazilacak.push([ANAHTAR.kargoEsik, String(k)]);
     }
+    if (has('otomatikIptalGun')) {
+        const n = g.otomatikIptalGun === '' || g.otomatikIptalGun === null ? 0 : Number(g.otomatikIptalGun);
+        if (!Number.isInteger(n) || n < 0 || n > 365) throw hata(400, 'Otomatik iptal süresi 0 ile 365 gün arasında tam sayı olmalı (0 = kapalı).');
+        yazilacak.push([ANAHTAR.otomatikIptalGun, String(n)]);
+    }
     let kosullar;
     if (has('satisKosullari')) {
         kosullar = String(g.satisKosullari == null ? '' : g.satisKosullari).replace(/\r\n/g, '\n').trim();
@@ -115,4 +126,4 @@ async function guncelle(g = {}) {
     return oku();
 }
 
-module.exports = { ANAHTAR, VARSAYILAN_KOSULLAR, oku, guncelle, kargoAyari, odemeBilgisi, surumOf };
+module.exports = { ANAHTAR, VARSAYILAN_KOSULLAR, VARSAYILAN_OTOMATIK_IPTAL_GUN, oku, guncelle, kargoAyari, odemeBilgisi, surumOf };
