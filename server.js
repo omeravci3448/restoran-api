@@ -80,6 +80,7 @@ app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/mutfak', require('./src/routes/mutfakRoutes'));   // mutfak ekrani (KDS)
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
+app.use('/api/magaza', require('./src/routes/magazaRoutes'));     // MDA Yazilim magazasi, isletme tarafi (root tarafi: /api/root/magaza)
 app.use('/api/push', require('./src/routes/pushRoutes'));         // telefon bildirimi (Web Push)
 app.use('/api/plaka', require('./src/routes/plakaRoutes'));       // masa plakasi talepleri (hediye + ucretli)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim

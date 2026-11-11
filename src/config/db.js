@@ -957,6 +957,7 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_pending_email ON pending_registrations(email)`);
+        require('./magazaDb').magazaTablolari(db);   // MDA Yazilim magazasi (donanim satisi) tablolari
 
         // Faydalı index'ler
         db.run(`CREATE INDEX IF NOT EXISTS idx_orders_tenant_status ON orders(tenant_id, status)`);
