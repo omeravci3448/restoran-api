@@ -340,6 +340,17 @@ const initDb = () => {
         // Onayda verilen gun sayisi (plaka hediyesi "yillik odeme" olcutu). Eski kayitlarda NULL:
         // orada donem_bitis - islenen_at farkina bakilir (services/plakaHak.js).
         db.run("ALTER TABLE lisans_odemeleri ADD COLUMN onay_gun INTEGER", [], () => {});
+        // Deneme -> paket -> yukseltme (Patron karari 2026-11-11). Teklif TALEP ANINDA hesaplanip burada KILITLENIR;
+        // onayda yeniden hesaplanmaz. tutar = odenecek tutar (yukseltmede yeni_toplam - kredi, en az 0).
+        //   tur: ilk (denemeden ilk alim) | yenileme | yukseltme. Eski kayitlarda NULL: onayda eski davranis
+        //        (mevcut bitisin uzerine eklenir).
+        //   yeni_toplam: secilen paketin yillik toplami (kiraci indirimi uygulanmis)
+        //   kredi_tutari / kalan_gun / kredi_kaynak ('odeme' | 'katalog'): yukseltmede dusulen kalan sure karsiligi
+        //   onceki_*: talep anindaki lisansin kopyasi (onay ekraninda "talepten sonra elle degisti" uyarisi icin)
+        for (const [ad, tip] of [['tur', 'TEXT'], ['yeni_toplam', 'REAL'], ['kredi_tutari', 'REAL'], ['kalan_gun', 'INTEGER'],
+            ['kredi_kaynak', 'TEXT'], ['onceki_tier', 'TEXT'], ['onceki_moduller', 'TEXT'], ['onceki_bitis', 'TEXT']]) {
+            db.run(`ALTER TABLE lisans_odemeleri ADD COLUMN ${ad} ${tip}`, [], () => {});
+        }
 
         // — LISANS KATALOGU (paketler + moduller, fiyatlariyla) —
         //

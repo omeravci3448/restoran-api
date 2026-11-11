@@ -216,6 +216,10 @@ async function temizle() {
     ok('en az tutar 5000, odeme 1000: kural disi', (await hak(yillik.id)).durum === 'KURAL_DISI');
     await query("UPDATE lisans_odemeleri SET tutar = 6000 WHERE tenant_id = ?", [yillik.id]);
     ok('odeme 6000: tekrar VAR', (await hak(yillik.id)).durum === 'VAR');
+    // Yukseltme kaydi: odenen tutar kucuk (kredi dusuldu) ama donemin yillik degeri yeni_toplam
+    await query("UPDATE lisans_odemeleri SET tutar = 800, yeni_toplam = 6300, tur = 'yukseltme' WHERE tenant_id = ?", [yillik.id]);
+    ok('yukseltme kaydi (odenen 800, yillik deger 6300): en az tutar yillik degere bakar, VAR', (await hak(yillik.id)).durum === 'VAR');
+    await query("UPDATE lisans_odemeleri SET tutar = 6000, yeni_toplam = NULL, tur = NULL WHERE tenant_id = ?", [yillik.id]);
     await js('/api/root/plaka/kurallar/varsayilan', { token: rj, method: 'PATCH', body: { enAzTutar: '' } });
     const k2 = await js('/api/root/plaka/kurallar', { token: rj, body: { ad: 'Yalnız QR Menü', moduller: ['MENU_DIGITAL'], enCokPlaka: 5, aktif: true } });
     ok('ikinci kural eklendi (201)', k2.status === 201 && k2.d.enCokPlaka === 5, k2);

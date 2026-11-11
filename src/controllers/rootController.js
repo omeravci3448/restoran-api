@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../config/db');
+const { query, tx } = require('../config/db');
 const totp = require('../services/totp');
 
 // --- EKOSİSTEM YÖNETİMİ (root) ---
@@ -612,55 +612,89 @@ exports.ayarGuncelle = async (req, res) => {
     res.json(await A.hepsi(IZINLI));
 };
 
+// Bekleyen kayitlarda onay ekrani icin: talepten sonra lisans elle degisti mi (uyari), onaylanirsa kalkacak
+// moduller ve 365 gunluk onayda yeni bitis (ilk/yukseltme: bugun + 365; yenileme: mevcut bitisin uzerine).
 exports.lisansOdemeleri = async (req, res) => {
+    const LT = require('../services/lisansTalep');
+    const M = require('../services/lisansModul');
     const durum = req.query.durum;
     const r = await query(
-        `SELECT o.*, t.business_name, t.business_code, t.license_end_date
+        `SELECT o.*, t.business_name, t.business_code, t.license_end_date, t.license_tier AS mevcut_tier,
+                t.license_modules AS mevcut_moduller, t.license_table_limit AS mevcut_masa_limiti
            FROM lisans_odemeleri o JOIN tenants t ON t.id = o.tenant_id
           ${durum ? 'WHERE o.durum = ?' : ''}
           ORDER BY CASE o.durum WHEN 'beklemede' THEN 0 ELSE 1 END, o.created_at DESC
           LIMIT 200`, durum ? [durum] : []);
+    const tam = await require('../services/lisansKatalog').tamKatalog();
     res.json(r.rows.map(x => {
-        let m = []; try { m = JSON.parse(x.moduller || '[]'); } catch (_) {}
-        return { ...x, moduller: m };
+        const m = M.modulListesi(x.moduller);
+        const mevcut = M.modulListesi(x.mevcut_moduller);
+        const ek = {};
+        if (x.durum === 'beklemede') {
+            const t = { license_tier: x.mevcut_tier, license_modules: x.mevcut_moduller, license_end_date: x.license_end_date };
+            ek.lisans_degisiklikleri = LT.lisansDegisiklikleri(x, t, tam);
+            ek.kalkacak_moduller = mevcut.filter((k) => !m.includes(k));
+            ek.yeni_bitis_onizleme = LT.onayBitisi({ tur: x.tur, mevcutBitis: x.license_end_date, gun: 365 });
+        }
+        return {
+            ...x, moduller: m, mevcut_moduller: mevcut,
+            onceki_moduller: x.onceki_moduller == null ? null : M.modulListesi(x.onceki_moduller),
+            tier_ad: LT.tierAdi(tam, x.tier), onceki_tier_ad: x.onceki_tier ? LT.tierAdi(tam, x.onceki_tier) : null,
+            mevcut_tier_ad: LT.tierAdi(tam, x.mevcut_tier), ...ek,
+        };
     }));
 };
 
 // Onay = LISANSIN UZADIGI TEK AN. Bildirimin kendisi lisansa dokunmuyordu.
+// Onayda KILITLI teklif uygulanir (yeniden hesaplanmaz): moduller ve paket kayittaki gibi. Yeni bitis tura gore
+// (services/lisansTalep.js onayBitisi): ilk ve yukseltme onay gunu + gun; yenileme ve eski kayit mevcut bitisin
+// uzerine. Okuma + yazma tek islemde: ayni kayda iki onay lisansi iki kez uzatamaz.
 exports.lisansOdemeOnayla = async (req, res) => {
-    const { yeniBitis } = require('../services/posProvizyon');
-    const o = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [req.params.id])).rows[0];
-    if (!o) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
-    if (o.durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
-    const t = (await query('SELECT * FROM tenants WHERE id = ?', [o.tenant_id])).rows[0];
-    if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+    const LT = require('../services/lisansTalep');
+    const M = require('../services/lisansModul');
+    const gun = Number(req.body?.gun) > 0 ? Math.min(3650, Math.round(Number(req.body.gun))) : 365;
+    const hataNesnesi = (status, message) => Object.assign(new Error(message), { status });
+    let sonuc;
+    try {
+        sonuc = await tx(async () => {
+            const o = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [req.params.id])).rows[0];
+            if (!o) throw hataNesnesi(404, 'Ödeme kaydı bulunamadı.');
+            if (o.durum !== 'beklemede') throw hataNesnesi(409, 'Bu ödeme zaten sonuçlandırılmış.');
+            const t = (await query('SELECT * FROM tenants WHERE id = ?', [o.tenant_id])).rows[0];
+            if (!t) throw hataNesnesi(404, 'İşletme bulunamadı.');
 
-    const gun = Number(req.body?.gun) > 0 ? Number(req.body.gun) : 365;
-    const bitis = yeniBitis(t.license_end_date, gun);
-
-    // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse
-    // "aldim ama yok" der ve sebebi gorunmez.
-    let moduller = [];
-    try { moduller = JSON.parse(o.moduller || '[]'); } catch (_) {}
-
-    // Moduler lisans: masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda
-    // yoksa (eski kayit) sinira dokunulmaz.
-    const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
-    await query(
-        `UPDATE tenants SET license_end_date = ?, is_active = 1,
-                            license_tier = COALESCE(?, license_tier),
-                            license_modules = ?,
-                            license_table_limit = CASE WHEN ? = 1 THEN ? ELSE license_table_limit END
-          WHERE id = ?`,
-        [bitis, o.tier || null, JSON.stringify(moduller), kademe ? 1 : 0, kademe ? kademe.masa_limiti : null, t.id]);
-    // onay_gun: plaka hediyesinin "yillik odeme" olcutu bu sayiya bakar (services/plakaHak.js)
-    await query(
-        `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
-                                     islenen_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [String(req.body?.not || '').slice(0, 300), bitis, Math.round(gun), o.id]);
-
-    res.json({ ok: true, license_end_date: bitis,
-        message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });
+            const bitis = LT.onayBitisi({ tur: o.tur, mevcutBitis: t.license_end_date, gun });
+            // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse "aldim ama yok" der.
+            const moduller = M.modulListesi(o.moduller);
+            // Masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda yoksa (eski
+            // kayit) sinira dokunulmaz.
+            const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
+            await query(
+                `UPDATE tenants SET license_end_date = ?, is_active = 1,
+                                    license_tier = COALESCE(?, license_tier),
+                                    license_modules = ?,
+                                    license_table_limit = CASE WHEN ? = 1 THEN ? ELSE license_table_limit END
+                  WHERE id = ?`,
+                [bitis, o.tier || null, JSON.stringify(moduller), kademe ? 1 : 0, kademe ? kademe.masa_limiti : null, t.id]);
+            // onay_gun: plaka hediyesinin "yillik odeme" olcutu ve sonraki yukseltmenin kredisi bu sayiya bakar
+            await query(
+                `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
+                                             islenen_at = CURRENT_TIMESTAMP WHERE id = ? AND durum = 'beklemede'`,
+                [String(req.body?.not || '').slice(0, 300), bitis, gun, o.id]);
+            return { o, t, bitis };
+        });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ message: e.message });
+        throw e;
+    }
+    const { o, t, bitis } = sonuc;
+    const tarih = LT.TARIH(bitis);
+    const message = o.tur === 'yukseltme'
+        ? `${t.business_name}: yükseltme onaylandı. Yeni paket bugün başladı, lisans ${tarih} tarihine kadar geçerli.`
+        : o.tur === 'ilk'
+            ? `${t.business_name}: paket onaylandı. Lisans bugün başladı, ${tarih} tarihine kadar geçerli.`
+            : `${t.business_name} lisansı ${tarih} tarihine uzatıldı.`;
+    res.json({ ok: true, license_end_date: bitis, tur: o.tur || null, message });
 };
 
 exports.lisansOdemeReddet = async (req, res) => {

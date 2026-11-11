@@ -1,9 +1,10 @@
-const { query } = require('../config/db');
+const { query, tx } = require('../config/db');
 const hub = require('../services/hubService');
 const { v4: uuidv4 } = require('uuid');
 const { rootaBildir } = require('../services/rootBildirim');
 const { fiyatla } = require('../services/lisansFiyat');
 const { AD: MODUL_AD } = require('../services/lisansModul');
+const LT = require('../services/lisansTalep');
 
 // Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
 // Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların
@@ -115,21 +116,34 @@ exports.kimlikOpsiyonel = async (req, _res, next) => {
 
 // Moduler fiyat (services/lisansFiyat.js): masa kademesi + acikca secilen moduller (bagimliliklar
 // kendiliginden eklenir). Adisyon ve Kasa (BASE) fiyati kademenin fiyatidir; secilmezse kademe fiyati yok.
+// Oturumlu kiracida teklif TURU de hesaplanir (services/lisansTalep.js): ilk / yenileme / yukseltme, kalan sure
+// kredisi ve odenecek tutar. Donem icinde modul cikarma ya da kucuk pakete gecis 409 DONEM_ICI_AZALTMA.
+// Oturumsuz (kayit sayfasi) yalniz fiyat.
+function teklifCevabi(tier, f) {
+    return {
+        currency: 'TRY', tier, modules: f.modules, eklenenBagimliliklar: f.eklenenBagimliliklar,
+        korunanModuller: f.korunanModuller || [], tableLimit: f.tableLimit,
+        subtotal: f.subtotal, discountRate: f.discountRate, discountAmount: f.discountAmount, total: f.total, breakdown: f.breakdown,
+        ...(f.tur ? {
+            tur: f.tur, kalanGun: f.kalanGun, krediTutari: f.krediTutari, krediKaynak: f.krediKaynak,
+            odenecek: f.odenecek, aciklama: f.aciklama,
+        } : {}),
+    };
+}
+const hataCevabi = (res, e) => res.status(e.status).json({ code: e.code, message: e.message, ...(e.ek || {}) });
+
 exports.quote = async (req, res) => {
     const { tier, modules = [] } = req.body || {};
     const tenantId = req.user && req.user.tenantId;
-    const tenantRow = tenantId ? (await query('SELECT discount_rate FROM tenants WHERE id = ?', [tenantId])).rows[0] : null;
-    let f;
     try {
-        f = await fiyatla({ tier, modules, indirimOrani: tenantRow ? tenantRow.discount_rate : 0 });
+        const f = tenantId
+            ? await LT.teklifHazirla({ tenantId, tier, modules })
+            : await fiyatla({ tier, modules, indirimOrani: 0 });
+        res.json(teklifCevabi(tier, f));
     } catch (e) {
-        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message });
+        if (e.status) return hataCevabi(res, e);
         throw e;
     }
-    res.json({
-        currency: 'TRY', tier, modules: f.modules, eklenenBagimliliklar: f.eklenenBagimliliklar, tableLimit: f.tableLimit,
-        subtotal: f.subtotal, discountRate: f.discountRate, discountAmount: f.discountAmount, total: f.total, breakdown: f.breakdown,
-    });
 };
 
 // Yeni satın alma talebi gönder — sepeti hub'a iletir
@@ -156,16 +170,21 @@ async function yenilemeKanali(tenantId) {
     if (t.license_tier === 'TIER_DENEME') {
         return {
             kanal: 'yerel', deneme: true,
-            mesaj: 'Deneme sürümündesiniz. Paketi satın aldığınızda lisansınız 1 yıl uzar; kayıtlarınız '
-                 + 've ayarlarınız olduğu gibi kalır. Ödeme havale/EFT ile yapılır, onaylanınca otomatik açılır.',
+            mesaj: 'Deneme sürümündesiniz. Paketi satın aldığınızda lisansınız ödemenizin onaylandığı gün başlar ve '
+                 + '1 yıl geçerli olur; kayıtlarınız ve ayarlarınız olduğu gibi kalır. Ödeme havale/EFT ile yapılır.',
         };
     }
     return { kanal: 'yerel' };
 }
 
 // Arayuz hangi odeme yolunu cizecegini buradan ogreniyor.
+// Yerel kanalda donem bilgisi de doner: sepet donem icinde mevcut modulleri ve kucuk paketleri kilitler.
 exports.yenilemeKanali = async (req, res) => {
-    res.json(await yenilemeKanali(req.user.tenantId));
+    const yk = await yenilemeKanali(req.user.tenantId);
+    if (yk.kanal === 'yerel') {
+        try { yk.donem = await LT.donemBilgisi(req.user.tenantId); } catch (_) { /* donem bilgisi olmadan da calisir */ }
+    }
+    res.json(yk);
 };
 
 
@@ -192,39 +211,50 @@ exports.purchase = async (req, res) => {
         return res.status(409).json({ code: 'WRONG_CHANNEL', ...yk });
     }
     const { tier, modules = [], customerNote } = req.body || {};
-    const t = (await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])).rows[0];
-    let f;
+    // Teklif TALEP ANINDA hesaplanir ve kayda KILITLENIR: onayda yeniden hesaplanmaz (katalog fiyati sonradan
+    // degisse de musteriye gosterilen tutar gecerli). Lisansa burada DOKUNULMAZ.
+    let tk;
     try {
-        f = await fiyatla({ tier, modules, indirimOrani: t ? t.discount_rate : 0 });
+        tk = await LT.teklifHazirla({ tenantId: req.user.tenantId, tier, modules });
     } catch (e) {
-        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message });
+        if (e.status) return hataCevabi(res, e);
         throw e;
     }
-    const modulAdlari = f.modules;
-    const toplam = f.total;
 
-    // Ayni kiracinin bekleyen bildirimi varsa ikincisi acilmiyor: iki bildirim
-    // onaylanirsa lisans iki kez uzar.
-    const bekleyen = await query(
-        "SELECT id FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede'", [req.user.tenantId]);
-    if (bekleyen.rows.length) {
-        return res.status(409).json({ message: 'Onay bekleyen bir ödeme bildiriminiz var.', id: bekleyen.rows[0].id });
+    // Ayni kiracinin bekleyen bildirimi varsa ikincisi acilmiyor: iki bildirim onaylanirsa lisans iki kez uzar.
+    // Kontrol + kayit tek islemde (es zamanli iki istek ikisi birden gecemesin).
+    const id = uuidv4();
+    const kayit = await tx(async () => {
+        const bekleyen = await query(
+            "SELECT id FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede'", [req.user.tenantId]);
+        if (bekleyen.rows.length) return { bekleyenId: bekleyen.rows[0].id };
+        await query(
+            `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama, tur, yeni_toplam, kredi_tutari,
+                                           kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis)
+             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, req.user.tenantId, tier, JSON.stringify(tk.modules), tk.odenecek, String(customerNote || '').slice(0, 300),
+                tk.tur, tk.yeniToplam, tk.krediTutari, tk.kalanGun, tk.krediKaynak,
+                tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis]);
+        return {};
+    });
+    if (kayit.bekleyenId) {
+        return res.status(409).json({ message: 'Onay bekleyen bir ödeme bildiriminiz var.', id: kayit.bekleyenId });
     }
 
-    const id = uuidv4();
-    await query(
-        `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama)
-         VALUES (?, ?, ?, ?, ?, 'beklemede', ?)`,
-        [id, req.user.tenantId, tier, JSON.stringify(modulAdlari), toplam,
-            String(customerNote || '').slice(0, 300)]);
-
     const A = require('../services/sistemAyar');
+    const TUR_AD = { ilk: 'İlk satın alma (deneme sonrası)', yenileme: 'Yenileme', yukseltme: 'Yükseltme (dönem içi)' };
     isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni ödeme bildirimi: ' + i.ad, [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['E-posta', i.eposta], ['Telefon', i.tel],
-        ['Masa paketi', f.tierRow.displayName + ' (' + tier + ')'], ['Modüller', modulAdlari.map((m) => MODUL_AD[m] || m).join(', ')], ['Tutar', Number(toplam).toLocaleString('tr-TR') + ' TL (yıllık)'],
+        ['Tür', TUR_AD[tk.tur] || tk.tur],
+        ['Masa paketi', tk.tierRow.displayName + ' (' + tier + ')'], ['Modüller', tk.modules.map((m) => MODUL_AD[m] || m).join(', ')],
+        ['Yıllık toplam', LT.TL(tk.yeniToplam)],
+        ...(tk.tur === 'yukseltme' ? [['Kalan süre kredisi', tk.kalanGun + ' gün, ' + LT.TL(tk.krediTutari)
+            + (tk.krediKaynak === 'katalog' ? ' (bu dönem için onaylı ödeme yok: katalog fiyatından)' : ' (son onaylı ödemeden)')]] : []),
+        ['Ödenecek', LT.TL(tk.odenecek)],
     ])).catch(() => {});
     res.status(201).json({
-        id, tier, modules: modulAdlari, total: toplam, status: 'PENDING_PAYMENT',
+        id, tier, modules: tk.modules, total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
+        kalanGun: tk.kalanGun, krediTutari: tk.krediTutari, aciklama: tk.aciklama, status: 'PENDING_PAYMENT',
         iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
         message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',
     });
@@ -240,6 +270,7 @@ exports.markPaid = async (req, res) => {
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
     isletmeAdi(req.user.tenantId).then(i => rootaBildir('Müşteri "ödemeyi yaptım" dedi: ' + i.ad, [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Paket', r.rows[0].tier],
+        ...(r.rows[0].tur === 'yukseltme' ? [['Tür', 'Yükseltme (yıllık toplam ' + LT.TL(r.rows[0].yeni_toplam) + ', kredi ' + LT.TL(r.rows[0].kredi_tutari) + ')']] : []),
         ['Tutar', Number(r.rows[0].tutar).toLocaleString('tr-TR') + ' TL'], ['Referans', String(req.body?.paymentRef || '-')],
         ['Yapılacak', 'Hesabı kontrol edip root panelinden onayla; lisans otomatik uzar.'],
     ])).catch(() => {});
@@ -276,7 +307,8 @@ exports.cancelPurchase = async (req, res) => {
 
 exports.purchases = async (req, res) => {
     const r = await query(
-        `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at
+        `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at,
+                tur, yeni_toplam, kredi_tutari, kalan_gun
            FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 50`,
         [req.user.tenantId]);
     res.json(r.rows.map(kaydiHazirla));

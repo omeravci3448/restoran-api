@@ -60,6 +60,15 @@ function bagimliliklariTamamla(secim) {
     return { moduller: l, eklenen };
 }
 
+// Modulun bagimliliklari verilen listede karsilaniyor mu (eklemeden yalniz bakar)
+function bagimlilikSaglaniyor(m, liste) {
+    const b = BAGIMLILIK[m];
+    if (!b) return true;
+    if (b.hepsi && !b.hepsi.every((g) => varMi(liste, g))) return false;
+    if (b.biri && !b.biri.some((g) => varMi(liste, g))) return false;
+    return true;
+}
+
 // 0/'0'/false kapali; 1/NULL/undefined acik
 function acikMi(v) {
     return !(v === 0 || v === '0' || v === false);
@@ -96,4 +105,4 @@ function menuKipiMi(moduller) {
     return !varMi(moduller, 'BASE');
 }
 
-module.exports = { AD, BAGIMLILIK, modulListesi, varMi, bagimliliklariTamamla, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };
+module.exports = { AD, BAGIMLILIK, modulListesi, varMi, bagimliliklariTamamla, bagimlilikSaglaniyor, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };
