@@ -97,6 +97,7 @@ app.use('/api/waiter', require('./src/routes/waiterRoutes'));
 app.use('/api/mutfak', require('./src/routes/mutfakRoutes'));   // mutfak ekrani (KDS)
 app.use('/api/realtime', require('./src/routes/realtimeRoutes')); // canlı bildirim (SSE)
 app.use('/api/push', require('./src/routes/pushRoutes'));         // telefon bildirimi (Web Push)
+app.use('/api/plaka', require('./src/routes/plakaRoutes'));       // masa plakasi talepleri (hediye + ucretli)
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
 app.use('/api/aktivasyon', require('./src/routes/aktivasyonRoutes')); // ilk sifre belirleme (jeton = kimlik)
 app.use('/api/root', require('./src/routes/rootRoutes'));     // ekosistem yönetimi (işletme aç/yönet)
@@ -144,6 +145,11 @@ app.listen(PORT, () => {
 
     // Yeni restoran kaydi + SofraMix'ten paket alimi: Patron'a e-posta, yonetim APK'sina olay (60 sn'de bir tarar)
     require('./src/services/yeniKayitIzleyici').baslat();
+
+    // Kisa karekodu olmayan masalara kod ver (/q/<KOD>; plakalar ve toplu karekod PDF'i). Idempotent.
+    setTimeout(() => require('./src/services/kisaKod').eksikleriDoldur()
+        .then((n) => { if (n) console.log('[kisa-kod]', n, 'masaya kisa karekod verildi'); })
+        .catch((e) => console.error('[kisa-kod] doldurma:', e.message)), 7000);
 
     // Eski aktarimlardan kalan goreli SofraMix gorsel adreslerini bir kez onar (idempotent).
     setTimeout(() => require('./src/services/menuAktarim').gorselAdresleriniOnar()

@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/db');
 const lisans = require('../services/lisansDurumu');
+const { AD: MODUL_AD } = require('../services/lisansModul');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
@@ -69,15 +70,24 @@ async function protect(req, res, next) {
     next();
 }
 
-// Belirli bir modülün lisansta açık olmasını ister (örn requireModule('STOK'))
+// Belirli bir modülün lisansta açık olmasını ister (örn requireModule('STOK')).
+// POS'a ozgu uclar requireModule('BASE') ile korunur: "Adisyon ve Kasa" olmayan (yalniz QR menu) isletme
+// menu, urun, kategori, masa, ayar, logo, lisans ve plaka uclarini kullanir; siparis/odeme/rapor... 403.
 function requireModule(moduleName) {
+    return requireAnyModule(moduleName);
+}
+
+// Verilen modullerden EN AZ BIRI lisansta olmali (orn. telefon bildirimi: BASE ya da GARSON)
+function requireAnyModule(...moduller) {
     return (req, res, next) => {
         const mods = req.user?.modules || [];
-        if (mods.includes(moduleName) || mods.includes('ALL')) return next();
+        if (mods.includes('ALL') || moduller.some((m) => mods.includes(m))) return next();
+        const ad = moduller.map((m) => MODUL_AD[m] || m).join(' ya da ');
         return res.status(403).json({
             code: 'MODULE_NOT_LICENSED',
-            module: moduleName,
-            message: `${moduleName} modülü lisansta açık değil.`
+            module: moduller[0],
+            modules: moduller,
+            message: `${ad} modülü lisansınızda yok. Lisans / Paket sayfasından ekleyebilirsiniz.`
         });
     };
 }
@@ -114,4 +124,4 @@ function signToken(userId) {
     return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '12h' });
 }
 
-module.exports = { protect, requireModule, requireRole, requireManagerPin, signToken };
+module.exports = { protect, requireModule, requireAnyModule, requireRole, requireManagerPin, signToken };

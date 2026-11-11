@@ -86,6 +86,58 @@ const tx = (fn) => _runLocked(() => _als.run({ inTx: true }, async () => {
     catch (e) { await rawQuery(writeDb, 'ROLLBACK').catch(() => {}); throw e; }
 }));
 
+// --- GECIS: moduler lisans (Patron karari 2026-11-11) ---
+// Mevcut isletmeler BUGUNKU davranisini korur. BIR KEZ calisir (sistem_ayarlari isareti); isaretten sonra
+// acilan isletmelere (ornegin yalniz QR Menu satin alan) DOKUNMAZ.
+//  1) Modul listesi bos ya da bozuk -> ["BASE"]: bugune kadar POS her isletmede acikti (BASE hic denetlenmiyordu)
+//  2) BASE'i (ya da ALL'u) olmayan isletmeye BASE: POS uclari artik BASE istiyor
+//  3) BASE + MENU_DIGITAL olan isletmeye QR_SIPARIS: QR'dan siparis bugune kadar modulsuz acikti
+// JSON islevleri bozuk metinde hata vermesin diye her yerde json_valid ile korunur.
+const GECIS_ISARETI = 'gecis_moduler_lisans_v1';
+const _dizi = (k) => `(CASE WHEN json_valid(${k}) THEN ${k} ELSE '[]' END)`;
+const _isaretYok = `NOT EXISTS (SELECT 1 FROM sistem_ayarlari WHERE anahtar = '${GECIS_ISARETI}')`;
+const MODUL_GECISI_SQL = [
+    `UPDATE tenants SET license_modules = '["BASE"]'
+      WHERE ${_isaretYok}
+        AND (license_modules IS NULL OR TRIM(license_modules) = ''
+             OR (CASE WHEN json_valid(license_modules) THEN json_type(license_modules) != 'array' ELSE 1 END))`,
+    `UPDATE tenants SET license_modules = json_insert(license_modules, '$[#]', 'BASE')
+      WHERE ${_isaretYok} AND json_valid(license_modules)
+        AND NOT EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value IN ('BASE', 'ALL'))`,
+    `UPDATE tenants SET license_modules = json_insert(license_modules, '$[#]', 'QR_SIPARIS')
+      WHERE ${_isaretYok} AND json_valid(license_modules)
+        AND EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value = 'BASE')
+        AND EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value = 'MENU_DIGITAL')
+        AND NOT EXISTS (SELECT 1 FROM json_each(${_dizi('tenants.license_modules')}) j WHERE j.value IN ('QR_SIPARIS', 'ALL'))`,
+    `INSERT OR IGNORE INTO sistem_ayarlari (anahtar, deger) VALUES ('${GECIS_ISARETI}', datetime('now'))`,
+];
+// initDb icinden: sirali ve geri cagirmali; isaret yalniz uc adim da basariliysa konur (yarim kalirsa
+// bir sonraki acilista yeniden dener; adimlar zaten "eksikse ekle" bicimindedir).
+function modulGecisiBaslat(conn) {
+    const [a, b, c, isaret] = MODUL_GECISI_SQL;
+    conn.get('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI], (e0, r0) => {
+        if (e0 || r0) return;
+        const hata = (n) => (e) => { console.error(`[db] modul gecisi adim ${n}:`, e.message); };
+        conn.run(a, [], (e1) => {
+            if (e1) return hata(1)(e1);
+            conn.run(b, [], (e2) => {
+                if (e2) return hata(2)(e2);
+                conn.run(c, [], (e3) => {
+                    if (e3) return hata(3)(e3);
+                    conn.run(isaret, [], (e4) => { if (e4) hata(4)(e4); else console.log('[db] moduler lisans gecisi tamamlandi'); });
+                });
+            });
+        });
+    });
+}
+// Ayni gecis, testler icin (async). Isaret varsa hicbir sey yapmaz, false doner.
+async function modulGecisi() {
+    const v = await query('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
+    if (v.rows.length) return false;
+    for (const s of MODUL_GECISI_SQL) await query(s);
+    return true;
+}
+
 const initDb = () => {
     db.serialize(() => {
         // — TENANTS (her restoran/cafe ayrı tenant) —
@@ -146,6 +198,14 @@ const initDb = () => {
         // Musteri ekrani (kasadaki ikinci ekran): isletmenin sectigi gorsel + karsilama cumlesi
         db.run("ALTER TABLE tenants ADD COLUMN musteri_ekrani_gorsel_url TEXT", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN musteri_ekrani_mesaj TEXT", [], () => {});                      // isletme logosu (/uploads/<tenant>/..): basili menu + QR menu
+        // QR menu ozellik anahtarlari (Ayarlar > QR Menu). Varsayilan 1: mevcut isletmelerde davranis degismez.
+        // Etkin ozellik = lisansta modul VAR ve anahtar ACIK (services/lisansModul.js qrOzellikleri).
+        // Kapaliyken public uc 403 doner, QR menu dugmeyi hic gostermez.
+        db.run("ALTER TABLE tenants ADD COLUMN qr_siparis_acik INTEGER DEFAULT 1", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN qr_garson_acik INTEGER DEFAULT 1", [], () => {});
+        db.run("ALTER TABLE tenants ADD COLUMN qr_hesap_acik INTEGER DEFAULT 1", [], () => {});
+        // Masa plakasi hediye hakki, root elle gecersiz kilar: NULL = otomatik kural, 1 = ver, 0 = kaldir
+        db.run("ALTER TABLE tenants ADD COLUMN plaka_hediye_hakki INTEGER", [], () => {});
 
         // — ROOT USERS (ekosistem yoneticisi) —
         // users tablosuna KONULMADI: users.tenant_id NOT NULL ve tum sorgular
@@ -277,6 +337,9 @@ const initDb = () => {
         )`);
         db.run(`CREATE INDEX IF NOT EXISTS idx_lisans_odeme_durum ON lisans_odemeleri(durum, created_at)`);
         db.run("ALTER TABLE lisans_odemeleri ADD COLUMN odeme_bildirildi_at TEXT", [], () => {}); // musteri "odemeyi yaptim" dedi
+        // Onayda verilen gun sayisi (plaka hediyesi "yillik odeme" olcutu). Eski kayitlarda NULL:
+        // orada donem_bitis - islenen_at farkina bakilir (services/plakaHak.js).
+        db.run("ALTER TABLE lisans_odemeleri ADD COLUMN onay_gun INTEGER", [], () => {});
 
         // — LISANS KATALOGU (paketler + moduller, fiyatlariyla) —
         //
@@ -321,6 +384,29 @@ const initDb = () => {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [`${tur}-${kod}`, tur, kod, ad, fiyat, limit, gorunur, sira], () => {});
         }
+        // --- Moduler lisans (Patron karari 2026-11-11) ---
+        // BASE "Adisyon ve Kasa": fiyati secilen masa kademesinin fiyatidir (katalogdaki kendi fiyati
+        // kullanilmaz). BASE secilmezse kademe fiyati alinmaz ama masa siniri yine kademeden gelir.
+        // QR_SIPARIS "Masadan Siparis" YENI: misafir QR menuden siparis verir (MENU_DIGITAL + BASE ister).
+        // VARSAYILAN GIZLI: Patron fiyatini girip kendisi acar. "Sadece QR menu" = yalniz MENU_DIGITAL
+        // (istenirse + GARSON); ayri paket ya da paket turu yok, panel kipi modullerden turetilir.
+        db.run(`INSERT OR IGNORE INTO lisans_katalog (id, tur, kod, ad, aciklama, fiyat, masa_limiti, gorunur, sira)
+                VALUES ('MODUL-QR_SIPARIS', 'MODUL', 'QR_SIPARIS', 'Masadan Sipariş', ?, 0, NULL, 0, 25)`,
+            ['Misafir masadaki karekodla açılan menüden sipariş verir. QR Menü ve Adisyon ve Kasa ile çalışır.'], () => {});
+        // Gorunen adlar: yalniz hala ESKI varsayilan addaysa degisir (Patron panelden ad verdiyse dokunulmaz)
+        db.run("UPDATE lisans_katalog SET ad = 'Adisyon ve Kasa' WHERE id = 'MODUL-BASE' AND ad IN ('Temel (dahil)', 'Temel (Dahil)', 'Temel')", [], () => {});
+        db.run("UPDATE lisans_katalog SET ad = 'QR Menü' WHERE id = 'MODUL-MENU_DIGITAL' AND ad = 'Dijital QR Menü'", [], () => {});
+        db.run("UPDATE lisans_katalog SET ad = 'Garson' WHERE id = 'MODUL-GARSON' AND ad = 'Garson Mobil Uygulaması'", [], () => {});
+        const modulAciklama = [
+            ['MODUL-BASE', 'Masa ve adisyon, tahsilat, raporlar, paket servis, mutfak ekranı ve müşteri ekranı. Fiyatı seçilen masa paketinin fiyatıdır.'],
+            ['MODUL-MENU_DIGITAL', 'Misafir masadaki karekodla menüyü görür.'],
+            ['MODUL-GARSON', 'QR menüde garson çağır düğmesi ve garson telefon uygulaması. Adisyon ve Kasa yoksa uygulama yalnız çağrıları gösterir.'],
+        ];
+        for (const [id, ac] of modulAciklama) {
+            db.run("UPDATE lisans_katalog SET aciklama = ? WHERE id = ? AND (aciklama IS NULL OR aciklama = '')", [ac, id], () => {});
+        }
+        // GECIS (bir kez): mevcut isletmeler bugunku davranisini korur. Bkz MODUL_GECISI_SQL.
+        modulGecisiBaslat(db);
 
         // — SOFRAMIX DENEME DEVRI: tek kullanimlik nonce + kisa omurlu giris jetonu —
         // Nonce VERITABANINDA: bellekte tutulsaydi yeniden baslatma / ikinci kopya
@@ -442,6 +528,11 @@ const initDb = () => {
             UNIQUE(tenant_id, code),
             FOREIGN KEY(tenant_id) REFERENCES tenants(id)
         )`);
+        // Kisa karekod: /q/<KOD> adresi (plakalar ve toplu karekod PDF'i). Sistem genelinde tekil,
+        // qr_token yenilense de DEGISMEZ. Eksikler acilista ve ihtiyac aninda doldurulur (services/kisaKod.js).
+        // Eski /m/<slug>/<qr_token> adresleri aynen calismaya devam eder.
+        db.run("ALTER TABLE tables ADD COLUMN kisa_kod TEXT", [], () => {});
+        db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_tables_kisa_kod ON tables(kisa_kod) WHERE kisa_kod IS NOT NULL`, [], () => {});
 
         // — CATEGORIES (menü kategorileri) —
         db.run(`CREATE TABLE IF NOT EXISTS categories (
@@ -878,7 +969,73 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tur, ref)
         )`);
+
+        // - HEDIYE PLAKA KURALLARI (root paneli) -
+        // Hediye hakki: onayli YILLIK odeme (deneme asla) VE en az bir AKTIF kurala uyma. Kural: gerekli
+        // moduller (lisans hepsini icermeli), istege bagli en az yillik odeme tutari, en cok plaka.
+        // Birden cok kurala uyan isletmede en buyuk "en cok plaka" gecerli. Varsayilan tek kural:
+        // Adisyon ve Kasa + QR Menu, tutar siniri yok, en cok 25 (Patron sonra degistirir).
+        db.run(`CREATE TABLE IF NOT EXISTS plaka_hediye_kurallari (
+            id TEXT PRIMARY KEY,
+            ad TEXT NOT NULL,
+            moduller TEXT NOT NULL DEFAULT '[]',
+            en_az_tutar REAL,
+            en_cok_plaka INTEGER NOT NULL DEFAULT 25,
+            aktif INTEGER NOT NULL DEFAULT 1,
+            sira INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run(`INSERT OR IGNORE INTO plaka_hediye_kurallari (id, ad, moduller, en_az_tutar, en_cok_plaka, aktif, sira)
+                VALUES ('varsayilan', 'Adisyon ve Kasa + QR Menü', '["BASE","MENU_DIGITAL"]', NULL, 25, 1, 10)`, [], () => {});
+
+        // - MASA PLAKASI TALEPLERI (hediye + ucretli) -
+        // Hediye: kurallara uyan, yillik odemesi onayli isletmeye, aktif masa sayisi kadar (en cok kuralin
+        // siniri), isletme basina 1 set. Ek/yedek plakalar ve kurala uymayan isletmelerin plakalari ucretli.
+        // Masa adlari ve kisa kodlari talep anindaki KOPYA (masalar_json): masa sonradan degisse de basilan
+        // plaka talepteki gibi kalir. moduller: talep anindaki lisans modulleri (kopya).
+        // durum: ALINDI | ODEME_BEKLENIYOR | ODEME_ALINDI | HAZIRLANIYOR | KARGODA | TESLIM_EDILDI | IPTAL | REDDEDILDI
+        // Kiraci silinse bile kayit kalir (odeme gecmisi): lisans_odemeleri gibi FK yok.
+        db.run(`CREATE TABLE IF NOT EXISTS plaka_talepleri (
+            id TEXT PRIMARY KEY,
+            talep_no INTEGER,
+            tenant_id TEXT NOT NULL,
+            moduller TEXT,
+            hediye_kural_id TEXT,
+            hediye_kural_ad TEXT,
+            durum TEXT NOT NULL DEFAULT 'ALINDI',
+            hediye_adet INTEGER NOT NULL DEFAULT 0,
+            ucretli_adet INTEGER NOT NULL DEFAULT 0,
+            birim_fiyat REAL,
+            kargo_ucreti REAL,
+            tutar REAL NOT NULL DEFAULT 0,
+            olcu TEXT,
+            logo_url TEXT,
+            masalar_json TEXT NOT NULL,
+            alici_ad TEXT,
+            telefon TEXT,
+            adres TEXT,
+            not_metni TEXT,
+            odeme_bildirildi_at TEXT,
+            odeme_ref TEXT,
+            odeme_alindi_at TEXT,
+            hazirlaniyor_at TEXT,
+            kargo_firma TEXT,
+            takip_no TEXT,
+            kargoya_verildi_at TEXT,
+            teslim_at TEXT,
+            iptal_at TEXT,
+            red_sebebi TEXT,
+            red_at TEXT,
+            root_not TEXT,
+            created_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_plaka_tenant ON plaka_talepleri(tenant_id, created_at)", [], () => {});
+        db.run("CREATE INDEX IF NOT EXISTS idx_plaka_durum ON plaka_talepleri(durum, created_at)", [], () => {});
+        db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_plaka_talep_no ON plaka_talepleri(talep_no) WHERE talep_no IS NOT NULL", [], () => {});
     });
 };
 
-module.exports = { db, query, tx, initDb };
+module.exports = { db, query, tx, initDb, modulGecisi, MODUL_GECISI_SQL, GECIS_ISARETI };

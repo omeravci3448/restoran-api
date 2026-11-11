@@ -15,7 +15,8 @@ const { query, tx } = require('../config/db');
 //   kendisi zaten tekrar denemedir. "Para alindi ama POS acilmadi" sessiz hatasi
 //   boylece imkansizlasir.
 
-const VARSAYILAN_MODULLER = ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK', 'MARKETPLACE'];
+// QR_SIPARIS (Masadan Siparis): moduler lisansa geciste eklendi; SofraMix POS paketi ve deneme her seyi icerir
+const VARSAYILAN_MODULLER = ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'MARKETPLACE'];
 const LISANS_GUN = 365;
 
 function rastgeleKod(n = 5) {

@@ -6,6 +6,12 @@ const G = require('../services/islemGunlugu');
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
 
+// Yeni masaya kisa karekod (/q/<KOD>). Uretilemezse masa yine acilir; acilistaki doldurma tamamlar.
+async function kisaKodVer(tableId) {
+    try { return await require('../services/kisaKod').masayaAta(tableId); }
+    catch (e) { console.error('[kisa-kod] masa', tableId, e.message); return null; }
+}
+
 // Aktif masa sayısını döndürür (is_active=1)
 async function activeTableCount(tenantId) {
     const r = await query('SELECT COUNT(*) AS c FROM tables WHERE tenant_id = ? AND is_active = 1', [tenantId]);
@@ -54,7 +60,40 @@ exports.list = async (req, res) => {
           ORDER BY t.section, LENGTH(t.code), t.code`,
         [req.user.tenantId]
     );
-    res.json(r.rows);
+    // Plakasi basilan (hazirlaniyor / kargoda / teslim) masalar: silme penceresi uyarsin, plakadaki karekod
+    // masa silinince calismaz. Talepler masa listesinin KOPYASINI tutar (masalar_json).
+    const basilan = new Set();
+    try {
+        const p = await query(
+            "SELECT masalar_json FROM plaka_talepleri WHERE tenant_id = ? AND durum IN ('HAZIRLANIYOR', 'KARGODA', 'TESLIM_EDILDI')",
+            [req.user.tenantId]);
+        for (const x of p.rows) { try { for (const m of JSON.parse(x.masalar_json || '[]')) basilan.add(m.id); } catch (_) {} }
+    } catch (_) { /* plaka tablosu yoksa (eski veritabani) uyari cikmaz */ }
+    res.json(r.rows.map((t) => (basilan.has(t.id) ? { ...t, plaka_basildi: 1 } : t)));
+};
+
+// Butun aktif masalarin karekodu, A4 (sayfa basina 9). Kisa adresle (/q/<KOD>): basilan karekod
+// qr_token yenilense de calisir. Sadece QR Menu isletmesi de kendi bastirabilsin diye her rol indirebilir.
+exports.karekodlarPdf = async (req, res) => {
+    const K = require('../services/kisaKod');
+    const C = require('../services/plakaCizim');
+    const M = require('../services/lisansModul');
+    await K.eksikleriDoldur(req.user.tenantId);
+    const t = (await query('SELECT business_name, license_modules, qr_siparis_acik, qr_garson_acik, qr_hesap_acik FROM tenants WHERE id = ?',
+        [req.user.tenantId])).rows[0];
+    const r = await query(
+        `SELECT name, kisa_kod FROM tables WHERE tenant_id = ? AND is_active = 1
+          ORDER BY section, LENGTH(code), code`, [req.user.tenantId]);
+    if (!r.rows.length) return res.status(404).json({ message: 'Henüz masa yok.' });
+    const buf = await C.karekodSayfasiPdf({
+        isletmeAdi: (t && t.business_name) || 'İşletme',
+        altMetin: M.okutunMetni(t || {}),
+        masalar: r.rows.map((m) => ({ ad: m.name, kisaKod: m.kisa_kod, adres: K.kisaAdres(m.kisa_kod) })),
+    });
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Disposition', 'attachment; filename="masa-karekodlari.pdf"');
+    res.set('Cache-Control', 'no-store');
+    res.send(buf);
 };
 
 // Ayrı endpoint: yalnızca lisans/limit özetini döndürür
@@ -82,7 +121,8 @@ exports.create = async (req, res) => {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, req.user.tenantId, code, name, section || null, capacity || 4, newToken(), positionX || 0, positionY || 0]
         );
-        res.status(201).json({ id, code, name });
+        const kisaKod = await kisaKodVer(id);
+        res.status(201).json({ id, code, name, kisaKod });
     } catch (e) {
         if (String(e.message).includes('UNIQUE')) return res.status(409).json({ message: 'Bu masa kodu zaten kullanılıyor.' });
         throw e;
@@ -144,6 +184,7 @@ exports.bulkCreate = async (req, res) => {
             await query(
                 'INSERT INTO tables (id, tenant_id, code, name, section, qr_token) VALUES (?, ?, ?, ?, ?, ?)',
                 [id, req.user.tenantId, code, 'Masa ' + code, section, newToken()]);
+            await kisaKodVer(id);
             created.push({ id, code });
         } catch (e) {
             if (!String(e.message).includes('UNIQUE')) throw e;

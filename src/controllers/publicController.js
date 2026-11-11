@@ -3,6 +3,22 @@ const { query } = require('../config/db');
 const bus = require('../services/eventBus');
 const { hesabaYaz, kalemleriHazirla } = require('../services/qrSiparis');
 const push = require('../services/pushBildirim');
+const { qrOzellikleri } = require('../services/lisansModul');
+
+// Ozellik etkin degilse (lisansta modul yok ya da isletme Ayarlar > QR Menu'den kapatti): 403 + makine kodu.
+// Siparis: QR_SIPARIS (+ BASE) + anahtar; garson cagir: GARSON + MENU_DIGITAL + anahtar; hesap: BASE + anahtar.
+// QR menu zaten dugmeyi gostermez; bu kapi eski sekmede kalan ya da elle istek atan icindir.
+const KAPALI = {
+    siparis: { code: 'QR_SIPARIS_KAPALI', message: 'Bu işletmede QR menüden sipariş alınmıyor. Siparişiniz için lütfen personele başvurun.' },
+    hesap: { code: 'QR_HESAP_KAPALI', message: 'Bu işletmede hesap QR menüden görüntülenemiyor. Hesabınız için lütfen personele başvurun.' },
+    garson: { code: 'QR_GARSON_KAPALI', message: 'Bu işletmede QR menüden garson çağrılamıyor. Lütfen personele başvurun.' },
+};
+function ozellikKapali(ctx, ad, res) {
+    if (qrOzellikleri(ctx)[ad]) return false;
+    res.status(403).json(KAPALI[ad]);
+    return true;
+}
+exports.ozellikKapali = ozellikKapali;
 
 // QR siparisi telefona (garson uygulamasi kapaliyken de). Musteri notu bildirime girmez.
 function qrTelefonaBildir(ctx, adet, tutar, bekliyor) {
@@ -20,6 +36,7 @@ function qrTelefonaBildir(ctx, adet, tutar, bekliyor) {
 async function loadTableContext(tenantSlug, qrToken) {
     const r = await query(
         `SELECT te.id AS tenant_id, te.business_name, te.slug, te.license_modules, te.logo_url, te.qr_onay_gerekli,
+                te.qr_siparis_acik, te.qr_garson_acik, te.qr_hesap_acik,
                 tb.id AS table_id, tb.code AS table_code, tb.name AS table_name, tb.section
            FROM tenants te JOIN tables tb ON tb.tenant_id = te.id
           WHERE te.slug = ? AND tb.qr_token = ? AND te.is_active = 1 AND tb.is_active = 1`,
@@ -55,6 +72,8 @@ exports.menu = async (req, res) => {
     res.json({
         business: { name: ctx.business_name, slug: ctx.slug, logo_url: ctx.logo_url || null },
         table: { code: ctx.table_code, name: ctx.table_name, section: ctx.section },
+        // Misafirin kullanabilecegi ozellikler: kapali olan dugme QR menude hic gosterilmez
+        ozellikler: qrOzellikleri(ctx),
         categories: cats.rows,
         products: prods.rows
     });
@@ -65,6 +84,7 @@ exports.bill = async (req, res) => {
     const { tenantSlug, qrToken } = req.params;
     const ctx = await loadTableContext(tenantSlug, qrToken);
     if (!ctx) return res.status(404).json({ message: 'QR geçersiz.' });
+    if (ozellikKapali(ctx, 'hesap', res)) return;
     // Kasa onayi bekleyen kalemler: musteri "siparisim gitti mi?" diye tekrar gondermesin
     const bek = await query(
         "SELECT kalemler_json FROM qr_bekleyen_siparisler WHERE tenant_id = ? AND table_id = ? AND durum = 'BEKLIYOR' ORDER BY created_at",
@@ -98,6 +118,7 @@ exports.placeOrder = async (req, res) => {
 
     const ctx = await loadTableContext(tenantSlug, qrToken);
     if (!ctx) return res.status(404).json({ message: 'QR geçersiz.' });
+    if (ozellikKapali(ctx, 'siparis', res)) return;
 
     const olay = { tableId: ctx.table_id, tableName: ctx.table_name, tableCode: ctx.table_code, section: ctx.section };
 
@@ -134,3 +155,16 @@ exports.placeOrder = async (req, res) => {
 // Public garson çağrısı — auth gerekmez, sadece QR token doğrulanır
 const waiterCtrl = require('./waiterController');
 exports.callWaiter = waiterCtrl.publicCall;
+
+// Kisa karekod cozumu: /q/<KOD> -> { slug, token }. Yalniz aktif masa + aktif isletme; degilse 404.
+// IP basina sinir: 6 haneli kod uzayi kaba kuvvetle taranmasin (services/kisaKod.js).
+exports.kisaKodCoz = async (req, res) => {
+    const K = require('../services/kisaKod');
+    const ip = req.ip || (req.socket && req.socket.remoteAddress) || '?';
+    if (K.sinirli(ip)) return res.status(429).json({ code: 'COK_FAZLA_ISTEK', message: 'Çok fazla deneme. Lütfen biraz sonra tekrar deneyin.' });
+    const c = await K.coz(req.params.kod);
+    K.say(ip, !!c);
+    if (!c) return res.status(404).json({ code: 'KISA_KOD_YOK', message: 'Bu karekod geçerli değil ya da masa kaldırılmış. Lütfen personele başvurun.' });
+    res.set('Cache-Control', 'no-store');
+    res.json(c);
+};

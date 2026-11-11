@@ -1,12 +1,13 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/paketController');
-const { protect, requireRole } = require('../middleware/authMiddleware');
+const { protect, requireRole, requireModule } = require('../middleware/authMiddleware');
 
 // Paket Servis: TEMEL PAKET - requireModule YOK (SofraMix siparisi MARKETPLACE modulu olmadan da
 // burada gorunur ve yonetilir). Kasa rolleri (sahip, mudur, kasiyer); mutfak (KITCHEN) ve garson (WAITER)
 // GOREMEZ (Patron karari: garsonda paket yok). Salt-okunur lisansta yazma istekleri protect'te durur
 // (okuma serbest). Iptal kurali denetleyicide (sahip/mudur; bos telefon siparisi istisna).
 router.use(protect);
+router.use(requireModule('BASE'));   // Adisyon ve Kasa (BASE) yoksa: yalniz QR menu isletmesi, POS ucu yok
 router.use(requireRole('OWNER', 'MANAGER', 'CASHIER'));
 router.get('/', ctrl.liste);
 router.post('/', ctrl.olustur);

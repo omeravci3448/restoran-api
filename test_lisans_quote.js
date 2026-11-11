@@ -60,11 +60,11 @@ async function temizle() {
     ok('katalogda en az bir paket var', !!tier, kat);
 
     console.log('=== Oturumsuz quote ===');
-    const q0 = await js('/api/license/quote', { body: { tier, modules: [] } });
+    const q0 = await js('/api/license/quote', { body: { tier, modules: ['BASE'] } });
     ok('oturumsuz 200 + indirim 0', q0.status === 200 && q0.d.discountRate === 0 && typeof q0.d.total === 'number', q0);
-    const q1 = await js('/api/license/quote', { body: { tier: 'YOK_BOYLE', modules: [] } });
+    const q1 = await js('/api/license/quote', { body: { tier: 'YOK_BOYLE', modules: ['BASE'] } });
     ok('gecersiz paket 400 (500 degil)', q1.status === 400, q1);
-    const q2 = await js('/api/license/quote', { body: { tier, modules: [] }, headers: { Authorization: 'Bearer bozuk.jeton.x' } });
+    const q2 = await js('/api/license/quote', { body: { tier, modules: ['BASE'] }, headers: { Authorization: 'Bearer bozuk.jeton.x' } });
     ok('bozuk jetonla anonim devam (200)', q2.status === 200 && q2.d.discountRate === 0, q2);
     const q3 = await js('/api/license/quote', { body: { tier, modules: ['UYDURMA_MODUL'] } });
     ok('satista olmayan modul 400', q3.status === 400, q3);
@@ -77,9 +77,9 @@ async function temizle() {
     await query('UPDATE tenants SET parent_org = NULL, discount_rate = 10 WHERE id = ?', [me.tenantId]);
     const yk = await js('/api/license/yenileme-kanali', { token: sahip.token });
     ok('deneme hesabi: kanal yerel + deneme:true + mesaj', yk.status === 200 && yk.d.kanal === 'yerel' && yk.d.deneme === true && /1 yıl/.test(yk.d.mesaj), yk.d);
-    const q4 = await js('/api/license/quote', { token: sahip.token, body: { tier, modules: [] } });
+    const q4 = await js('/api/license/quote', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('oturumlu quote: %10 indirim uygulanir', q4.status === 200 && q4.d.discountRate === 10 && q4.d.total === Math.max(0, q4.d.subtotal - q4.d.discountAmount), q4.d);
-    const satin = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
+    const satin = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('deneme hesabi satin alma baslatabilir (201)', satin.status === 201 && satin.d.status === 'PENDING_PAYMENT', satin);
     const liste = await js('/api/license/purchases', { token: sahip.token });
     ok('bekleyen odeme listede', liste.status === 200 && Array.isArray(liste.d) && liste.d.length === 1 && liste.d[0].durum === 'beklemede', liste.d);
@@ -89,14 +89,14 @@ async function temizle() {
     ok('odemeyi yaptim: PAID_DECLARED + paid_declared_at + aciklama', bild.status === 200 && tekil.d.status === 'PAID_DECLARED' && !!tekil.d.paid_declared_at && tekil.d.aciklama === 'dekont 1234', tekil.d);
     ok('listede de PAID_DECLARED', (await js('/api/license/purchases', { token: sahip.token })).d[0].status === 'PAID_DECLARED');
     ok('ikinci kez bildirim 200 (hala beklemede)', (await js('/api/license/purchases/' + satin.d.id + '/mark-paid', { token: sahip.token, body: {} })).status === 200);
-    const ikinci = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
+    const ikinci = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('ikinci bildirim 409 (bekleyen varken) + id', ikinci.status === 409 && ikinci.d.id === satin.d.id, ikinci);
     const ipt = await js('/api/license/purchases/' + satin.d.id + '/cancel', { token: sahip.token, method: 'POST' });
     const iptSonra = (await js('/api/license/purchases/' + satin.d.id, { token: sahip.token })).d;
     ok('musteri bekleyen bildirimi iptal eder: CANCELLED', ipt.status === 200 && iptSonra.status === 'CANCELLED' && iptSonra.durum === 'iptal', [ipt, iptSonra]);
     ok('iptal edileni tekrar iptal 409', (await js('/api/license/purchases/' + satin.d.id + '/cancel', { token: sahip.token, method: 'POST' })).status === 409);
     ok('bilinmeyen kayit iptal 404', (await js('/api/license/purchases/yok/cancel', { token: sahip.token, method: 'POST' })).status === 404);
-    const yeni = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
+    const yeni = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('iptalden sonra yeni secimle bildirim acilir (201)', yeni.status === 201, yeni);
     ok('listede 2 kayit: iptal + beklemede', (await js('/api/license/purchases', { token: sahip.token })).d.length === 2);
 
@@ -105,7 +105,7 @@ async function temizle() {
     await query("UPDATE lisans_odemeleri SET durum = 'iptal' WHERE tenant_id = ?", [me.tenantId]);
     const yk2 = await js('/api/license/yenileme-kanali', { token: sahip.token });
     ok('kanal soframix + url', yk2.d.kanal === 'soframix' && /\/isletme\/pos$/.test(yk2.d.url), yk2.d);
-    const satin2 = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: [] } });
+    const satin2 = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('SofraMix hesabinda satin alma 409 WRONG_CHANNEL', satin2.status === 409 && satin2.d.code === 'WRONG_CHANNEL', satin2);
 
     await temizle();

@@ -47,6 +47,13 @@ async function modulGorunurMu(kod) {
     return r.rows.length ? r.rows[0].gorunur === 1 : false;
 }
 
+// Paket satiri (gizliler DAHIL): onayda masa limitini yazmak icin. Musteri gizli paketi SATIN ALAMAZ
+// (musteriKatalogu'nda yok); ama onaylanmis bir odemenin paketi sonradan gizlense de onay yapilabilmeli.
+async function tierSatiri(kod) {
+    const r = await query("SELECT kod, ad, fiyat, masa_limiti, gorunur FROM lisans_katalog WHERE tur = 'TIER' AND kod = ?", [kod]);
+    return r.rows[0] || null;
+}
+
 async function guncelle(id, alanlar) {
     const a = alanlar || {};
     const mevcut = (await query('SELECT * FROM lisans_katalog WHERE id = ?', [id])).rows[0];
@@ -71,4 +78,4 @@ async function guncelle(id, alanlar) {
     return (await query('SELECT * FROM lisans_katalog WHERE id = ?', [id])).rows[0];
 }
 
-module.exports = { musteriKatalogu, tamKatalog, modulGorunurMu, guncelle };
+module.exports = { musteriKatalogu, tamKatalog, modulGorunurMu, guncelle, tierSatiri };

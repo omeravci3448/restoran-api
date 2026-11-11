@@ -97,7 +97,7 @@ const kalem = (id) => query('SELECT status, prep_started_at, ready_at, served_at
     const sigara = (await js('/api/products', { token: sahip.token, body: { name: 'Sigara', price: 100, categoryId: kSigara.id, isAvailable: true } })).d;
     const m1 = (await js('/api/tables', { token: sahip.token, body: { code: 'M1', name: 'Masa 1', section: 'Salon' } })).d;
     const m2 = (await js('/api/tables', { token: sahip.token, body: { code: 'M2', name: 'Masa 2', section: 'Bahce' } })).d;
-    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
+    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [tid]);
 
     console.log('\n=== Kuyruk ===');
     const s1 = (await js('/api/orders', { token: garson.token, body: { tableId: m1.id } })).d;

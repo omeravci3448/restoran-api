@@ -15,7 +15,7 @@ exports.stream = async (req, res) => {
     let row;
     try {
         const r = await query(
-            `SELECT t.id AS tenant_id, t.is_active AS tenant_active, t.license_end_date
+            `SELECT t.id AS tenant_id, t.is_active AS tenant_active, t.license_end_date, t.license_modules
                FROM users u JOIN tenants t ON t.id = u.tenant_id
               WHERE u.id = ?`,
             [payload.userId]);
@@ -23,6 +23,9 @@ exports.stream = async (req, res) => {
     } catch (_) { return res.status(500).end(); }
 
     if (!row || !row.tenant_active) return res.status(403).end();
+    // Canli olaylar QR siparisi / adisyon (BASE) ve garson cagrisi (GARSON): ikisi de yoksa akis yok
+    const { varMi } = require('../services/lisansModul');
+    if (!varMi(row.license_modules, 'BASE') && !varMi(row.license_modules, 'GARSON')) return res.status(403).end();
     if (row.license_end_date && Date.now() > new Date(row.license_end_date).getTime()) {
         return res.status(403).end();
     }

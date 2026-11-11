@@ -110,7 +110,7 @@ const dosyaVar = (tenantId, url) => !!url && fs.existsSync(path.join(UPLOADS_DIR
     const tq = (await query('SELECT qr_token FROM tables WHERE id = ?', [masa.id])).rows[0];
     let pm = await js(`/api/public/m/${p4.slug}/${tq.qr_token}/menu`);
     if (pm.status === 403) {
-        await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
+        await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [tid]);
         pm = await js(`/api/public/m/${p4.slug}/${tq.qr_token}/menu`);
     }
     ok('public menu 200 + business.logo_url', pm.status === 200 && pm.d && pm.d.business && pm.d.business.logo_url === p4.logo_url, [pm.status, pm.d && pm.d.business]);

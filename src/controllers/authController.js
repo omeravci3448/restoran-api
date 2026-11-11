@@ -117,7 +117,9 @@ exports.verifyRegistration = async (req, res) => {
     // Tier'ın MASA LİMİTİ yine geçerli (kayıttaki paket seçimi sınırlar).
     const demoEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     // Hub erişilemezse bile demoda tüm modüller açık olsun diye bilinen liste (fallback)
-    const DEMO_FALLBACK_MODULES = ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK', 'MARKETPLACE', 'FINANSAL_RAPORLAMA'];
+    // Deneme her zaman TAM: butun moduller (moduler lisans, QR_SIPARIS dahil). Hub listesi eksik olsa da
+    // bu liste hep eklenir (asagida).
+    const DEMO_FALLBACK_MODULES = ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'MARKETPLACE', 'FINANSAL_RAPORLAMA'];
     // Hub erişilemezse masa limiti yine uygulansın diye bilinen tier limitleri (fallback).
     // null = sınırsız (TIER_20_PLUS). Bilinmeyen tier → güvenli küçük default (5).
     const FALLBACK_TIER_LIMITS = { TIER_1_5: 5, TIER_6_10: 10, TIER_11_20: 20, TIER_20_PLUS: null };
@@ -126,7 +128,7 @@ exports.verifyRegistration = async (req, res) => {
     try {
         const catalog = await hubService.getModulesAndTiers();
         const allModuleNames = (catalog.modules || []).map(m => m.name);
-        modules = Array.from(new Set([...modules, ...allModuleNames]));
+        modules = Array.from(new Set([...modules, ...allModuleNames, ...DEMO_FALLBACK_MODULES]));
         const tierRow = catalog.tiers.find(t => t.name === form.tier);
         // Hub tier'ı bulduysa onu kullan; bulamadıysa fallback
         tableLimit = tierRow ? (tierRow.tableLimit ?? null)
@@ -215,7 +217,7 @@ exports.login = async (req, res) => {
     if (!email || !password) return res.status(400).json({ message: 'E-posta ve şifre gerekli.' });
 
     // İşyeri kodu opsiyonel — verilirse o tenant'a, verilmezse en son kayıt olan tenant'a giriş
-    let sql = `SELECT u.*, t.business_code, t.is_active AS tenant_active
+    let sql = `SELECT u.*, t.business_code, t.is_active AS tenant_active, t.license_modules
                  FROM users u JOIN tenants t ON t.id = u.tenant_id
                 WHERE u.email = ?`;
     const params = [email];
@@ -245,6 +247,20 @@ exports.login = async (req, res) => {
     const ok = await bcrypt.compare(password, u.password_hash);
     if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
     if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
+    // Moduler lisans: mutfak hesabi Adisyon ve Kasa (BASE) ister; garson hesabi BASE ya da GARSON (BASE yoksa
+    // garson uygulamasi yalniz cagrilari gosterir). Ikisi de yoksa anlamli bir mesajla girilmez.
+    {
+        const { varMi } = require('../services/lisansModul');
+        const m = u.license_modules;
+        if (u.role === 'KITCHEN' && !varMi(m, 'BASE')) {
+            return res.status(403).json({ code: 'MODULE_NOT_LICENSED', module: 'BASE',
+                message: 'Mutfak ekranı Adisyon ve Kasa modülüyle çalışır; bu işletmenin paketinde yok.' });
+        }
+        if (u.role === 'WAITER' && !varMi(m, 'BASE') && !varMi(m, 'GARSON')) {
+            return res.status(403).json({ code: 'MODULE_NOT_LICENSED', module: 'GARSON',
+                message: 'Garson uygulaması bu işletmenin paketinde yok.' });
+        }
+    }
 
     // Arka planda hub ile uzlaştır (self-healing): kayıt sırasında hub erişilemediyse
     // müşteri hub'da hiç oluşmamış olabilir. Login'de tekrar sync ederek hub'da
@@ -312,6 +328,8 @@ exports.me = async (req, res) => {
         mutfakEkrani: !!ek.mutfak_ekrani,   // kenar cubugunda "Mutfak Ekrani" baglantisi
         licenseTier: req.user.licenseTier,
         modules: req.user.modules,
+        // Adisyon ve Kasa (BASE) yoksa panel menu kipinde (Menu, Masalar, Masa Plakalari, Ayarlar, Lisans)
+        menuKipi: !(req.user.modules || []).some((m) => m === 'BASE' || m === 'ALL'),
         // Lisans durumu - arayuz serit gostersin diye (bkz services/lisansDurumu.js)
         lisansDurum: req.user.lisansDurum,            // AKTIF | SALT_OKUNUR
         lisansBitis: req.user.lisansBitis,

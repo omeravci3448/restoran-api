@@ -3,6 +3,7 @@ const ctrl = require('../controllers/supplierController');
 const { protect, requireRole, requireModule } = require('../middleware/authMiddleware');
 
 router.use(protect);
+router.use(requireModule('BASE'));   // Adisyon ve Kasa (BASE) yoksa: yalniz QR menu isletmesi, POS ucu yok
 router.use(requireModule('STOK'));
 router.get('/', ctrl.list);
 router.post('/', requireRole('OWNER', 'MANAGER'), ctrl.create);

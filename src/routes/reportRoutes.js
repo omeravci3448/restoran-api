@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/reportController');
-const { protect, requireManagerPin, requireRole } = require('../middleware/authMiddleware');
+const { protect, requireManagerPin, requireRole, requireModule } = require('../middleware/authMiddleware');
 
 router.use(protect);
+router.use(requireModule('BASE'));   // Adisyon ve Kasa (BASE) yoksa: yalniz QR menu isletmesi, POS ucu yok
 router.use(requireRole('OWNER', 'MANAGER')); // kasiyer rol olarak engellenir (PIN kurulmamış olsa bile)
 router.use(requireManagerPin);                // + yönetici şifresi katmanı
 router.get('/day', ctrl.daySummary);     // ?date=YYYY-MM-DD (default: bugün)

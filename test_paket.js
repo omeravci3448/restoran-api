@@ -175,7 +175,7 @@ const smx = http.createServer(async (req, res) => {
     const ayran = (await js('/api/products', { token: sahip.token, body: { name: 'Ayran', price: 30, categoryId: kat.id, isAvailable: true, tracksStock: true, stockQty: 50 } })).d;
     const m1 = (await js('/api/tables', { token: sahip.token, body: { code: 'M1', name: 'Masa 1', section: 'Salon' } })).d;
     // MARKETPLACE modulu YOK: Paket Servis temel pakette calismali
-    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
+    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [tid]);
     const sahipB = await devir(NO_B, AD_B);
     const tidB = (await js('/api/auth/me', { token: sahipB.token })).d.tenantId;
     ok('B isletmesi acildi', !!tidB && tidB !== tid);
@@ -494,7 +494,7 @@ const smx = http.createServer(async (req, res) => {
     ok('adi birebir sistem kodu ("soframix") olan kanala elle siparis girilmez (400): platform siparisleriyle karismaz', bElle.status === 400
         && !(await query("SELECT COUNT(*) c FROM orders WHERE tenant_id = ? AND channel = 'soframix'", [tidB])).rows[0].c, bElle);
     await query('UPDATE tenants SET license_modules = ? WHERE id = ?', [modB, tidB]);
-    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
+    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [tid]);
 
     console.log('\n=== 13a) Yerelde kapali siparise gelen olay kapanisi/ciroyu/odemeyi DEGISTIRMEZ; ilk kez teslim gorulen siparise tek odeme ===');
     // 9100: kapanis zamani BOS eski kayit (veri onarimiyla kapanmis), 9101: 40 gun once kapanmis, 9102: yerelde iptal edilmis

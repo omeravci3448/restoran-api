@@ -5,6 +5,7 @@ const { protect, requireRole } = require('../middleware/authMiddleware');
 router.use(protect);
 router.get('/', ctrl.list);
 router.get('/limit-info', ctrl.limitInfo);
+router.get('/karekodlar.pdf', ctrl.karekodlarPdf);   // tum karekodlar, A4 (kisa adresle)
 router.post('/', requireRole('OWNER', 'MANAGER'), ctrl.create);
 router.post('/bulk', requireRole('OWNER', 'MANAGER'), ctrl.bulkCreate);
 router.put('/:id', requireRole('OWNER', 'MANAGER'), ctrl.update);

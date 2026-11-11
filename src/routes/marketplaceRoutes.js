@@ -4,6 +4,7 @@ const kur = require('../controllers/channelSetupController');
 const { protect, requireModule, requireRole } = require('../middleware/authMiddleware');
 
 router.use(protect);
+router.use(requireModule('BASE'));   // Adisyon ve Kasa (BASE) yoksa: yalniz QR menu isletmesi, POS ucu yok
 router.use(requireModule('MARKETPLACE'));
 
 // Sipariş — kasiyer de girebilir

@@ -77,7 +77,7 @@ const gunlukSay = (tid, islem) => query('SELECT * FROM islem_gunlugu WHERE tenan
     const kat = (await js('/api/categories', { token: sahip.token, body: { name: 'Corbalar' } })).d;
     const u1 = (await js('/api/products', { token: sahip.token, body: { name: 'Mercimek', price: 90, categoryId: kat.id, isAvailable: true } })).d;
     const u2 = (await js('/api/products', { token: sahip.token, body: { name: 'Ezogelin', price: 95, categoryId: kat.id, isAvailable: true } })).d;
-    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [tid]);
+    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [tid]);
     const slug = (await js('/api/tenant/me', { token: sahip.token })).d.slug;
     const q2 = (await query('SELECT qr_token FROM tables WHERE id = ?', [m2.id])).rows[0].qr_token;
     const pub = (yol, body) => js(`/api/public/m/${slug}/${q2}${yol}`, body ? { body } : {});

@@ -76,7 +76,7 @@ async function isletmeKur(g, personel) {
         await js('/api/auth/staff', { token: sahip.token, body: { email, password: 'personel123', name: ad, role: rol } });
         tokenlar[ad] = (await js('/api/auth/login', { body: { email, businessCode: me.businessCode, password: 'personel123' } })).d.token;
     }
-    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","GARSON"]' WHERE id = ?`, [me.tenantId]);
+    await query(`UPDATE tenants SET license_modules = '["BASE","MENU_DIGITAL","QR_SIPARIS","GARSON"]' WHERE id = ?`, [me.tenantId]);
     return { tid: me.tenantId, tokenlar };
 }
 

@@ -18,10 +18,12 @@ async function rootaBildir(konu, satirlar, secenek = {}) {
         const { sendMail } = require('./emailService');
         const panel = (process.env.POS_PANEL_URL || 'https://restoran.mdayazilim.com').replace(/\/+$/, '');
         const dugme = secenek.dugme || 'Root paneli > Ödeme Bildirimleri';
+        // secenek.sekme: panel dogrudan o sekmede acilsin (yalniz kucuk harf, sabit degerler)
+        const sekme = /^[a-z]{2,20}$/.test(secenek.sekme || '') ? '?sekme=' + secenek.sekme : '';
         const html = '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:520px;padding:16px;border:1px solid #e5e7eb;border-radius:12px">'
             + '<h2 style="color:#E2622A;margin:0 0 10px">' + esc(konu) + '</h2>'
             + satirlar.map(([k, v]) => '<div style="margin:2px 0"><b>' + esc(k) + ':</b> ' + esc(v) + '</div>').join('')
-            + '<p style="margin-top:14px"><a href="' + panel + '/1453" style="background:#E2622A;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none">'
+            + '<p style="margin-top:14px"><a href="' + panel + '/1453' + sekme + '" style="background:#E2622A;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none">'
             + esc(dugme) + '</a></p></div>';
         // Konu satirinda satir sonu olmasin (baslik enjeksiyonu)
         const baslik = '[MDA POS] ' + String(konu).replace(/[\r\n]+/g, ' ').slice(0, 160);

@@ -28,12 +28,15 @@ exports.publicCall = async (req, res) => {
     const { tenantSlug, qrToken } = req.params;
     const reason = (req.body && req.body.reason) || 'GENERIC';
     const t = await query(
-        `SELECT tb.id AS table_id, tb.tenant_id, tb.name AS table_name, tb.code AS table_code, tb.section
+        `SELECT tb.id AS table_id, tb.tenant_id, tb.name AS table_name, tb.code AS table_code, tb.section,
+                te.license_modules, te.qr_siparis_acik, te.qr_garson_acik, te.qr_hesap_acik
            FROM tables tb JOIN tenants te ON te.id = tb.tenant_id
           WHERE te.slug = ? AND tb.qr_token = ? AND tb.is_active = 1 AND te.is_active = 1`,
         [tenantSlug, qrToken]);
     if (!t.rows.length) return res.status(404).json({ message: 'Masa bulunamadı.' });
     const tb = t.rows[0];
+    // Garson cagir etkin degil (GARSON + MENU_DIGITAL modulu yok ya da Ayarlar > QR Menu'de kapali): 403 QR_GARSON_KAPALI
+    if (require('./publicController').ozellikKapali(tb, 'garson', res)) return;
 
     // Ayni masadan 60 sn icinde ikinci cagri yeni kayit/bildirim uretmez: musteri dugmeye ust
     // uste basinca (ya da biri QR'la oynayinca) personelin telefonu art arda calmasin.

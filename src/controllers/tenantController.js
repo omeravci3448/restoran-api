@@ -3,6 +3,7 @@ const path = require('path');
 const { query } = require('../config/db');
 const { saveDataUrl, UPLOADS_DIR } = require('../services/imageService');
 const push = require('../services/pushBildirim');
+const M = require('../services/lisansModul');
 
 exports.getProfile = async (req, res) => {
     const r = await query(
@@ -12,12 +13,19 @@ exports.getProfile = async (req, res) => {
                 referral_code, referred_by, discount_rate,
                 currency, tax_rate,
                 license_tier, license_modules, license_end_date, show_cost_analytics, qr_onay_gerekli, mutfak_ekrani,
-                bildirim_roller, is_active, created_at
+                bildirim_roller, is_active, created_at,
+                qr_siparis_acik, qr_garson_acik, qr_hesap_acik
            FROM tenants WHERE id = ?`,
         [req.user.tenantId]
     );
     if (!r.rows.length) return res.status(404).json({ message: 'Bulunamadı.' });
     const t = r.rows[0];
+    // QR menu anahtarlari (kayitli deger), misafirin fiilen gordugu (modul VE anahtar) ve anahtarin
+    // modulu lisansta var mi (yoksa Ayarlar'da anahtar pasif: 'Bu ozellik paketinizde yok')
+    for (const k of ['qr_siparis_acik', 'qr_garson_acik', 'qr_hesap_acik']) t[k] = M.acikMi(t[k]) ? 1 : 0;
+    t.qr_ozellikleri = M.qrOzellikleri(t);
+    t.qr_modulleri = M.anahtarModulleri(t);
+    t.menu_kipi = M.menuKipiMi(t.license_modules);
     try { t.license_modules = t.license_modules ? JSON.parse(t.license_modules) : []; } catch (_) { t.license_modules = []; }
     // Telefon bildirimi alan roller (NULL = varsayilan; services/pushBildirim.js)
     t.bildirim_roller = push.rolleriCoz(t.bildirim_roller);
@@ -111,6 +119,9 @@ exports.updateProfile = async (req, res) => {
                 stock_module_on = COALESCE(?, stock_module_on),
                 stock_out_blocks_sale = COALESCE(?, stock_out_blocks_sale),
                 qr_onay_gerekli = COALESCE(?, qr_onay_gerekli),
+                qr_siparis_acik = COALESCE(?, qr_siparis_acik),
+                qr_garson_acik = COALESCE(?, qr_garson_acik),
+                qr_hesap_acik = COALESCE(?, qr_hesap_acik),
                 mutfak_ekrani = COALESCE(?, mutfak_ekrani),
                 bildirim_roller = COALESCE(?, bildirim_roller),
                 logo_url = CASE WHEN ? = 1 THEN ? ELSE logo_url END,
@@ -124,6 +135,9 @@ exports.updateProfile = async (req, res) => {
             f.stockModuleOn == null ? null : (f.stockModuleOn ? 1 : 0),
             f.stockOutBlocksSale == null ? null : (f.stockOutBlocksSale ? 1 : 0),
             f.qrOnayGerekli == null ? null : (f.qrOnayGerekli ? 1 : 0),
+            f.qrSiparisAcik == null ? null : (f.qrSiparisAcik ? 1 : 0),
+            f.qrGarsonAcik == null ? null : (f.qrGarsonAcik ? 1 : 0),
+            f.qrHesapAcik == null ? null : (f.qrHesapAcik ? 1 : 0),
             f.mutfakEkrani == null ? null : (f.mutfakEkrani ? 1 : 0),
             bildirimRoller,
             logo.degis, logo.yol,

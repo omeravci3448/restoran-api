@@ -252,7 +252,7 @@ exports.listTenants = async (_req, res) => {
     const r = await query(
         `SELECT t.id, t.business_code, t.business_name, t.parent_org, t.slug,
                 t.owner_email, t.phone, t.license_modules, t.license_tier,
-                t.license_end_date, t.license_table_limit, t.is_active, t.created_at,
+                t.license_end_date, t.license_table_limit, t.is_active, t.created_at, t.plaka_hediye_hakki,
                 (SELECT COUNT(*) FROM tables   x WHERE x.tenant_id = t.id AND x.is_active = 1)    AS masa_sayisi,
                 (SELECT COUNT(*) FROM products x WHERE x.tenant_id = t.id AND x.is_available = 1) AS urun_sayisi,
                 (SELECT COUNT(*) FROM users    x WHERE x.tenant_id = t.id AND x.is_active = 1)    AS kullanici_sayisi,
@@ -280,6 +280,8 @@ exports.listTenants = async (_req, res) => {
         return {
             ...t,
             license_modules: mods,
+            // Adisyon ve Kasa (BASE) yoksa isletme yalniz QR menu kullaniyor (panel menu kipinde)
+            menu_kipi: !mods.includes('BASE') && !mods.includes('ALL'),
             lisans_durum: d.durum,
             lisans_kalan_gun: d.kalanGun,
             // Odemesi olan kiraci artik deneme DEGILDIR; tier guncellenmemis olsa
@@ -358,7 +360,8 @@ async function benzersizKod() {
     throw new Error('İşyeri kodu üretilemedi.');
 }
 
-const VARSAYILAN_MODULLER = ['BASE', 'MENU_DIGITAL', 'GARSON', 'STOK', 'FINANSAL_RAPORLAMA'];
+const VARSAYILAN_MODULLER = ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'FINANSAL_RAPORLAMA'];
+const { bagimliliklariTamamla } = require('../services/lisansModul');
 
 // --- Yeni işletme aç ---
 exports.createTenant = async (req, res) => {
@@ -382,7 +385,8 @@ exports.createTenant = async (req, res) => {
 
     const slug = await benzersizSlug(ad);
     const tenantId = uuidv4();
-    const moduller = Array.isArray(f.modules) && f.modules.length ? f.modules : VARSAYILAN_MODULLER;
+    // Secilen modullerin bagimliliklari kendiliginden eklenir (orn. Masadan Siparis -> QR Menu + Adisyon ve Kasa)
+    const moduller = bagimliliklariTamamla(Array.isArray(f.modules) && f.modules.length ? f.modules : VARSAYILAN_MODULLER).moduller;
     // Masa limiti: boş => sınırsız (belediye işletmelerinde lisans satmıyoruz)
     const masaLimiti = (f.tableLimit === '' || f.tableLimit == null) ? null : (Number(f.tableLimit) || null);
     const bitis = f.licenseEndDate || '2099-12-31T23:59:59.000Z';
@@ -412,8 +416,24 @@ exports.createTenant = async (req, res) => {
 // karekodlar ve personelin giriş alışkanlığı kırılırdı.
 exports.updateTenant = async (req, res) => {
     const f = req.body || {};
-    const limitGeldi = Object.prototype.hasOwnProperty.call(f, 'tableLimit');
+    const has = (k) => Object.prototype.hasOwnProperty.call(f, k);
+    const limitGeldi = has('tableLimit');
     const masaLimiti = limitGeldi ? ((f.tableLimit === '' || f.tableLimit == null) ? null : (Number(f.tableLimit) || null)) : null;
+    const t = (await query('SELECT id FROM tenants WHERE id = ?', [req.params.id])).rows[0];
+    if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+    // Modul secimi: bagimliliklar kendiliginden eklenir (orn. Masadan Siparis -> QR Menu + Adisyon ve Kasa)
+    const moduller = Array.isArray(f.modules) ? bagimliliklariTamamla(f.modules).moduller : null;
+
+    // Plaka hediye hakki (elle): '' / null = otomatik kural, 1 = ver, 0 = kaldir
+    if (has('plakaHediyeHakki')) {
+        const v = f.plakaHediyeHakki;
+        let hak;
+        if (v === '' || v === null || v === 'otomatik') hak = null;
+        else if (v === 1 || v === '1' || v === true) hak = 1;
+        else if (v === 0 || v === '0' || v === false) hak = 0;
+        else return res.status(400).json({ message: 'Plaka hediye hakkı otomatik, 1 ya da 0 olmalı.' });
+        await query('UPDATE tenants SET plaka_hediye_hakki = ? WHERE id = ?', [hak, t.id]);
+    }
     await query(
         `UPDATE tenants
             SET business_name = COALESCE(?, business_name),
@@ -427,12 +447,12 @@ exports.updateTenant = async (req, res) => {
                 is_active     = COALESCE(?, is_active)
           WHERE id = ?`,
         [f.businessName || null, f.parentOrg || null, f.ownerEmail || null, f.phone || null, f.address || null,
-            Array.isArray(f.modules) ? JSON.stringify(f.modules) : null,
+            moduller ? JSON.stringify(moduller) : null,
             f.licenseEndDate || null,
             limitGeldi ? 1 : 0, masaLimiti,
             f.isActive == null ? null : (f.isActive ? 1 : 0),
             req.params.id]);
-    res.json({ ok: true, message: 'Güncellendi.' });
+    res.json({ ok: true, message: 'Güncellendi.', modules: moduller || undefined });
 };
 
 // --- Yönetici şifresini sıfırla ---
@@ -623,16 +643,21 @@ exports.lisansOdemeOnayla = async (req, res) => {
     let moduller = [];
     try { moduller = JSON.parse(o.moduller || '[]'); } catch (_) {}
 
+    // Moduler lisans: masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda
+    // yoksa (eski kayit) sinira dokunulmaz.
+    const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
     await query(
         `UPDATE tenants SET license_end_date = ?, is_active = 1,
                             license_tier = COALESCE(?, license_tier),
-                            license_modules = ?
+                            license_modules = ?,
+                            license_table_limit = CASE WHEN ? = 1 THEN ? ELSE license_table_limit END
           WHERE id = ?`,
-        [bitis, o.tier || null, JSON.stringify(moduller), t.id]);
+        [bitis, o.tier || null, JSON.stringify(moduller), kademe ? 1 : 0, kademe ? kademe.masa_limiti : null, t.id]);
+    // onay_gun: plaka hediyesinin "yillik odeme" olcutu bu sayiya bakar (services/plakaHak.js)
     await query(
-        `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?,
+        `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
                                      islenen_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [String(req.body?.not || '').slice(0, 300), bitis, o.id]);
+        [String(req.body?.not || '').slice(0, 300), bitis, Math.round(gun), o.id]);
 
     res.json({ ok: true, license_end_date: bitis,
         message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });

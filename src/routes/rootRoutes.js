@@ -62,4 +62,21 @@ router.get('/lisans-odemeleri', protectRoot, ctrl.lisansOdemeleri);
 router.post('/lisans-odemeleri/:id/onayla', protectRoot, ctrl.lisansOdemeOnayla);
 router.post('/lisans-odemeleri/:id/reddet', protectRoot, ctrl.lisansOdemeReddet);
 
+// Masa plakasi talepleri (hediye + ucretli): liste, durum, not, baski dosyasi, ayarlar
+const plaka = require('../controllers/rootPlakaController');
+router.get('/plaka/sayac', protectRoot, plaka.sayac);
+router.get('/plaka/ayarlar', protectRoot, plaka.ayarlar);
+router.put('/plaka/ayarlar', protectRoot, plaka.ayarYaz);
+router.get('/plaka/hak/:tenantId', protectRoot, plaka.hak);
+router.get('/plaka/kurallar', protectRoot, plaka.kurallar);
+router.get('/plaka/kurallar/onizleme', protectRoot, plaka.kuralOnizleme);
+router.post('/plaka/kurallar', protectRoot, plaka.kuralEkle);
+router.patch('/plaka/kurallar/:id', protectRoot, plaka.kuralGuncelle);
+router.delete('/plaka/kurallar/:id', protectRoot, plaka.kuralSil);
+router.get('/plaka/talepler', protectRoot, plaka.liste);
+router.get('/plaka/talepler/:id', protectRoot, plaka.getir);
+router.get('/plaka/talepler/:id/baski.pdf', protectRoot, plaka.baski);
+router.post('/plaka/talepler/:id/durum', protectRoot, plaka.durum);
+router.post('/plaka/talepler/:id/not', protectRoot, plaka.not);
+
 module.exports = router;

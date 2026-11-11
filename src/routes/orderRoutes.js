@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/orderController');
-const { protect, requireRole } = require('../middleware/authMiddleware');
+const { protect, requireRole, requireModule } = require('../middleware/authMiddleware');
 
 router.use(protect);
+router.use(requireModule('BASE'));   // Adisyon ve Kasa (BASE) yoksa: yalniz QR menu isletmesi, POS ucu yok
 router.get('/', ctrl.list);
 router.get('/pending-qr', ctrl.pendingQr);           // kasada "yeni QR siparişleri" alanı
 router.post('/pending-qr/ack', ctrl.ackPendingQr);   // "gördüm" → alandan düş

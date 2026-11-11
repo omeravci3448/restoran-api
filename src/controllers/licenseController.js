@@ -2,6 +2,8 @@ const { query } = require('../config/db');
 const hub = require('../services/hubService');
 const { v4: uuidv4 } = require('uuid');
 const { rootaBildir } = require('../services/rootBildirim');
+const { fiyatla } = require('../services/lisansFiyat');
+const { AD: MODUL_AD } = require('../services/lisansModul');
 
 // Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
 // Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların
@@ -111,47 +113,22 @@ exports.kimlikOpsiyonel = async (req, _res, next) => {
     next();
 };
 
+// Moduler fiyat (services/lisansFiyat.js): masa kademesi + acikca secilen moduller (bagimliliklar
+// kendiliginden eklenir). Adisyon ve Kasa (BASE) fiyati kademenin fiyatidir; secilmezse kademe fiyati yok.
 exports.quote = async (req, res) => {
     const { tier, modules = [] } = req.body || {};
-    const K = require('../services/lisansKatalog');
-    const data = await K.musteriKatalogu();
     const tenantId = req.user && req.user.tenantId;
-    const tenantRow = tenantId
-        ? await query('SELECT discount_rate FROM tenants WHERE id = ?', [tenantId])
-        : { rows: [] };
-
-    const tierRow = data.tiers.find(t => t.name === tier);
-    if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
-
-    const breakdown = [{ name: tier, displayName: tierRow.displayName, type: 'TIER', price: tierRow.price }];
-    let subtotal = Number(tierRow.price);
-
-    // Ucretsiz moduller otomatik ekleniyor (musteri secmese de dahil).
-    const moduleNames = Array.from(new Set([
-        ...modules,
-        ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name),
-    ]));
-
-    const bilinmeyen = [];
-    for (const m of moduleNames) {
-        const row = data.modules.find(x => x.name === m);
-        if (!row) { bilinmeyen.push(m); continue; }
-        breakdown.push({ name: row.name, displayName: row.displayName, type: 'MODULE', price: row.price });
-        subtotal += Number(row.price);
+    const tenantRow = tenantId ? (await query('SELECT discount_rate FROM tenants WHERE id = ?', [tenantId])).rows[0] : null;
+    let f;
+    try {
+        f = await fiyatla({ tier, modules, indirimOrani: tenantRow ? tenantRow.discount_rate : 0 });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message });
+        throw e;
     }
-    // Sessizce dusurmuyoruz: musteri sectigini sandigi bir seyin hesaba
-    // girmedigini bilmeli.
-    if (bilinmeyen.length) {
-        return res.status(400).json({ message: 'Şu an satışta olmayan bir seçenek var: ' + bilinmeyen.join(', ') });
-    }
-
-    const discountRate = Number(tenantRow.rows[0]?.discount_rate || 0);
-    const discountAmount = Math.round((subtotal * discountRate / 100) * 100) / 100;
-    const total = Math.max(0, subtotal - discountAmount);
-
     res.json({
-        currency: 'TRY', tier, modules: moduleNames,
-        subtotal, discountRate, discountAmount, total, breakdown,
+        currency: 'TRY', tier, modules: f.modules, eklenenBagimliliklar: f.eklenenBagimliliklar, tableLimit: f.tableLimit,
+        subtotal: f.subtotal, discountRate: f.discountRate, discountAmount: f.discountAmount, total: f.total, breakdown: f.breakdown,
     });
 };
 
@@ -215,24 +192,16 @@ exports.purchase = async (req, res) => {
         return res.status(409).json({ code: 'WRONG_CHANNEL', ...yk });
     }
     const { tier, modules = [], customerNote } = req.body || {};
-    const K = require('../services/lisansKatalog');
-    const data = await K.musteriKatalogu();
-    const tierRow = data.tiers.find(t => t.name === tier);
-    if (!tierRow) return res.status(400).json({ message: 'Geçersiz paket.' });
-
-    const modulAdlari = Array.from(new Set([
-        ...modules,
-        ...data.modules.filter(m => Number(m.price) === 0).map(m => m.name),
-    ]));
-    let toplam = Number(tierRow.price);
-    for (const m of modulAdlari) {
-        const row = data.modules.find(x => x.name === m);
-        if (!row) return res.status(400).json({ message: 'Şu an satışta olmayan bir seçenek var: ' + m });
-        toplam += Number(row.price);
-    }
     const t = (await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])).rows[0];
-    const indirim = Number(t?.discount_rate || 0);
-    toplam = Math.max(0, Math.round((toplam - (toplam * indirim / 100)) * 100) / 100);
+    let f;
+    try {
+        f = await fiyatla({ tier, modules, indirimOrani: t ? t.discount_rate : 0 });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message });
+        throw e;
+    }
+    const modulAdlari = f.modules;
+    const toplam = f.total;
 
     // Ayni kiracinin bekleyen bildirimi varsa ikincisi acilmiyor: iki bildirim
     // onaylanirsa lisans iki kez uzar.
@@ -252,7 +221,7 @@ exports.purchase = async (req, res) => {
     const A = require('../services/sistemAyar');
     isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni ödeme bildirimi: ' + i.ad, [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['E-posta', i.eposta], ['Telefon', i.tel],
-        ['Paket', tier], ['Modüller', modulAdlari.join(', ')], ['Tutar', Number(toplam).toLocaleString('tr-TR') + ' TL (yıllık)'],
+        ['Masa paketi', f.tierRow.displayName + ' (' + tier + ')'], ['Modüller', modulAdlari.map((m) => MODUL_AD[m] || m).join(', ')], ['Tutar', Number(toplam).toLocaleString('tr-TR') + ' TL (yıllık)'],
     ])).catch(() => {});
     res.status(201).json({
         id, tier, modules: modulAdlari, total: toplam, status: 'PENDING_PAYMENT',
