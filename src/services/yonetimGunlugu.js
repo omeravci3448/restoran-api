@@ -92,7 +92,7 @@ function rootAraKatmani(req, res, next) {
     if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return next();
     res.on('finish', () => {
         if (!req.root || req._yonetimGunluguYazildi || res.statusCode >= 400) return;
-        const yol = (req.baseUrl || '') + (req.path || '');
+        const yol = String(req.originalUrl || '').split('?')[0];   // ic routerlarda baseUrl/path degisir; ozgun adres sabit
         const islem = /\/magaza(\/|$)/.test(yol) ? 'magaza' : (/\/cihaz(\/|$)/.test(yol) ? 'cihaz' : 'diger');
         kaydet(req, { islem, ozet: `${m} ${yol}`, ayrinti: { govde: req.body && Object.keys(req.body).length ? req.body : undefined } });
     });

@@ -100,6 +100,7 @@ const AYAR_ANAHTARLARI = ['bildirim_eposta', 'odeme_aciklama', 'deneme_gun', 'li
 let ayarYedek = null;
 let katalogYedek = null;
 let tohumYedek = null;
+let digerAktifDuyurular = [];   // gelistirme veritabaninda yayinda olan baska duyurular: test boyunca pasif, sonra geri
 async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
@@ -128,6 +129,8 @@ async function ayarlariYedekle() {
     ayarYedek = Object.fromEntries(r.rows.map((x) => [x.anahtar, x.deger]));
     katalogYedek = (await query("SELECT * FROM lisans_katalog WHERE id = 'MODUL-STOK'")).rows[0];
     tohumYedek = (await query("SELECT aktif FROM duyurular WHERE id = 'tohum-plaka-kampanyasi'")).rows[0] || null;
+    digerAktifDuyurular = (await query(`SELECT id FROM duyurular WHERE aktif = 1 AND baslik NOT LIKE '${ON}%'`)).rows.map((x) => x.id);
+    for (const id of digerAktifDuyurular) await query('UPDATE duyurular SET aktif = 0 WHERE id = ?', [id]);
 }
 async function ayarlariGeriYukle() {
     if (!ayarYedek) return;
@@ -138,6 +141,8 @@ async function ayarlariGeriYukle() {
     }
     if (katalogYedek) await query('UPDATE lisans_katalog SET fiyat = ?, gorunur = ? WHERE id = ?', [katalogYedek.fiyat, katalogYedek.gorunur, katalogYedek.id]);
     if (tohumYedek) await query("UPDATE duyurular SET aktif = ? WHERE id = 'tohum-plaka-kampanyasi'", [tohumYedek.aktif]);
+    for (const id of digerAktifDuyurular) await query('UPDATE duyurular SET aktif = 1 WHERE id = ?', [id]);
+    digerAktifDuyurular = [];
 }
 
 (async () => {
@@ -356,7 +361,9 @@ async function ayarlariGeriYukle() {
     console.log('\n=== 8) Duyurular: tohum taslak ===');
     const dl0 = await js('/api/root/yonetim/duyurular', { token: rj });
     const tohum = dl0.d.duyurular.find((x) => x.id === 'tohum-plaka-kampanyasi');
-    ok('ilk duyuru taslagi PASIF tohumlandi (metin + /plakalar)', tohum && tohum.aktif === (tohumYedek ? !!tohumYedek.aktif : false) && tohum.baglanti === '/plakalar'
+    const tohumSatir = (await query("SELECT aktif FROM sistem_ayarlari s, duyurular d WHERE s.anahtar = 'tohum_duyuru_plaka_v1' AND d.id = 'tohum-plaka-kampanyasi'")).rows;
+    ok('tohum isareti yazildi (silinirse geri gelmez)', tohumSatir.length === 1);
+    ok('ilk duyuru taslagi tohumlandi (metin + /plakalar; test sirasinda pasif)', tohum && tohum.aktif === false && tohum.hedef === 'tum' && tohum.baglanti === '/plakalar'
         && /Masa plakası kampanyası/.test(tohum.baslik) && /masa sayısı kadar karekodlu metal plaka hediye/.test(tohum.metin) && /Masa Plakaları sayfasına bakın/.test(tohum.metin), tohum);
     ok('hedefler ve kimler secenekleri', !!dl0.d.hedefler.adisyon && !!dl0.d.kimler.herkes);
 
@@ -380,7 +387,7 @@ async function ayarlariGeriYukle() {
     await yeni({ baslik: 'Bugun son', hedef: 'tum', baslangic: istanbulGunu(-3), bitis: istanbulGunu(0) });
     await yeni({ baslik: 'Kasiyer de gorsun', hedef: 'tum', kimler: 'herkes' });
     ok('planlanan duyurunun durumu', dYarin.d.yayinda === false && dYarin.d.durumAd === 'Planlandı');
-    const gor = async (tok) => ((await js('/api/duyurular', { token: tok })).d || []).map((x) => x.baslik.replace(`${ON} `, '')).filter((x) => !/kampanya/i.test(x));
+    const gor = async (tok) => ((await js('/api/duyurular', { token: tok })).d || []).filter((x) => x.baslik.startsWith(`${ON} `)).map((x) => x.baslik.replace(`${ON} `, ''));
     ok('isletme ucu oturumsuz 401', (await js('/api/duyurular')).status === 401);
     const gD = await gor(J.deneme), gO = await gor(J.odemeli), gM = await gor(J.menu), gK = await gor(J.kasa);
     const es = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());

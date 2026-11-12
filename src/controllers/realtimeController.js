@@ -55,7 +55,10 @@ exports.stream = async (req, res) => {
 
     // Destek oturumu kapatilir ya da suresi dolarsa akis da kapanir (30 sn'de bir bakilir)
     const destekDenetim = payload.destek ? setInterval(async () => {
-        try { const d = await require('../services/destekOturumu').kimlik(payload); if (d.hata) res.end(); } catch (_) {}
+        try {
+            const d = await require('../services/destekOturumu').kimlik(payload);
+            if (d.hata) { clearInterval(destekDenetim); clearInterval(keepAlive); bus.removeClient(tenantId, res); res.end(); }
+        } catch (_) { /* bir sonraki turda yeniden denenir */ }
     }, 30000) : null;
 
     req.on('close', () => {
