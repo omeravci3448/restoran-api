@@ -210,7 +210,8 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('menu kipi: telefon bildirimi 403 (BASE ya da GARSON yok)', (await js('/api/push/durum', { token: ymS })).status === 403);
     ok('menu kipi: canli olay akisi 403', (await fetch(TABAN + '/api/realtime/stream?token=' + encodeURIComponent(ymS))).status === 403);
     const acik = [['GET', '/api/tables'], ['GET', '/api/tables/limit-info'], ['GET', '/api/categories'], ['GET', '/api/products'], ['GET', '/api/tenant/me'],
-        ['GET', '/api/license/purchases'], ['GET', '/api/license/yenileme-kanali'], ['GET', '/api/plaka/durum'], ['GET', '/api/auth/staff']];
+        ['GET', '/api/license/purchases'], ['GET', '/api/license/yenileme-kanali'], ['GET', '/api/plaka/durum'], ['GET', '/api/auth/staff'],
+        ['GET', '/api/magaza/durum'], ['GET', '/api/magaza/siparisler']];   // magaza her pakette (menu kipi dahil)
     for (const [m, yol] of acik) ok(`menu kipi: ${m} ${yol} acik (200)`, (await js(yol, { token: ymS, method: m })).status === 200);
     ok('menu kipi: toplu masa ekle 201', (await js('/api/tables/bulk', { token: ymS, body: { count: 2, prefix: 'B', section: 'Bahçe' } })).status === 201);
     ok('menu kipi: masa duzenle 200', (await js('/api/tables/' + ym.masa.id, { token: ymS, method: 'PUT', body: { name: 'Pencere Önü' } })).status === 200);
@@ -362,14 +363,24 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     const ipA = { 'X-Forwarded-For': '10.77.' + crypto.randomInt(1, 250) + '.' + crypto.randomInt(1, 250) };
     const qk = (kod, h) => js('/api/public/q/' + kod, { headers: h });
     const gecerli = await Promise.all(Array.from({ length: 40 }, () => qk(ky1.d.kisaKod, ipA)));
-    ok('O1: gecerli kod sinirlanmaz (40 istek, hepsi 200)', gecerli.every((x) => x.status === 200), gecerli.map((x) => x.status).filter((c) => c !== 200));
+    ok('O1: gecerli kod sinirlanmaz (ayni anda 40 istek, hepsi 200)', gecerli.every((x) => x.status === 200), gecerli.map((x) => x.status).filter((c) => c !== 200));
+    const gecerli2 = [];
+    for (let i = 0; i < 60; i++) gecerli2.push((await qk(ky1.d.kisaKod, ipA)).status);
+    ok('O1: art arda 60 gecerli okutma da sinirlanmaz', gecerli2.every((c) => c === 200), gecerli2.filter((c) => c !== 200));
     const pasifMasa = (await query('SELECT kisa_kod FROM tables WHERE tenant_id = ? AND is_active = 0 AND kisa_kod IS NOT NULL LIMIT 1', [tam.id])).rows[0];
     const pasifler = await Promise.all(Array.from({ length: 5 }, () => qk(pasifMasa.kisa_kod, ipA)));
     ok('O1: silinmis masanin plakasi 404 KISA_KOD_PASIF ve bos deneme sayilmaz', pasifler.every((x) => x.status === 404 && x.d.code === 'KISA_KOD_PASIF'), pasifler[0]);
-    const bos = await Promise.all(Array.from({ length: 40 }, (_, i) => qk('ACDEFHJ' + K.ALFABE[i % K.ALFABE.length], ipA)));
-    const s404 = bos.filter((x) => x.status === 404).length, s429 = bos.filter((x) => x.status === 429).length;
-    ok('O1: ayni anda 40 bos deneme: sayac beklemeden once artar, tam 30 tanesi 404, 10 tanesi 429', s404 === 30 && s429 === 10, { s404, s429 });
+    // Sirali bos denemeler: tam 30 tanesi 404, 31. istek 429 (gecerli kod dahil: tarama durur)
+    const sirali = [];
+    for (let i = 0; i < 30; i++) sirali.push((await qk('ACDEFHJ' + K.ALFABE[i % K.ALFABE.length], ipA)).status);
+    ok('O1: 30 bos deneme 404', sirali.every((c) => c === 404), sirali.filter((c) => c !== 404));
     ok('O1: sinir asilinca bu IP gecerli kodda da 429 alir (tarama durur)', (await qk(ky1.d.kisaKod, ipA)).status === 429);
+    // Ayni anda 120 bos deneme (yeni anahtar): sayac beklemeden ONCE artar, bos deneme tavani 30 + 50 esz.
+    const ipB = { 'X-Forwarded-For': '10.78.' + crypto.randomInt(1, 250) + '.' + crypto.randomInt(1, 250) };
+    const bos = await Promise.all(Array.from({ length: 120 }, (_, i) => qk('ACDEFHK' + K.ALFABE[i % K.ALFABE.length], ipB)));
+    const s404 = bos.filter((x) => x.status === 404).length, s429 = bos.filter((x) => x.status === 429).length;
+    ok('O1: ayni anda 120 bos deneme: en cok 80 tanesi islenir (30 + 50 esz.), gerisi 429', s404 <= 80 && s404 + s429 === 120 && s429 >= 40, { s404, s429 });
+    ok('O1: ardindan bu anahtar da durur (429)', (await qk(ky1.d.kisaKod, ipB)).status === 429);
     // IPv6: ayni /64 icindeki adresler tek anahtar
     const v6a = { 'X-Forwarded-For': '2001:db8:77:' + crypto.randomInt(1, 9999).toString(16) + '::1' };
     const v6b = { 'X-Forwarded-For': v6a['X-Forwarded-For'].replace('::1', '::abcd') };

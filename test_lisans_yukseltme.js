@@ -383,7 +383,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('KAPALI isletmede kasiyer girisi 403 LICENSE_EXPIRED (anlamli mesaj)', kg.status === 403 && kg.d.code === 'LICENSE_EXPIRED' && /sahibi ya da müdür/.test(kg.d.message), kg);
     const kme = await js('/api/auth/me', { token: kp.token });
     ok('oturum bilgisi acik, lisans durumu KAPALI', kme.status === 200 && kme.d.lisansDurum === 'KAPALI', kme.d && kme.d.lisansDurum);
-    for (const [m, yol] of [['GET', '/api/orders'], ['GET', '/api/tables'], ['GET', '/api/tenant/me'], ['GET', '/api/plaka/durum'], ['GET', '/api/products'], ['POST', '/api/tables']]) {
+    for (const [m, yol] of [['GET', '/api/orders'], ['GET', '/api/tables'], ['GET', '/api/tenant/me'], ['GET', '/api/plaka/durum'], ['GET', '/api/products'], ['POST', '/api/tables'], ['GET', '/api/magaza/durum'], ['GET', '/api/magaza/siparisler']]) {
         const x = await js(yol, { token: kp.token, method: m, body: m === 'POST' ? { code: 'X1', name: 'X1' } : undefined });
         ok(`KAPALI: ${m} ${yol} 403 LICENSE_EXPIRED + Lisans sayfasi mesaji`, x.status === 403 && x.d.code === 'LICENSE_EXPIRED' && /Lisans sayfasına gidin/.test(x.d.message), x);
     }
