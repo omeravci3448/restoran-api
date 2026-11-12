@@ -195,6 +195,9 @@ const KONU = [
     [/^\/api\/magaza/, 'Mağaza'], [/^\/api\/auth/, 'Hesap'],
 ];
 const FIIL = { POST: 'kayıt / işlem', PUT: 'güncelleme', PATCH: 'güncelleme', DELETE: 'silme' };
+// Govdeyle sorgulanan OKUMA uclari (POST ama hicbir sey degistirmez): destek gunlugune "kayit / islem" yazilmaz,
+// islem sayacina girmez (guvenlik incelemesi, dusuk 7). Yol normallestirilmis bicimde.
+const OKUMA_POST = new Set(['/api/paket/musteri/bul', '/api/license/quote', '/api/magaza/sepet', '/api/auth/manager-verify']);
 function etiket(req) {
     const y = yolu(req);
     const m = String(req.method || '').toUpperCase();
@@ -205,6 +208,7 @@ function etiket(req) {
 function istekKaydi(req, res) {
     const m = String(req.method || '').toUpperCase();
     if (!YAZMA.has(m) || req._destekKaydi) return;   // protect ayni istekte iki kez calissa da tek kayit
+    if (m === 'POST' && OKUMA_POST.has(yolu(req))) return;
     req._destekKaydi = true;
     res.on('finish', () => {
         const d = req.user && req.user.destek;

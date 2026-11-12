@@ -9,6 +9,7 @@
 //   D2  gecis: license_modules '"ALL"' (JSON metni) ya da duz ALL ise ["ALL"]; BASE'e dusmez.
 //   D4  genel hata yakalayici: uretimde 500 yanitinda ic hata metni donmez.
 //   D6  destek satirlarinin ayrintisinda rol (OWNER) degil "MDA Destek" yazar.
+//   D7  govdeyle sorgulanan okuma uclari (musteri bul, lisans teklifi, magaza sepeti) destek gunlugune yazilmaz.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -298,6 +299,19 @@ async function temizle() {
     ok('destek kalem siler (200)', (await js(`/api/orders/${es.id}/items/${kalemId}`, { token: DE, method: 'DELETE' })).status === 200);
     const rolSatir = (await query("SELECT islem, user_name, detay FROM islem_gunlugu WHERE tenant_id = ? AND islem IN ('kalem_azalt', 'kalem_sil')", [E.id])).rows;
     ok('kalem azaltma ve silme satirinda "MDA Destek", "OWNER" yok', rolSatir.length === 2 && rolSatir.every((x) => /· MDA Destek$/.test(x.detay) && !/OWNER/.test(x.detay) && x.user_name === 'MDA Destek'), rolSatir);
+
+    console.log('\n=== D7) Okuma uclari destek gunlugune "kayit / islem" yazilmaz ===');
+    const destekSayisi = async () => Number((await query("SELECT COUNT(*) AS n FROM islem_gunlugu WHERE tenant_id = ? AND islem = 'destek_degisiklik'", [E.id])).rows[0].n);
+    const sayacAl = async () => Number((await query('SELECT islem_sayisi FROM destek_oturumlari WHERE tenant_id = ? AND bitis_at IS NULL', [E.id])).rows[0].islem_sayisi);
+    const once7 = await destekSayisi(), sayac7 = await sayacAl();
+    ok('POST /api/paket/musteri/bul 200', (await js('/api/paket/musteri/bul', { token: DE, body: { tel: '05321112233' } })).status === 200);
+    ok('POST /API/License/Quote 200', (await js('/API/License/Quote', { token: DE, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } })).status === 200);
+    await uyu(400);
+    ok('okuma uclari gunluge yazilmadi, islem sayaci artmadi', (await destekSayisi()) === once7 && (await sayacAl()) === sayac7, [once7, await destekSayisi(), sayac7, await sayacAl()]);
+    await js('/api/categories', { token: DE, body: { name: 'GVN D7 Kategori' } });
+    let sonra7 = once7;
+    for (let i = 0; i < 20 && sonra7 === once7; i++) { await uyu(100); sonra7 = await destekSayisi(); }
+    ok('gercek degisiklik yine yazilir', sonra7 === once7 + 1, [once7, sonra7]);
 
     // --- SONRAKI BOLUMLER ---
 
