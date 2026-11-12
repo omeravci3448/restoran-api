@@ -18,7 +18,7 @@ const ROOT_EPOSTA = 'rootmagaza@ornek.test', ROOT_PAROLA = 'MagazaTestParola123'
 const AD_A = 'Magaza Test Lokanta', AD_B = 'Magaza Test Kafe';
 const ONEK = 'MGTEST ';
 const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari', 'magaza_otomatik_iptal_gun',
-    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta',
+    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta', 'magaza_satici_kep',
     'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
 const SATICI = { unvan: 'MDA Yazılım Test Satıcı', adres: 'Örnek Mah. Test Cad. No 1, Merkez, Afyonkarahisar', vergiDairesi: 'Tınaztepe',
     vkn: '1234567890', telefon: '0272 000 00 00', eposta: 'magaza-satici@ornek.test' };
@@ -511,6 +511,16 @@ async function temizle() {
     ok('satici bilgisi degisince kosul surumu degisir', a.d.kosullarSurum !== h.d.kosullar.surum);
     a = await R('/ayarlar', { method: 'PUT', body: { satici: { unvan: SATICI.unvan } } });
     ok('acikken satici alani bosaltilamaz (409)', (await R('/ayarlar', { method: 'PUT', body: { satici: { telefon: '' } } })).status === 409);
+    ok('KEP adresi kep.tr disinda 400', (await R('/ayarlar', { method: 'PUT', body: { satici: { kep: 'magaza-satici@ornek.test' } } })).status === 400);
+    a = await R('/ayarlar', { method: 'PUT', body: { satici: { kep: 'mdayazilim@hs01.kep.tr' } } });
+    ok('KEP adresi kaydedilir ve satici blogunda gorunur', a.status === 200 && a.d.satici.kep === 'mdayazilim@hs01.kep.tr' && a.d.saticiEksik.length === 0
+        && a.d.kosullarOnizleme.split('\n\n')[0].includes('KEP adresi: mdayazilim@hs01.kep.tr'), a.d);
+    ok('KEP girilince kosul surumu degisir', a.d.kosullarSurum !== h.d.kosullar.surum);
+    ok('KEP degisince eski surumle siparis 409 KOSULLAR_DEGISTI (yeni metinde KEP var)',
+        ((x) => x.status === 409 && x.d.code === 'KOSULLAR_DEGISTI' && x.d.kosullar.metin.includes('KEP adresi'))(await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p4.id, adet: 1 }] }) })));
+    a = await R('/ayarlar', { method: 'PUT', body: { satici: { kep: '' } } });
+    ok('KEP istege bagli: acikken bosaltilabilir, satir kalkar, surum eski haline doner', a.status === 200 && a.d.acik === true
+        && !a.d.kosullarOnizleme.includes('KEP adresi') && a.d.kosullarSurum === h.d.kosullar.surum, a.d);
     ok('acik: "false" yazisi kapali sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 'false' } })).d.acikAyar === false);
     ok('acik: "evet" kapali sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 'evet' } })).d.acikAyar === false);
     ok('acik: 1 acik sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 1 } })).d.acik === true);

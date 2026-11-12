@@ -142,6 +142,7 @@ const OLAY_BASLIK = {
     yeni_kayit: 'Yeni restoran kaydı', paket_alindi: 'Paket satın alındı',
     plaka_talebi: 'Masa plakası talebi', plaka_odeme: 'Plaka ödemesi bildirildi',
     magaza_siparis: 'Mağaza siparişi', magaza_odeme: 'Mağaza ödemesi bildirildi',
+    magaza_iptal: 'Mağaza siparişi iptal edildi', magaza_hatirlatma: 'Onay bekleyen mağaza ödemesi',
 };
 
 async function telefonOzeti(istemciSonId) {

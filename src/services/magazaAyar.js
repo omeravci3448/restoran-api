@@ -10,6 +10,9 @@ const H = require('./magazaHesap');
 // sozlesme kurulmadan once saticiyi tam taniyabilmesi gerekir. Bu bilgiler satis kosullarinin BASINA eklenir.
 // VKN 10 hane istenir: sahis isletmesinde "vergi kimlik no" alanina cogu zaman TC kimlik no yazilir; vergi
 // dairesinin verdigi 10 haneli numara istenerek kisinin TC numarasinin metne girmesi onlenir.
+// KEP adresi istege bagli: kendi sitesinden satan icin e-ticaret yonetmeligi (ETHS m.5/1) KEP adresini istiyor;
+// KEP alininca girilir. Doluysa satici blogunda gosterilir; metin degistigi icin kosul surumu de degisir
+// (isletmeler bir sonraki sipariste yeni metni onaylar). Bos olmasi magazanin acilmasina engel degildir.
 // Odeme bilgisi (IBAN) lisans odemesiyle ORTAK anahtarlardan okunur: iban, iban_sahibi, banka_adi,
 // odeme_aciklama. Bildirim e-postasi da ortak: bildirim_eposta (rootBildirim.js okur).
 
@@ -20,7 +23,7 @@ const ANAHTAR = {
     kosullar: 'magaza_satis_kosullari',
     otomatikIptalGun: 'magaza_otomatik_iptal_gun',
 };
-// [alan, anahtar, gorunen ad, en uzun]
+// [alan, anahtar, gorunen ad, en uzun, istege bagli]
 const SATICI_ALANLARI = [
     ['unvan', 'magaza_satici_unvan', 'unvan', 200],
     ['adres', 'magaza_satici_adres', 'adres', 500],
@@ -28,7 +31,10 @@ const SATICI_ALANLARI = [
     ['vkn', 'magaza_satici_vkn', 'vergi kimlik numarası', 10],
     ['telefon', 'magaza_satici_telefon', 'telefon', 30],
     ['eposta', 'magaza_satici_eposta', 'e-posta', 120],
+    ['kep', 'magaza_satici_kep', 'KEP adresi', 120, true],
 ];
+// KEP adresleri kep.tr alan adindadir (ornek: unvan@hs01.kep.tr)
+const KEP_DESENI = /^[^\s@]+@([a-z0-9-]+\.)*kep\.tr$/i;
 const KOSULLAR_EN_UZUN = 20000;
 // Odeme bildirimi yapilmamis siparis bu kadar gun sonra kendiliginden iptal olur (magazaZamanlayici.js); 0 = kapali.
 // Sure siparis olusurken siparise yazilir (otomatik_iptal_at); ayar sonradan degisse de mevcut siparise uygulanmaz.
@@ -84,6 +90,7 @@ function saticiBlogu(s) {
         `Adres: ${s.adres}`,
         `Vergi dairesi: ${s.vergiDairesi} / Vergi kimlik no: ${s.vkn}`,
         `Telefon: ${s.telefon} / E-posta: ${s.eposta}`,
+        ...(s.kep ? [`KEP adresi: ${s.kep}`] : []),
     ].join('\n');
 }
 
@@ -114,7 +121,7 @@ async function saticiOku() {
     for (const [alan, anahtar] of SATICI_ALANLARI) s[alan] = String(await A.oku(anahtar, '') || '').trim();
     return s;
 }
-const saticiEksikleri = (s) => SATICI_ALANLARI.filter(([alan]) => !s[alan]).map(([, , ad]) => ad);
+const saticiEksikleri = (s) => SATICI_ALANLARI.filter(([alan, , , , istegeBagli]) => !istegeBagli && !s[alan]).map(([, , ad]) => ad);
 
 async function oku() {
     const acikAyar = acikMi(await A.oku(ANAHTAR.acik, '0'));
@@ -186,6 +193,7 @@ async function guncelle(g = {}) {
             }
         }
         if (alan === 'eposta' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) throw hata(400, 'Satıcı e-postası geçersiz.');
+        if (alan === 'kep' && v && !KEP_DESENI.test(v)) throw hata(400, 'KEP adresi geçersiz. KEP adresleri "kep.tr" ile biter (örnek: unvan@hs01.kep.tr).');
         if (alan === 'telefon' && v && !H.telefonGecerli(v)) throw hata(400, 'Satıcı telefonu geçersiz.');
         if (v && (alan === 'unvan' || alan === 'vergiDairesi') && v.length < 2) throw hata(400, `Satıcı ${ad} çok kısa.`);
         if (v && alan === 'adres' && v.length < 10) throw hata(400, 'Satıcı adresini açık olarak yazın.');

@@ -35,6 +35,7 @@ const KURALLAR = [
         if (Object.prototype.hasOwnProperty.call(b, 'icNot')) parca.push('iç not');
         if (Object.prototype.hasOwnProperty.call(b, 'faturaKesildi') || Object.prototype.hasOwnProperty.call(b, 'faturaNo')) parca.push('fatura');
         if (Object.prototype.hasOwnProperty.call(b, 'kargoFirma') || Object.prototype.hasOwnProperty.call(b, 'kargoTakipNo')) parca.push('kargo bilgisi');
+        if (Object.prototype.hasOwnProperty.call(b, 'iadeYapildi')) parca.push(b.iadeYapildi ? `iade yapıldı${b.iadeTarihi ? ' (' + String(b.iadeTarihi).slice(0, 10) + ')' : ''}` : 'iade işareti kaldırıldı');
         return { ozet: `Mağaza siparişi ${NO(g)} güncellendi${parca.length ? ': ' + parca.join(', ') : ''}`, hedefTur: 'magaza_siparis', hedefId: m[1],
             tenantId: g && g.tenantId, ayrinti: { govde: b } };
     }],

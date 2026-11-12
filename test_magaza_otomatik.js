@@ -25,7 +25,7 @@ const EPOSTA = { A: 'oto-a@ornek.test', B: 'oto-b@ornek.test', C: 'oto-c@ornek.t
 const ONEK = 'MGOTO ';
 const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari',
     'magaza_otomatik_iptal_gun', 'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta',
-    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta'];
+    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta', 'magaza_satici_kep'];
 const SATICI = { unvan: 'MDA Yazılım Oto Test', adres: 'Örnek Mah. Test Cad. No 1, Merkez, Afyonkarahisar', vergiDairesi: 'Tınaztepe',
     vkn: '1234567890', telefon: '0272 000 00 00', eposta: 'oto-satici@ornek.test' };
 
