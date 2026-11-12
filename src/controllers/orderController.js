@@ -209,7 +209,7 @@ exports.removeItem = async (req, res) => {
         if (e.status) return res.status(e.status).json({ message: e.message });
         throw e;
     }
-    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_sil', hedefTur: 'order_item', hedefId: cur.id,
+    await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_sil', hedefTur: 'order_item', hedefId: cur.id,
         detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} (${TL(cur.total)}) · ${req.user.role}` });
     res.json({ message: 'Silindi.' });
 };
@@ -245,7 +245,7 @@ exports.updateItem = async (req, res) => {
         throw e;
     }
     if (azaliyor) {
-        gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_azalt', hedefTur: 'order_item', hedefId: cur.id,
+        await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_azalt', hedefTur: 'order_item', hedefId: cur.id,
             detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} → ×${newQty} · ${req.user.role}` });
     }
     res.json({ message: 'Güncellendi.' });
@@ -383,7 +383,7 @@ exports.qrOnayla = async (req, res) => {
         if (e.status) return res.status(e.status).json({ message: e.message });
         throw e;
     }
-    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_onay', hedefTur: 'qr_siparis', hedefId: req.params.id,
+    await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_onay', hedefTur: 'qr_siparis', hedefId: req.params.id,
         detay: `${await masaAdi(sonuc.tableId)} · ${sonuc.added} kalem · ${TL(sonuc.subAdded)}` + (sonuc.atlanan.length ? ` · hesaba yazılamadı: ${sonuc.atlanan.join(', ')}` : '') });
     res.json({ orderId: sonuc.orderId, addedItems: sonuc.added, addedSubtotal: sonuc.subAdded, orderTotal: sonuc.total, atlanan: sonuc.atlanan });
 };
@@ -393,7 +393,7 @@ exports.qrReddet = async (req, res) => {
         [req.user.id, req.params.id, req.user.tenantId]);
     if (!u.changes) return res.status(b ? 409 : 404).json({ message: b ? 'Bu sipariş zaten sonuçlanmış.' : 'Bekleyen sipariş yok.' });
     let adet = 0; try { adet = JSON.parse(b.kalemler_json).length; } catch (_) {}
-    gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_red', hedefTur: 'qr_siparis', hedefId: req.params.id,
+    await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'qr_red', hedefTur: 'qr_siparis', hedefId: req.params.id,
         detay: `${await masaAdi(b.table_id)} · ${adet} kalem · ${TL(b.toplam)}` });
     res.json({ ok: true });
 };
