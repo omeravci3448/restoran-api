@@ -217,7 +217,7 @@ exports.login = async (req, res) => {
     if (!email || !password) return res.status(400).json({ message: 'E-posta ve şifre gerekli.' });
 
     // İşyeri kodu opsiyonel — verilirse o tenant'a, verilmezse en son kayıt olan tenant'a giriş
-    let sql = `SELECT u.*, t.business_code, t.is_active AS tenant_active, t.license_modules
+    let sql = `SELECT u.*, t.business_code, t.is_active AS tenant_active, t.license_modules, t.license_end_date
                  FROM users u JOIN tenants t ON t.id = u.tenant_id
                 WHERE u.email = ?`;
     const params = [email];
@@ -247,6 +247,11 @@ exports.login = async (req, res) => {
     const ok = await bcrypt.compare(password, u.password_hash);
     if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
     if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
+    // Lisans KAPALI: sahip/mudur girip YALNIZ lisansi yenileyebilir; diger hesaplarin yapacagi bir sey yok.
+    if (require('../services/lisansDurumu').hesapla(u.license_end_date).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
+        return res.status(403).json({ code: 'LICENSE_EXPIRED',
+            message: 'Lisansın süresi doldu. İşletme sahibi ya da müdür Lisans sayfasından yenileyebilir.' });
+    }
     // Moduler lisans: mutfak hesabi Adisyon ve Kasa (BASE) ister; garson hesabi BASE ya da GARSON (BASE yoksa
     // garson uygulamasi yalniz cagrilari gosterir). Ikisi de yoksa anlamli bir mesajla girilmez.
     {

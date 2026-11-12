@@ -154,7 +154,7 @@ exports.quote = async (req, res) => {
 // tahsilat kanali ve iki ayri lisans tarihi kaynagi olusur, SofraMix'e
 // kesilecek fatura da eksik kalirdi - kimse fark etmeden.
 async function yenilemeKanali(tenantId) {
-    const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [tenantId])).rows[0];
+    const t = (await query('SELECT parent_org, license_tier, kvkk_consent_at FROM tenants WHERE id = ?', [tenantId])).rows[0];
     if (!t) return { kanal: 'yerel' };
     if (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX') {
         return {
@@ -167,11 +167,21 @@ async function yenilemeKanali(tenantId) {
     // Dogrudan (SofraMix disi) deneme hesabi POS icinden paket satin alir: ayni havale/EFT akisi,
     // root onayinda lisans 1 yil uzar ve kiraci "musteri"ye doner (rootController). Deneme oldugu
     // bilgisi arayuzde "Paketi Satin Al" metni ve kisa aciklama icin tasinir.
-    if (t.license_tier === 'TIER_DENEME') {
+    // Ilk alim (odeme gecmisi yok): onay gununden 1 yil. "Deneme" metni yalniz gercek denemelerde (tanitim
+    // denemesi ya da "Kayit ol" formuyla acilan); elle acilmis odeme kaydi olmayan isletmeye notr metin.
+    const ilkAlim = !(await LT.odemeGecmisiVar(tenantId));
+    if (t.license_tier === 'TIER_DENEME' || (ilkAlim && t.kvkk_consent_at)) {
         return {
+            ilkAlim,
             kanal: 'yerel', deneme: true,
             mesaj: 'Deneme sürümündesiniz. Paketi satın aldığınızda lisansınız ödemenizin onaylandığı gün başlar ve '
                  + '1 yıl geçerli olur; kayıtlarınız ve ayarlarınız olduğu gibi kalır. Ödeme havale/EFT ile yapılır.',
+        };
+    }
+    if (ilkAlim) {
+        return {
+            kanal: 'yerel', ilkAlim: true,
+            mesaj: 'İlk paket alımınızda lisansınız ödemenizin onaylandığı gün başlar ve 1 yıl geçerli olur.',
         };
     }
     return { kanal: 'yerel' };

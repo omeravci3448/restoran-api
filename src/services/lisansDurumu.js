@@ -67,4 +67,23 @@ function saltOkunurdaGecerMi(req) {
     return YAZMAYA_IZINLI.some((p) => yol.startsWith(p));
 }
 
-module.exports = { DURUM, TOLERANS_GUN, hesapla, saltOkunurdaGecerMi, gunSonu };
+// KAPALI (bitis + salt-okunur suresi gecmis): isletme giris yapar ama YALNIZ lisansini yenileyebilir
+// (Patron karari 2026-11-12: gelir icin onemli). Acik olanlar: oturum bilgisi, yonetici sifresi kapisi (Lisans
+// sayfasi onun arkasinda), lisans uclari (yenileme kanali, teklif, satin alma, gecmis, "odemeyi yaptim", bekleyen
+// bildirimi iptal) ve telefon bildirimini kapatma (cikis). Katalog, teklif ve banka bilgisi zaten oturumsuz.
+// Geri kalan her sey (magaza dahil) 403 LICENSE_EXPIRED.
+const KAPALIDA_ACIK = [
+    ['GET', /^\/api\/auth\/me$/],
+    ['GET', /^\/api\/auth\/manager-status$/],
+    ['POST', /^\/api\/auth\/manager-(verify|set)$/],
+    ['*', /^\/api\/license(\/|$)/],
+    ['POST', /^\/api\/push\/iptal$/],
+];
+function kapalidaGecerMi(req) {
+    const m = (req.method || 'GET').toUpperCase();
+    const yol = String(req.originalUrl || req.url || '').split('?')[0];
+    return KAPALIDA_ACIK.some(([yontem, desen]) =>
+        (yontem === '*' || yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol));
+}
+
+module.exports = { DURUM, TOLERANS_GUN, hesapla, saltOkunurdaGecerMi, kapalidaGecerMi, gunSonu };

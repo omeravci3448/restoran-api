@@ -33,10 +33,11 @@ async function protect(req, res, next) {
     //   AKTIF -> (bitis) -> SALT_OKUNUR 3 gun -> (3. gunun sonunda 00:00) -> KAPALI
     // POS bir kasa programi; gun ortasinda kapanmasi isletmeyi satistan alikoyar.
     const ld = lisans.hesapla(u.license_end_date);
-    if (ld.durum === lisans.DURUM.KAPALI) {
+    // KAPALI: yalniz lisans yenilemesi (bkz lisansDurumu.kapalidaGecerMi). Arayuz bu kodla Lisans sayfasina doner.
+    if (ld.durum === lisans.DURUM.KAPALI && !lisans.kapalidaGecerMi(req)) {
         return res.status(403).json({
             code: 'LICENSE_EXPIRED',
-            message: 'Lisans süresi doldu. Devam etmek için paketinizi yenileyin.',
+            message: 'Lisansınızın süresi doldu. Yenilemek için Lisans sayfasına gidin.',
             bitis: ld.bitis, toleransBitis: ld.toleransBitis,
         });
     }

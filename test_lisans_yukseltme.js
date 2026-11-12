@@ -61,6 +61,13 @@ async function odemeKur(tenantId, { tutar, yeniToplam = null, donemBitis, gecen 
         [id, tenantId, tier, tutar, yeniToplam, donemBitis, `-${gecen} days`, onayGun]);
     return id;
 }
+// Odeme gecmisi (karar 1): donemi bitmis eski onayli ucretli odeme. Kredi hesabina girmez; isletmeyi "ilk alim"
+// olmaktan cikarir.
+async function gecmisKur(tenantId) {
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, donem_bitis, islenen_at, onay_gun)
+                 VALUES (?, ?, 'TIER_6_10', '[]', 1000, 'onaylandi', datetime('now', '-30 days'), datetime('now', '-395 days'), 365)`,
+        ['yks-gecmis-' + crypto.randomBytes(4).toString('hex'), tenantId]);
+}
 const kiraci = async (id) => (await query('SELECT * FROM tenants WHERE id = ?', [id])).rows[0];
 const kayit = async (id) => (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [id])).rows[0];
 const modulleri = async (id) => JSON.parse((await kiraci(id)).license_modules || '[]');
@@ -162,6 +169,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 
     console.log('\n=== 2) Yukseltme: odeme kaydi yok -> katalog fiyatindan kredi, kiraci indirimi ===');
     const u2 = await kiraciKur({ ad: 'Yukselt Iki', tier: 'TIER_1_5', moduller: ['BASE'], bitis: bitisGun(100), indirim: 10 });
+    await gecmisKur(u2.id);   // odeme gecmisi var ama donemi suren odeme yok (orn. elle uzatilmis)
     const q2 = (await js('/api/license/quote', { token: u2.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).d;
     // Yeni: 4000 - %10 = 3600. Kredi: mevcut paket (1-5 Masa, 3000 - %10 = 2700) x 100 / 365 = 739,73. Odenecek 2860,27
     ok('buyuk masa paketine gecis = yukseltme; toplam 3600 (indirimli)', q2.tur === 'yukseltme' && q2.subtotal === 4000 && q2.discountAmount === 400 && q2.total === 3600, q2);
@@ -189,6 +197,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     console.log('\n=== 4) Yenileme donemi (<= 30 gun): cikarma serbest, bitisin uzerine ===');
     const b4 = bitisGun(20);
     const u4 = await kiraciKur({ ad: 'Yenileme', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON'], bitis: b4 });
+    await gecmisKur(u4.id);
     ok('donem bilgisi: yenileme', (await js('/api/license/yenileme-kanali', { token: u4.token })).d.donem.durum === 'yenileme');
     const al4 = await js('/api/license/purchase', { token: u4.token, body: { tier: 'TIER_1_5', modules: ['BASE', 'MENU_DIGITAL'] } });
     ok('yenilemede Garson cikarilir + kucuk paket: 201, toplam 4000, kredi yok', al4.status === 201 && al4.d.tur === 'yenileme' && al4.d.total === 4000
@@ -202,6 +211,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 
     console.log('\n=== 5) Bitmis lisans (salt okunur donem): yenileme, onay gunu + 365 ===');
     const u5 = await kiraciKur({ ad: 'Bitmis', tier: 'TIER_6_10', moduller: ['BASE'], bitis: new Date(Date.now() - 1 * GUN).toISOString() });
+    await gecmisKur(u5.id);
     const al5 = await js('/api/license/purchase', { token: u5.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } });
     ok('bitmis: tur yenileme, metin "onaylandığı gün"', al5.status === 201 && al5.d.tur === 'yenileme' && /onaylandığı gün lisansınız 1 yıl uzar/.test(al5.d.aciklama), al5.d);
     await onayla(al5.d.id);
@@ -249,6 +259,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 
     console.log('\n=== 9) Cift onay, red, tum moduller (ALL) ===');
     const u9 = await kiraciKur({ ad: 'Cift', tier: 'TIER_6_10', moduller: ['BASE'], bitis: bitisGun(10) });
+    await gecmisKur(u9.id);
     const b9 = (await kiraci(u9.id)).license_end_date;
     const al9 = await js('/api/license/purchase', { token: u9.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } });
     const [o9a, o9b] = await Promise.all([onayla(al9.d.id), onayla(al9.d.id)]);
@@ -256,6 +267,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('lisans YALNIZ BIR KEZ uzadi', yakin((await kiraci(u9.id)).license_end_date, new Date(b9).getTime() + 365 * GUN, 2000), (await kiraci(u9.id)).license_end_date);
     const b10 = bitisGun(200);
     const u10 = await kiraciKur({ ad: 'Red', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL'], bitis: b10 });
+    await gecmisKur(u10.id);
     const once10 = await kiraci(u10.id);
     const al10 = await js('/api/license/purchase', { token: u10.token, body: { tier: 'TIER_11_20', modules: ['BASE', 'MENU_DIGITAL'] } });
     ok('yalniz masa paketi buyutme = yukseltme', al10.status === 201 && al10.d.tur === 'yukseltme', al10.d);
@@ -264,6 +276,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('red: lisans aynen kalir', rd10.status === 200 && t10.license_tier === once10.license_tier && t10.license_modules === once10.license_modules
         && t10.license_end_date === once10.license_end_date, t10);
     const u11 = await kiraciKur({ ad: 'Tum', tier: 'TIER_20_PLUS', moduller: ['ALL'], bitis: bitisGun(200) });
+    await gecmisKur(u11.id);
     const q11 = (await js('/api/license/quote', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE'] } })).d;
     ok('K1: ALL korunur (satin alinamaz): tek modul secimi de erken yenileme, korunanlarda ALL', q11.tur === 'yenileme' && q11.korunanModuller.includes('ALL'), q11);
     const al11 = await js('/api/license/purchase', { token: u11.token, body: { tier: 'TIER_20_PLUS', modules: ['BASE'] } });
@@ -273,6 +286,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     console.log('\n=== 10) K1: onayda korunan moduller ===');
     // Gecmis kiraci (gecis sonrasi bicim: BASE + MENU_DIGITAL + QR_SIPARIS + GARSON) yenileme -> onay
     const g1 = await kiraciKur({ ad: 'Gecmis', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON'], bitis: bitisGun(20) });
+    await gecmisKur(g1.id);
     const gal = await js('/api/license/purchase', { token: g1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } });
     ok('kayitta yalniz ODENEN moduller (Masadan Siparis yok), yanitta korunan onizlemesi', gal.status === 201
         && JSON.stringify(JSON.parse((await kayit(gal.d.id)).moduller).sort()) === JSON.stringify(['BASE', 'GARSON', 'MENU_DIGITAL'])
@@ -283,6 +297,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('K1: gecmis kiraci -> yenileme -> onay: QR_SIPARIS kalir', JSON.parse((await kiraci(g1.id)).license_modules).includes('QR_SIPARIS'), (await kiraci(g1.id)).license_modules);
     // Deploy oncesi acilmis bekleyen kayit (tur / kopya yok, moduller eski sepetten)
     const g2 = await kiraciKur({ ad: 'Eski Bekleyen', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS'], bitis: bitisGun(20) });
+    await gecmisKur(g2.id);
     const b2 = (await kiraci(g2.id)).license_end_date;
     const eskiId = 'yks-eski-' + crypto.randomBytes(4).toString('hex');
     await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama) VALUES (?, ?, 'TIER_6_10', '["BASE","MENU_DIGITAL"]', 5000, 'beklemede', 'eski sepet')`, [eskiId, g2.id]);
@@ -315,8 +330,74 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('K1: deneme + pasif kanal: koruma yok', (await js('/api/license/quote', { token: d2.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).d.korunanModuller.length === 0);
     // Korunan modul bagimlilik kuralina uyar: BASE secilmezse Masadan Siparis kalmaz
     const g3 = await kiraciKur({ ad: 'Bagimlilik', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS'], bitis: bitisGun(10) });
+    await gecmisKur(g3.id);
     const qg3 = (await js('/api/license/quote', { token: g3.token, body: { tier: 'TIER_6_10', modules: ['MENU_DIGITAL'] } })).d;
     ok('K1: yenilemede Adisyon ve Kasa birakilirsa Masadan Siparis korunmaz (bagimlilik)', qg3.korunanModuller.length === 0 && JSON.stringify(qg3.modules) === '["MENU_DIGITAL"]', qg3);
+
+    console.log('\n=== 11) Karar 1: odeme gecmisi olmayan isletmenin ilk alimi ===');
+    // "Kayit ol" ile acilan deneme: secilen kademeyle, 7 gun, KVKK onayli, odeme yok
+    const kf1 = await kiraciKur({ ad: 'Kayit Formu', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'MARKETPLACE'], bitis: bitisGun(7) });
+    await query('UPDATE tenants SET kvkk_consent_at = ? WHERE id = ?', [new Date().toISOString(), kf1.id]);
+    const ykf1 = (await js('/api/license/yenileme-kanali', { token: kf1.token })).d;
+    ok('kayit formu denemesi: kanal deneme + ilk alim, donem "deneme"', ykf1.deneme === true && ykf1.ilkAlim === true && ykf1.donem.durum === 'deneme', ykf1);
+    const qkf1 = (await js('/api/license/quote', { token: kf1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d;
+    ok('kademe adina bakilmaz: tur ilk, kredi yok, korunan yok', qkf1.tur === 'ilk' && qkf1.krediTutari === 0 && qkf1.korunanModuller.length === 0, qkf1);
+    const alkf1 = await js('/api/license/purchase', { token: kf1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
+    const onkf1 = await onayla(alkf1.d.id);
+    const tkf1 = await kiraci(kf1.id);
+    ok('ilk alim onayi: bugun + 365 (7 gunluk denemenin uzerine degil), Masadan Siparis korunmaz', onkf1.status === 200 && onkf1.d.tur === 'ilk'
+        && yakin(tkf1.license_end_date, Date.now() + 365 * GUN) && ayniKume(JSON.parse(tkf1.license_modules), ['BASE', 'MENU_DIGITAL']), tkf1);
+    ok('onaydan sonra odeme gecmisi var: sonraki talep ilk degil', (await js('/api/license/quote', { token: kf1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d.tur !== 'ilk');
+    // Elle acilmis, odeme kaydi olmayan isletme (KVKK onayi yok): ilk alim, notr metin, root uyarisi
+    const e1 = await kiraciKur({ ad: 'Elle Acilmis', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS'], bitis: bitisGun(200) });
+    const ye1 = (await js('/api/license/yenileme-kanali', { token: e1.token })).d;
+    ok('elle acilmis odeme kaydi olmayan: ilk alim, "deneme" denmez, notr metin', ye1.ilkAlim === true && !ye1.deneme && /İlk paket alımınızda/.test(ye1.mesaj), ye1);
+    const ale1 = await js('/api/license/purchase', { token: e1.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } });
+    const re1 = await rootKaydi(ale1.d.id);
+    ok('root listesi: ilk alim, kalan 200 gun uyarisi, kalkacak Masadan Siparis', ale1.d.tur === 'ilk' && re1.etkin_tur === 'ilk' && re1.ilk_alim_kalan_gun === 200
+        && JSON.stringify(re1.kalkacak_moduller) === '["QR_SIPARIS"]', re1);
+    // 0 TL onayli kayit odeme gecmisi sayilmaz; islenmis SofraMix provizyonu sayilir
+    const z1 = await kiraciKur({ ad: 'Sifir Kayit', tier: 'TIER_6_10', moduller: ['BASE'], bitis: bitisGun(100) });
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, donem_bitis, islenen_at, onay_gun)
+                 VALUES (?, ?, 'TIER_6_10', '[]', 0, 'onaylandi', ?, datetime('now'), 365)`, ['yks-sifir-' + crypto.randomBytes(4).toString('hex'), z1.id, bitisGun(100)]);
+    ok('0 TL onayli kayit odeme gecmisi sayilmaz (ilk)', (await js('/api/license/quote', { token: z1.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).d.tur === 'ilk');
+    await query("INSERT INTO pos_provizyon (id, odeme_id, tenant_id, tutar_kurus, durum) VALUES (?, ?, ?, 1200000, 'islendi')", ['yks-pv-' + crypto.randomBytes(4).toString('hex'), 'yks-pv-' + crypto.randomBytes(4).toString('hex'), z1.id]);
+    ok('islenmis SofraMix provizyonu odeme gecmisi sayilir (ilk degil)', (await js('/api/license/quote', { token: z1.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).d.tur !== 'ilk');
+    await query('DELETE FROM pos_provizyon WHERE tenant_id = ?', [z1.id]);
+    // Deploy oncesi (tur yazilmamis) bekleyen kayit, odeme gecmisi yok: onayda ilk alim gibi
+    const o1 = await kiraciKur({ ad: 'Eski Ilk', tier: 'TIER_6_10', moduller: ['BASE'], bitis: bitisGun(5) });
+    const eskiIlk = 'yks-eskiilk-' + crypto.randomBytes(4).toString('hex');
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum) VALUES (?, ?, 'TIER_6_10', '["BASE"]', 4000, 'beklemede')`, [eskiIlk, o1.id]);
+    const ono1 = await onayla(eskiIlk);
+    ok('tur yazilmamis kayit + odeme gecmisi yok: onay gununden 365 (ilk)', ono1.status === 200 && ono1.d.tur === 'ilk'
+        && yakin((await kiraci(o1.id)).license_end_date, Date.now() + 365 * GUN), ono1.d);
+
+    console.log('\n=== 12) Karar 5: KAPALI isletme yalniz lisansini yeniler ===');
+    const kp = await kiraciKur({ ad: 'Kapali', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL'], bitis: new Date(Date.now() - 10 * GUN).toISOString() });
+    await gecmisKur(kp.id);
+    ok('KAPALI isletmede sahip girisi 200', kp.girisDurumu === 200 && !!kp.token, kp.girisDurumu);
+    const kasaEposta = `${EPOSTA_ON}kasa-${kp.slug}@ornek.test`;
+    await query('INSERT INTO users (id, tenant_id, email, password_hash, name, role, password_set_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [uuid(), kp.id, kasaEposta, await bcrypt.hash('kasa1234', 4), 'Kasa', 'CASHIER', new Date().toISOString()]);
+    const kg = await js('/api/auth/login', { body: { email: kasaEposta, businessCode: kp.kod, password: 'kasa1234' } });
+    ok('KAPALI isletmede kasiyer girisi 403 LICENSE_EXPIRED (anlamli mesaj)', kg.status === 403 && kg.d.code === 'LICENSE_EXPIRED' && /sahibi ya da müdür/.test(kg.d.message), kg);
+    const kme = await js('/api/auth/me', { token: kp.token });
+    ok('oturum bilgisi acik, lisans durumu KAPALI', kme.status === 200 && kme.d.lisansDurum === 'KAPALI', kme.d && kme.d.lisansDurum);
+    for (const [m, yol] of [['GET', '/api/orders'], ['GET', '/api/tables'], ['GET', '/api/tenant/me'], ['GET', '/api/plaka/durum'], ['GET', '/api/products'], ['POST', '/api/tables']]) {
+        const x = await js(yol, { token: kp.token, method: m, body: m === 'POST' ? { code: 'X1', name: 'X1' } : undefined });
+        ok(`KAPALI: ${m} ${yol} 403 LICENSE_EXPIRED + Lisans sayfasi mesaji`, x.status === 403 && x.d.code === 'LICENSE_EXPIRED' && /Lisans sayfasına gidin/.test(x.d.message), x);
+    }
+    ok('KAPALI: yonetici sifresi kapisi acik (manager-status 200)', (await js('/api/auth/manager-status', { token: kp.token })).status === 200);
+    ok('KAPALI: yenileme kanali 200 (donem yenileme)', ((x) => x.status === 200 && x.d.donem.durum === 'yenileme')(await js('/api/license/yenileme-kanali', { token: kp.token })));
+    ok('KAPALI: oturumlu teklif 200', (await js('/api/license/quote', { token: kp.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).status === 200);
+    const kal = await js('/api/license/purchase', { token: kp.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
+    ok('KAPALI: satin alma talebi 201 (yenileme)', kal.status === 201 && kal.d.tur === 'yenileme', kal);
+    ok('KAPALI: gecmis 200, "odemeyi yaptim" 200', (await js('/api/license/purchases', { token: kp.token })).status === 200
+        && (await js(`/api/license/purchases/${kal.d.id}/mark-paid`, { token: kp.token, body: { paymentRef: 'dekont' } })).status === 200);
+    ok('KAPALI: bekleyen bildirimi iptal 200', (await js(`/api/license/purchases/${kal.d.id}/cancel`, { token: kp.token, method: 'POST' })).status === 200);
+    const kal2 = await js('/api/license/purchase', { token: kp.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
+    await onayla(kal2.d.id);
+    ok('onaydan sonra program acilir (siparis listesi 200)', (await js('/api/orders', { token: kp.token })).status === 200);
 
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);

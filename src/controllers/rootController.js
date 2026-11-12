@@ -638,7 +638,14 @@ exports.lisansOdemeleri = async (req, res) => {
             ek.yeni_moduller_onizleme = onay.moduller;
             ek.lisans_degisiklikleri = LT.lisansDegisiklikleri(x, t, tam);
             ek.kalkacak_moduller = mevcut.filter((k) => !M.varMi(onay.moduller, k));
-            ek.yeni_bitis_onizleme = LT.onayBitisi({ tur: x.tur, mevcutBitis: x.license_end_date, gun: 365 });
+            const gecmis = await LT.odemeGecmisiVar(x.tenant_id);
+            const etkinTur = x.tur || (!gecmis ? 'ilk' : null);
+            ek.etkin_tur = etkinTur;
+            ek.yeni_bitis_onizleme = LT.onayBitisi({ tur: etkinTur, mevcutBitis: x.license_end_date, gun: 365 });
+            // Odeme kaydi olmayan ama lisansi uzun sure gecerli isletme (elle acilmis/uzatilmis): ilk alim sayildi,
+            // kredi yok ve yeni sure onay gununden. Root bilsin (gerekirse reddedip elle cozsun).
+            const kalan = LT.kalanGunHesapla(x.license_end_date);
+            ek.ilk_alim_kalan_gun = etkinTur === 'ilk' && kalan > 30 ? kalan : null;
         }
         return {
             ...x, moduller: m, mevcut_moduller: mevcut,
@@ -667,7 +674,9 @@ exports.lisansOdemeOnayla = async (req, res) => {
             const t = (await query('SELECT * FROM tenants WHERE id = ?', [o.tenant_id])).rows[0];
             if (!t) throw hataNesnesi(404, 'İşletme bulunamadı.');
 
-            const bitis = LT.onayBitisi({ tur: o.tur, mevcutBitis: t.license_end_date, gun });
+            // Tur yazilmamis (deploy oncesi) kayitta odeme gecmisi yoksa ilk alim gibi: onay gununden
+            const etkinTur = o.tur || (!(await LT.odemeGecmisiVar(t.id)) ? 'ilk' : null);
+            const bitis = LT.onayBitisi({ tur: etkinTur, mevcutBitis: t.license_end_date, gun });
             // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse "aldim ama yok" der.
             // Yeni liste = odenen + korunan (satista olmayan mevcut moduller; deneme ise yalniz aktif kanal varsa
             // MARKETPLACE). Korunan hesap BU ANKI lisansa gore: deploy oncesi acilmis kayitlar da Masadan Siparis'i
@@ -689,20 +698,20 @@ exports.lisansOdemeOnayla = async (req, res) => {
                 `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
                                              islenen_at = CURRENT_TIMESTAMP WHERE id = ? AND durum = 'beklemede'`,
                 [String(req.body?.not || '').slice(0, 300), bitis, gun, o.id]);
-            return { o, t, bitis };
+            return { o, t, bitis, etkinTur };
         });
     } catch (e) {
         if (e.status) return res.status(e.status).json({ message: e.message });
         throw e;
     }
-    const { o, t, bitis } = sonuc;
+    const { o, t, bitis, etkinTur } = sonuc;
     const tarih = LT.TARIH(bitis);
     const message = o.tur === 'yukseltme'
         ? `${t.business_name}: yükseltme onaylandı. Yeni paket bugün başladı, lisans ${tarih} tarihine kadar geçerli.`
-        : o.tur === 'ilk'
+        : (etkinTur === 'ilk')
             ? `${t.business_name}: paket onaylandı. Lisans bugün başladı, ${tarih} tarihine kadar geçerli.`
             : `${t.business_name} lisansı ${tarih} tarihine uzatıldı.`;
-    res.json({ ok: true, license_end_date: bitis, tur: o.tur || null, message });
+    res.json({ ok: true, license_end_date: bitis, tur: o.tur || etkinTur || null, message });
 };
 
 exports.lisansOdemeReddet = async (req, res) => {

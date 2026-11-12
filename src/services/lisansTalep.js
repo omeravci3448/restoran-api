@@ -6,8 +6,10 @@ const { fiyatla, yuvarla, hata } = require('./lisansFiyat');
 // --- Lisans talebi: deneme -> paket -> yukseltme (Patron karari 2026-11-11) ---
 //
 // Tur talep aninda belirlenir ve teklif KILITLENIR (lisans_odemeleri'ne yazilir, onayda yeniden hesaplanmaz):
-//   ilk        Deneme surumundeki isletmenin ilk alimi. Secim serbest. Onayda lisans ONAY GUNUNDEN baslar,
-//              1 yil (kalan deneme gunleri eklenmez).
+//   ilk        ODEME GECMISI OLMAYAN isletmenin ilk alimi (karar 2026-11-12: kademe adina bakilmaz; "Kayit ol"
+//              ile acilan denemeler ve elle acilmis ama hic odeme kaydi olmayan isletmeler dahil). Odeme gecmisi =
+//              onayli ve tutari > 0 lisans odemesi ya da islenmis SofraMix provizyonu. Secim serbest. Onayda lisans
+//              ONAY GUNUNDEN baslar, 1 yil (kalan gunler eklenmez, kredi yok).
 //   yenileme   Bitise 30 gun ya da daha az kaldiysa ya da lisans bittiyse: eski davranis, onayda 1 yil mevcut
 //              bitisin uzerine eklenir (bitmisse onay gunu + 1 yil). Secim serbest: modul cikarma ve kucuk pakete
 //              gecis YALNIZ burada. Donem icinde ayni secim de erken yenileme sayilir.
@@ -69,9 +71,19 @@ async function aktifPazaryeriKanali(tenantId) {
     } catch (_) { return false; }
 }
 
+// Odeme gecmisi var mi: onayli ve tutari > 0 lisans odemesi ya da islenmis SofraMix provizyonu (pos_provizyon).
+// Yoksa isletmenin alimi "ilk" sayilir ve satista olmayan modulleri korunmaz (deneme hakki odenmis bir hak degil).
+async function odemeGecmisiVar(tenantId) {
+    const r = await query(
+        `SELECT (SELECT COUNT(*) FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'onaylandi' AND COALESCE(tutar, 0) > 0)
+              + (SELECT COUNT(*) FROM pos_provizyon WHERE tenant_id = ? AND durum = 'islendi') AS n`, [tenantId, tenantId]);
+    return Number(r.rows[0].n) > 0;
+}
+
 // Onayda (ve teklif onizlemesinde) korunacak moduller. t: { id, license_tier, license_modules }
+// Odeme gecmisi yoksa koruma yok (aktif pazaryeri kanali istisnasi: MARKETPLACE).
 async function korunanHesapla(t, odenen, tam) {
-    const deneme = t.license_tier === 'TIER_DENEME';
+    const deneme = !(await odemeGecmisiVar(t.id));
     const aktifKanal = deneme ? await aktifPazaryeriKanali(t.id) : false;
     return M.korunacakModuller({
         mevcut: t.license_modules, odenen, satinAlinabilir: satistakiModuller(tam), deneme, aktifKanal,
@@ -107,11 +119,12 @@ async function kiraciDurumu(tenantId, simdi = new Date()) {
     const mevcutLimit = mevcutTier ? mevcutTier.masa_limiti : t.license_table_limit;
     return {
         t, tam, katalogKodlari, satista, sahip, satistaOlmayan, mevcutTier, mevcutLimit: mevcutLimit == null ? null : Number(mevcutLimit),
-        deneme: t.license_tier === 'TIER_DENEME', kalanGun: kalanGunHesapla(t.license_end_date, simdi),
+        deneme: !(await odemeGecmisiVar(t.id)), tierDeneme: t.license_tier === 'TIER_DENEME',
+        kalanGun: kalanGunHesapla(t.license_end_date, simdi),
     };
 }
 
-// 'deneme' | 'yenileme' (bitise <= 30 gun, bitmis ya da tarihsiz) | 'donemIci'
+// 'deneme' (odeme gecmisi yok: ilk alim) | 'yenileme' (bitise <= 30 gun, bitmis ya da tarihsiz) | 'donemIci'
 function donemTuru(kd) {
     if (kd.deneme) return 'deneme';
     if (kd.kalanGun == null || kd.kalanGun <= YENILEME_ESIGI_GUN) return 'yenileme';
@@ -294,5 +307,5 @@ function lisansDegisiklikleri(o, t, tam) {
 module.exports = {
     YENILEME_ESIGI_GUN, YIL_GUN, tarihOku, kalanGunHesapla, kiraciDurumu, donemTuru, donemBilgisi, mevcutPaketDegeri,
     krediHesapla, teklifHazirla, onayBitisi, lisansDegisiklikleri, TL, TARIH, tierAdi, modulAdi,
-    satistakiModuller, aktifPazaryeriKanali, korunanHesapla, onayModulleri,
+    satistakiModuller, aktifPazaryeriKanali, korunanHesapla, onayModulleri, odemeGecmisiVar,
 };
