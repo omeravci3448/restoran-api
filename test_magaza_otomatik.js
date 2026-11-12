@@ -233,24 +233,39 @@ const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString();
     ok('stok: O6 iadesi (6 - O7 1 + O6 1 = 6)', await stok() === 6, await stok());
 
     console.log('\n=== 4) Lisansi salt-okunur isletmede magaza uclari acik ===');
-    ok('lisans kurali: POST /api/magaza/* gecer, POST /api/orders gecmez',
+    // Karar (D1, 2026-11-12): suresi dolmus lisansta magazada YENI siparis ve sepet yok, urun listesi de kapali;
+    // yalniz siparislerim, ayrinti (havale bilgisi), "odemeyi yaptim" ve iptal acik (KAPALI'da da).
+    ok('lisans kurali: suresi dolmusta yalniz siparis izleme / odeme bildirimi / iptal',
         L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/siparisler/x/iptal' }) === true
-        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/sepet' }) === true
+        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/siparisler/x/odeme-bildir' }) === true
+        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/sepet' }) === false
+        && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/magaza/siparisler' }) === false
+        && L.saltOkunurdaGecerMi({ method: 'GET', originalUrl: '/api/magaza/urunler' }) === false
         && L.saltOkunurdaGecerMi({ method: 'POST', originalUrl: '/api/orders' }) === false);
+    // Bekleyen siparisler lisans AKTIF iken verilir
+    const O8 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    const O9 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
+    ok('lisans aktifken iki siparis verildi', !!(O8 && O8.id && O9 && O9.id), [O8, O9]);
     await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [gunOnce(1), A.id]);
     const me = await js('/api/auth/me', { token: A.token });
     ok('A artik SALT_OKUNUR', me.status === 200 && me.d.lisansDurum === 'SALT_OKUNUR', me.d && me.d.lisansDurum);
     ok('baska modulde yazma hala kapali (POST /api/tables 403 LICENSE_READONLY)', (d = await js('/api/tables', { token: A.token, body: { code: 'Z1', name: 'Z1' } })).status === 403
         && d.d.code === 'LICENSE_READONLY', d);
     ok('GET /api/magaza/durum 200', (await M(A.token)('/durum')).status === 200);
-    ok('POST /api/magaza/sepet 200', (d = await M(A.token)('/sepet', { body: { kalemler: [{ urunId: P2.id, adet: 1 }] } })).status === 200 && d.d.kalemler.length === 1, d);
-    const O8 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
-    ok('yeni siparis olusturulabilir (201)', !!(O8 && O8.id), O8);
+    ok('SALT_OKUNUR: sepet 403 LICENSE_READONLY', (d = await M(A.token)('/sepet', { body: { kalemler: [{ urunId: P2.id, adet: 1 }] } })).status === 403
+        && d.d.code === 'LICENSE_READONLY', d);
+    ok('SALT_OKUNUR: yeni siparis 403', (d = await M(A.token)('/siparisler', { body: {} })).status === 403 && d.d.code === 'LICENSE_READONLY', d);
+    ok('SALT_OKUNUR: urun listesi 403', (await M(A.token)('/urunler')).status === 403);
+    ok('SALT_OKUNUR: siparislerim ve ayrinti (havale bilgisiyle) acik', (await M(A.token)('/siparisler')).status === 200
+        && ((x) => x.status === 200 && !!x.d.odeme)(await M(A.token)('/siparisler/' + O8.id)));
     ok('odeme bildirimi yapilabilir', (d = await M(A.token)('/siparisler/' + O8.id + '/odeme-bildir', { body: {} })).status === 200 && !!d.d.odemeBildirildiAt, d);
-    const O9 = await siparis(A.token, [{ urunId: P2.id, adet: 1 }]);
     ok('iptal edilebilir', (d = await M(A.token)('/siparisler/' + O9.id + '/iptal', { body: {} })).status === 200 && d.d.durum === 'IPTAL', d);
     await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [gunOnce(10), A.id]);
-    ok('lisans tamamen KAPALI: magaza da kapali (403 LICENSE_EXPIRED)', (d = await M(A.token)('/durum')).status === 403 && d.d.code === 'LICENSE_EXPIRED', d);
+    ok('lisans KAPALI: siparis izleme acik (durum, siparislerim, ayrinti)', (await M(A.token)('/durum')).status === 200
+        && (await M(A.token)('/siparisler')).status === 200 && (await M(A.token)('/siparisler/' + O8.id)).status === 200);
+    ok('lisans KAPALI: sepet / yeni siparis / urunler 403 LICENSE_EXPIRED',
+        ((x) => x.status === 403 && x.d.code === 'LICENSE_EXPIRED')(await M(A.token)('/sepet', { body: { kalemler: [{ urunId: P2.id, adet: 1 }] } }))
+        && (await M(A.token)('/siparisler', { body: {} })).status === 403 && (await M(A.token)('/urunler')).status === 403);
 
     E.tasiyiciAyarla(null);
     console.error = eskiHata; console.warn = eskiUyari;

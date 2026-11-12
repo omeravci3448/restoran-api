@@ -383,11 +383,13 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('KAPALI isletmede kasiyer girisi 403 LICENSE_EXPIRED (anlamli mesaj)', kg.status === 403 && kg.d.code === 'LICENSE_EXPIRED' && /sahibi ya da müdür/.test(kg.d.message), kg);
     const kme = await js('/api/auth/me', { token: kp.token });
     ok('oturum bilgisi acik, lisans durumu KAPALI', kme.status === 200 && kme.d.lisansDurum === 'KAPALI', kme.d && kme.d.lisansDurum);
-    for (const [m, yol] of [['GET', '/api/orders'], ['GET', '/api/tables'], ['GET', '/api/tenant/me'], ['GET', '/api/plaka/durum'], ['GET', '/api/products'], ['POST', '/api/tables'], ['GET', '/api/magaza/durum'], ['GET', '/api/magaza/siparisler']]) {
+    for (const [m, yol] of [['GET', '/api/orders'], ['GET', '/api/tables'], ['GET', '/api/tenant/me'], ['GET', '/api/plaka/durum'], ['GET', '/api/products'], ['POST', '/api/tables'], ['GET', '/api/magaza/urunler'], ['POST', '/api/magaza/sepet']]) {
         const x = await js(yol, { token: kp.token, method: m, body: m === 'POST' ? { code: 'X1', name: 'X1' } : undefined });
         ok(`KAPALI: ${m} ${yol} 403 LICENSE_EXPIRED + Lisans sayfasi mesaji`, x.status === 403 && x.d.code === 'LICENSE_EXPIRED' && /Lisans sayfasına gidin/.test(x.d.message), x);
     }
     ok('KAPALI: yonetici sifresi kapisi acik (manager-status 200)', (await js('/api/auth/manager-status', { token: kp.token })).status === 200);
+    ok('KAPALI: magazada bekleyen siparisi izleme acik (durum + siparislerim 200)', (await js('/api/magaza/durum', { token: kp.token })).status === 200
+        && (await js('/api/magaza/siparisler', { token: kp.token })).status === 200);
     ok('KAPALI: yenileme kanali 200 (donem yenileme)', ((x) => x.status === 200 && x.d.donem.durum === 'yenileme')(await js('/api/license/yenileme-kanali', { token: kp.token })));
     ok('KAPALI: oturumlu teklif 200', (await js('/api/license/quote', { token: kp.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).status === 200);
     const kal = await js('/api/license/purchase', { token: kp.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });

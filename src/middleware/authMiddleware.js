@@ -107,14 +107,25 @@ function requireRole(...roles) {
 // erişmesini engeller. x-manager-pin header'ı tenant.manager_pin (hash) ile
 // karşılaştırılır. PIN henüz hiç ayarlanmadıysa erişime izin verir (ilk kurulum
 // için; sahip Ayarlar'dan PIN belirleyince koruma devreye girer).
+// Deneme siniri: manager-verify ile AYNI sayac (services/yoneticiSifreSiniri.js); 5 dakikada 8 hatali
+// sifreden sonra 429 MANAGER_PIN_LOCKED. Sifre gonderilmeyen istek (baslik yok) deneme sayilmaz.
 const bcryptMw = require('bcryptjs');
+const YSS = require('../services/yoneticiSifreSiniri');
 function requireManagerPin(req, res, next) {
     query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId])
         .then(async (r) => {
             const hash = r.rows[0]?.manager_pin;
             if (!hash) return next(); // henüz ayarlanmamış → açık (ilk kurulum)
             const pin = req.headers['x-manager-pin'] || '';
-            const ok = pin && await bcryptMw.compare(String(pin), hash);
+            if (YSS.kilitliMi(req.user.tenantId)) {
+                return res.status(429).json({ code: 'MANAGER_PIN_LOCKED', message: YSS.KILIT_MESAJI });
+            }
+            if (!pin) return res.status(403).json({ code: 'MANAGER_PIN_REQUIRED', message: 'Yönetici şifresi gerekli.' });
+            const bitir = YSS.denemeBaslat(req.user.tenantId);
+            if (!bitir) return res.status(429).json({ code: 'MANAGER_PIN_LOCKED', message: YSS.KILIT_MESAJI });
+            let ok = false;
+            try { ok = await bcryptMw.compare(String(pin), hash); }
+            finally { bitir(ok); }
             if (ok) return next();
             return res.status(403).json({ code: 'MANAGER_PIN_REQUIRED', message: 'Yönetici şifresi gerekli.' });
         })

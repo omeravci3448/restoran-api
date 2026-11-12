@@ -30,6 +30,10 @@ exports.getProfile = async (req, res) => {
     // Telefon bildirimi alan roller (NULL = varsayilan; services/pushBildirim.js)
     t.bildirim_roller = push.rolleriCoz(t.bildirim_roller);
     t.show_cost_analytics = t.show_cost_analytics == null ? 1 : Number(t.show_cost_analytics);
+    // KVKK: fatura bilgileri (sahis isletmesinde billing_tax_id = TC kimlik no) yalniz sahip ve mudure doner
+    if (!['OWNER', 'MANAGER'].includes(req.user.role)) {
+        for (const k of ['billing_name', 'billing_address', 'billing_tax_id', 'billing_tax_office']) delete t[k];
+    }
     res.json(t);
 };
 

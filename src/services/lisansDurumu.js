@@ -58,21 +58,40 @@ const YAZMAYA_IZINLI = [
     '/api/tenant',       // fatura bilgisi duzeltme
     '/api/push/iptal',   // telefon bildirimini kapatma / cikis
     '/api/paket/musteri/bul',   // yalniz OKUMA: telefon adres satirinda gitmesin diye POST govdesiyle
-    '/api/magaza',              // MDA Yazilim magazasi: suresi dolan isletme eski siparisinin odemesini bildirebilsin / iptal edebilsin
 ];
+// Eslesme YOL SEGMENTI sinirinda: '/api/tenant' kurali '/api/tenants'i, '/api/license' kurali '/api/licensex'i acmaz.
+const yolEslesir = (yol, p) => yol === p || yol.startsWith(p + '/') || yol.startsWith(p + '?');
+
+// MDA Yazilim magazasi, lisans suresi dolmus isletme (SALT_OKUNUR ve KAPALI): YENI siparis ve sepet YOK, urun
+// listesi de kapali. Acik olanlar: siparislerim, siparis ayrintisi (havale bilgisiyle), "odemeyi yaptim", iptal ve
+// kenar cubugu durumu. Boylece bekleyen siparisinin IBAN'ini gorup odemesini bildirebilir.
+const MAGAZA_SURESI_DOLMUS_ACIK = [
+    ['GET', /^\/api\/magaza\/durum$/],
+    ['GET', /^\/api\/magaza\/siparisler$/],
+    ['GET', /^\/api\/magaza\/siparisler\/[^/]+$/],
+    ['POST', /^\/api\/magaza\/siparisler\/[^/]+\/(odeme-bildir|iptal)$/],
+];
+const magazaYolu = (yol) => yolEslesir(yol, '/api/magaza');
+function magazadaGecerMi(req) {
+    const m = (req.method || 'GET').toUpperCase();
+    const yol = String(req.originalUrl || req.url || '').split('?')[0];
+    return MAGAZA_SURESI_DOLMUS_ACIK.some(([yontem, desen]) =>
+        (yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol));
+}
 
 function saltOkunurdaGecerMi(req) {
+    const yol = String(req.originalUrl || req.url || '');
+    if (magazaYolu(yol.split('?')[0])) return magazadaGecerMi(req);
     const m = (req.method || 'GET').toUpperCase();
     if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return true;
-    const yol = req.originalUrl || req.url || '';
-    return YAZMAYA_IZINLI.some((p) => yol.startsWith(p));
+    return YAZMAYA_IZINLI.some((p) => yolEslesir(yol, p));
 }
 
 // KAPALI (bitis + salt-okunur suresi gecmis): isletme giris yapar ama YALNIZ lisansini yenileyebilir
 // (Patron karari 2026-11-12: gelir icin onemli). Acik olanlar: oturum bilgisi, yonetici sifresi kapisi (Lisans
 // sayfasi onun arkasinda), lisans uclari (yenileme kanali, teklif, satin alma, gecmis, "odemeyi yaptim", bekleyen
 // bildirimi iptal) ve telefon bildirimini kapatma (cikis). Katalog, teklif ve banka bilgisi zaten oturumsuz.
-// Geri kalan her sey (magaza dahil) 403 LICENSE_EXPIRED.
+// Magazada yalniz bekleyen siparisi izleme ve odeme bildirme (MAGAZA_SURESI_DOLMUS_ACIK). Geri kalan her sey 403.
 const KAPALIDA_ACIK = [
     ['GET', /^\/api\/auth\/me$/],
     ['GET', /^\/api\/auth\/manager-status$/],
@@ -84,7 +103,8 @@ function kapalidaGecerMi(req) {
     const m = (req.method || 'GET').toUpperCase();
     const yol = String(req.originalUrl || req.url || '').split('?')[0];
     return KAPALIDA_ACIK.some(([yontem, desen]) =>
-        (yontem === '*' || yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol));
+        (yontem === '*' || yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol))
+        || magazadaGecerMi(req);
 }
 
-module.exports = { DURUM, TOLERANS_GUN, hesapla, saltOkunurdaGecerMi, kapalidaGecerMi, gunSonu };
+module.exports = { DURUM, TOLERANS_GUN, hesapla, saltOkunurdaGecerMi, kapalidaGecerMi, magazadaGecerMi, yolEslesir, gunSonu };

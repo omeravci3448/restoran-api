@@ -460,21 +460,9 @@ exports.managerStatus = async (req, res) => {
     res.json({ isSet: !!r.rows[0]?.manager_pin });
 };
 
-// Yönetici şifresi deneme sınırı (tenant başına, bellek içi — tek container yeterli)
-const mgrAttempts = new Map(); // tenantId → { count, resetAt }
-function mgrRateLimited(tenantId) {
-    const now = Date.now();
-    const rec = mgrAttempts.get(tenantId);
-    if (rec && now < rec.resetAt && rec.count >= 8) return true;
-    return false;
-}
-function mgrRecordFail(tenantId) {
-    const now = Date.now();
-    const rec = mgrAttempts.get(tenantId);
-    if (!rec || now >= rec.resetAt) mgrAttempts.set(tenantId, { count: 1, resetAt: now + 5 * 60 * 1000 });
-    else rec.count++;
-}
-function mgrReset(tenantId) { mgrAttempts.delete(tenantId); }
+// Yönetici şifresi deneme sınırı: ortak servis (services/yoneticiSifreSiniri.js). manager-verify, manager-set
+// (mevcut şifre) ve requireManagerPin ara katmanı AYNI sayacı kullanır.
+const YSS = require('../services/yoneticiSifreSiniri');
 
 exports.managerSet = async (req, res) => {
     const { pin, currentPin } = req.body || {};
@@ -485,7 +473,11 @@ exports.managerSet = async (req, res) => {
     const existing = r.rows[0]?.manager_pin;
     // Zaten ayarlıysa değiştirmek için mevcut şifre gerekir (kasiyer ele geçiremesin)
     if (existing) {
-        const ok = currentPin && await bcrypt.compare(String(currentPin), existing);
+        const bitir = YSS.denemeBaslat(req.user.tenantId);
+        if (!bitir) return res.status(429).json({ code: 'MANAGER_PIN_LOCKED', message: YSS.KILIT_MESAJI });
+        let ok = false;
+        try { ok = !!currentPin && await bcrypt.compare(String(currentPin), existing); }
+        finally { bitir(ok); }
         if (!ok) return res.status(403).json({ message: 'Mevcut yönetici şifresi hatalı.' });
     }
     const hash = await bcrypt.hash(String(pin), 10);
@@ -495,17 +487,17 @@ exports.managerSet = async (req, res) => {
 
 exports.managerVerify = async (req, res) => {
     const { pin } = req.body || {};
-    if (mgrRateLimited(req.user.tenantId)) {
-        return res.status(429).json({ message: 'Çok fazla hatalı deneme. Birkaç dakika sonra tekrar deneyin.' });
+    if (YSS.kilitliMi(req.user.tenantId)) {
+        return res.status(429).json({ code: 'MANAGER_PIN_LOCKED', message: YSS.KILIT_MESAJI });
     }
     const r = await query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId]);
     const hash = r.rows[0]?.manager_pin;
     if (!hash) return res.json({ ok: true, notSet: true }); // henüz ayarlanmamış
-    const ok = pin && await bcrypt.compare(String(pin), hash);
-    if (!ok) {
-        mgrRecordFail(req.user.tenantId);
-        return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
-    }
-    mgrReset(req.user.tenantId);
+    const bitir = YSS.denemeBaslat(req.user.tenantId);
+    if (!bitir) return res.status(429).json({ code: 'MANAGER_PIN_LOCKED', message: YSS.KILIT_MESAJI });
+    let ok = false;
+    try { ok = !!pin && await bcrypt.compare(String(pin), hash); }
+    finally { bitir(ok); }
+    if (!ok) return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
     res.json({ ok: true });
 };
