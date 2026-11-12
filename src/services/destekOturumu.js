@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const { normalYol } = require('./istekYolu');
 
 // --- DESTEK OTURUMU (Patron karari: her zaman yazma izinli) ---
 //
@@ -125,17 +126,27 @@ async function kimlik(payload) {
 }
 
 // --- YASAK uclar (destek oturumunda 403) ---
+// Iki kat (guvenlik incelemesi Y1): (1) ROTA DUZEYINDE destekYasak ara katmani (authRoutes, tenantRoutes, pushRoutes):
+// yol hangi bicimde yazilirsa yazilsin rota calisirsa yasak da calisir. (2) protect icinde yol listesi (yasakMi),
+// normallestirilmis yolla (istekYolu.normalYol: buyuk/kucuk harf, mutlak istek satiri, sondaki /).
 const GIRIS_MESAJI = 'Destek oturumunda giriş bilgileri ve personel hesapları değiştirilemez (şifre, e-posta, yönetici şifresi, '
     + 'personel ekleme, düzenleme ya da silme). Bu işlemleri işletme sahibi kendi hesabından yapar.';
+const KAPATMA_MESAJI = 'Destek oturumunda hesap kapatma talebi gönderilemez. Bu işlemi işletme sahibi kendi hesabından yapar.';
+const BILDIRIM_MESAJI = 'Destek oturumunda telefon bildirimi açılamaz.';
 const YASAKLAR = [
     // /api/auth altindaki her yazma: sifre degistir, sifre baglantisi, personel ekle/duzenle, yonetici sifresi belirle.
     // Tek istisna manager-verify (yalniz dogrular, hicbir sey degistirmez).
     { yol: /^\/api\/auth\/(?!manager-verify$)/, mesaj: GIRIS_MESAJI },
-    { yol: /^\/api\/tenant\/close$/, mesaj: 'Destek oturumunda hesap kapatma talebi gönderilemez. Bu işlemi işletme sahibi kendi hesabından yapar.' },
-    { yol: /^\/api\/push\/(abone|deneme)$/, mesaj: 'Destek oturumunda telefon bildirimi açılamaz.' },
+    { yol: /^\/api\/tenant\/close$/, mesaj: KAPATMA_MESAJI },
+    { yol: /^\/api\/push\/(abone|deneme)$/, mesaj: BILDIRIM_MESAJI },
 ];
 const YAZMA = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const yolu = (req) => String(req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
+const yolu = (req) => normalYol(req);
+
+// Rota duzeyinde yasak: protect'ten SONRA baglanir (req.user.destek protect'te konur).
+function destekYasak(mesaj, kod = 'DESTEK_YASAK') {
+    return (req, res, next) => (req.user && req.user.destek ? res.status(403).json({ code: kod, message: mesaj }) : next());
+}
 
 function yasakMi(req) {
     if (!YAZMA.has(String(req.method || '').toUpperCase())) return null;
@@ -239,5 +250,5 @@ async function liste({ durum, tenantId, limit } = {}) {
 
 module.exports = {
     DESTEK_ADI, JETON_OMRU_SN, ac, girisJetonu, kimlik, yasakMi, istekKaydi, pinAtlandi, kapat, liste, bicimle,
-    suresiDolanlariKapat, etiket, NEDEN_AD,
+    suresiDolanlariKapat, etiket, NEDEN_AD, destekYasak, GIRIS_MESAJI, KAPATMA_MESAJI, BILDIRIM_MESAJI,
 };

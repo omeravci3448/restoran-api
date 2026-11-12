@@ -45,7 +45,7 @@ const KURALLAR = [
 function araKatman(req, res, next) {
     const m = (req.method || 'GET').toUpperCase();
     if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return next();
-    const yol = String(req.path || '/').split('?')[0];
+    const yol = String(req.path || '/').split('?')[0].toLowerCase().replace(/(.)\/+$/, '$1');   // harf ve sondaki / farki ayni kural
     let kural = null, eslesme = null;
     for (const k of KURALLAR) {
         if (k[0] !== m) continue;

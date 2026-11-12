@@ -62,6 +62,9 @@ const YAZMAYA_IZINLI = [
 ];
 // Eslesme YOL SEGMENTI sinirinda: '/api/tenant' kurali '/api/tenants'i, '/api/license' kurali '/api/licensex'i acmaz.
 const yolEslesir = (yol, p) => yol === p || yol.startsWith(p + '/') || yol.startsWith(p + '?');
+// Istek yolu normallestirilir (buyuk/kucuk harf, mutlak istek satiri, sondaki /; bkz istekYolu.js). Ham yol
+// kullanildiginda salt-okunurda "GET /API/magaza/..." magaza kisitini atliyordu (guvenlik incelemesi, dusuk 1).
+const { normalYol } = require('./istekYolu');
 
 // MDA Yazilim magazasi, lisans suresi dolmus isletme (SALT_OKUNUR ve KAPALI): YENI siparis ve sepet YOK, urun
 // listesi de kapali. Acik olanlar: siparislerim, siparis ayrintisi (havale bilgisiyle), "odemeyi yaptim", iptal ve
@@ -75,14 +78,14 @@ const MAGAZA_SURESI_DOLMUS_ACIK = [
 const magazaYolu = (yol) => yolEslesir(yol, '/api/magaza');
 function magazadaGecerMi(req) {
     const m = (req.method || 'GET').toUpperCase();
-    const yol = String(req.originalUrl || req.url || '').split('?')[0];
+    const yol = normalYol(req);
     return MAGAZA_SURESI_DOLMUS_ACIK.some(([yontem, desen]) =>
         (yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol));
 }
 
 function saltOkunurdaGecerMi(req) {
-    const yol = String(req.originalUrl || req.url || '');
-    if (magazaYolu(yol.split('?')[0])) return magazadaGecerMi(req);
+    const yol = normalYol(req);
+    if (magazaYolu(yol)) return magazadaGecerMi(req);
     const m = (req.method || 'GET').toUpperCase();
     if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return true;
     return YAZMAYA_IZINLI.some((p) => yolEslesir(yol, p));
@@ -102,7 +105,7 @@ const KAPALIDA_ACIK = [
 ];
 function kapalidaGecerMi(req) {
     const m = (req.method || 'GET').toUpperCase();
-    const yol = String(req.originalUrl || req.url || '').split('?')[0];
+    const yol = normalYol(req);
     return KAPALIDA_ACIK.some(([yontem, desen]) =>
         (yontem === '*' || yontem === m || (yontem === 'GET' && m === 'HEAD')) && desen.test(yol))
         || magazadaGecerMi(req);

@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/authController');
 const { protect, requireRole } = require('../middleware/authMiddleware');
+const { destekYasak, GIRIS_MESAJI } = require('../services/destekOturumu');
+// Destek oturumunda giris bilgileri ve personel hesaplari degistirilemez (rota duzeyinde; guvenlik incelemesi Y1)
+const destekte = destekYasak(GIRIS_MESAJI);
 
 // İki adımlı kayıt: form → OTP gönder → OTP doğrula → tenant oluştur
 router.post('/register/request', ctrl.requestRegistration);
@@ -10,17 +13,17 @@ router.post('/register/resend', ctrl.resendOtp);
 router.post('/login', ctrl.login);
 router.get('/me', protect, ctrl.me);
 // Giris bilgileri karti: sifre degistir / sifre belirleme baglantisi e-postala
-router.post('/sifre-degistir', protect, ctrl.sifreDegistir);
-router.post('/sifre-baglantisi', protect, ctrl.sifreBaglantisi);
+router.post('/sifre-degistir', protect, destekte, ctrl.sifreDegistir);
+router.post('/sifre-baglantisi', protect, destekte, ctrl.sifreBaglantisi);
 router.get('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.listStaff);
-router.post('/staff', protect, requireRole('OWNER', 'MANAGER'), ctrl.createStaff);
-router.patch('/staff/:id', protect, requireRole('OWNER', 'MANAGER'), ctrl.updateStaff);
+router.post('/staff', protect, destekte, requireRole('OWNER', 'MANAGER'), ctrl.createStaff);
+router.patch('/staff/:id', protect, destekte, requireRole('OWNER', 'MANAGER'), ctrl.updateStaff);
 
 // Yönetici şifresi (manager PIN) — rapor/ayar/lisans kilidi.
 // Sadece OWNER/MANAGER belirleyip doğrulayabilir → kasiyer ilk PIN'i kurup
 // sahibi kilitleyemez (privilege escalation engellendi) + brute-force yüzeyi daralır.
 router.get('/manager-status', protect, ctrl.managerStatus);
-router.post('/manager-set', protect, requireRole('OWNER', 'MANAGER'), ctrl.managerSet);
+router.post('/manager-set', protect, destekte, requireRole('OWNER', 'MANAGER'), ctrl.managerSet);
 router.post('/manager-verify', protect, requireRole('OWNER', 'MANAGER'), ctrl.managerVerify);
 
 module.exports = router;
