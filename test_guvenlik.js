@@ -8,6 +8,7 @@
 //       SALT_OKUNUR'da yalniz siparis kapali.
 //   D2  gecis: license_modules '"ALL"' (JSON metni) ya da duz ALL ise ["ALL"]; BASE'e dusmez.
 //   D4  genel hata yakalayici: uretimde 500 yanitinda ic hata metni donmez.
+//   D6  destek satirlarinin ayrintisinda rol (OWNER) degil "MDA Destek" yazar.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -283,6 +284,20 @@ async function temizle() {
     ok('uretim: 4xx kullanici mesaji oldugu gibi', k400.durum === 400 && k400.govde.message === 'Masa adı boş olamaz.', k400);
     ok('buyuk govde 413', hataYaniti({ type: 'entity.too.large' }, { uretim: true }).durum === 413);
     ok('gecersiz durum kodu 500 sayilir', hataYaniti(Object.assign(new Error('x'), { status: 999 }), { uretim: true }).durum === 500);
+
+    console.log('\n=== D6) Destek gunluk ayrintisinda "MDA Destek" ===');
+    const E = await kiraciKur({ ad: 'Destek Rol' });
+    const { token: DE } = await destekJetonu(rj, E.id);
+    const em = (await js('/api/tables', { token: E.token, body: { code: 'R1', name: 'Masa R1' } })).d;
+    const ek = (await js('/api/categories', { token: E.token, body: { name: 'Corba' } })).d;
+    const eu = (await js('/api/products', { token: E.token, body: { name: 'Mercimek', price: 90, categoryId: ek.id, isAvailable: true } })).d;
+    const es = (await js('/api/orders', { token: DE, body: { tableId: em.id } })).d;
+    await js('/api/orders/' + es.id + '/items', { token: DE, body: { productId: eu.id, qty: 3 } });
+    const kalemId = (await query('SELECT id FROM order_items WHERE order_id = ?', [es.id])).rows[0].id;
+    ok('destek kalem azaltir (200)', (await js(`/api/orders/${es.id}/items/${kalemId}`, { token: DE, method: 'PUT', body: { qty: 1 } })).status === 200);
+    ok('destek kalem siler (200)', (await js(`/api/orders/${es.id}/items/${kalemId}`, { token: DE, method: 'DELETE' })).status === 200);
+    const rolSatir = (await query("SELECT islem, user_name, detay FROM islem_gunlugu WHERE tenant_id = ? AND islem IN ('kalem_azalt', 'kalem_sil')", [E.id])).rows;
+    ok('kalem azaltma ve silme satirinda "MDA Destek", "OWNER" yok', rolSatir.length === 2 && rolSatir.every((x) => /· MDA Destek$/.test(x.detay) && !/OWNER/.test(x.detay) && x.user_name === 'MDA Destek'), rolSatir);
 
     // --- SONRAKI BOLUMLER ---
 

@@ -28,4 +28,9 @@ async function listele(tenantId, { gun, sinir = 200 } = {}) {
     return r.rows;
 }
 
-module.exports = { kaydet, listele };
+// Kayit ayrintisinda kim: destek oturumunda rol (OWNER) yerine "MDA Destek" (guvenlik incelemesi, dusuk 6)
+function rolEtiketi(user) {
+    return user && user.destek ? require('./destekOturumu').DESTEK_ADI : String((user && user.role) || '');
+}
+
+module.exports = { kaydet, listele, rolEtiketi };

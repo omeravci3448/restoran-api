@@ -210,7 +210,7 @@ exports.removeItem = async (req, res) => {
         throw e;
     }
     await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_sil', hedefTur: 'order_item', hedefId: cur.id,
-        detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} (${TL(cur.total)}) · ${req.user.role}` });
+        detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} (${TL(cur.total)}) · ${gunluk.rolEtiketi(req.user)}` });
     res.json({ message: 'Silindi.' });
 };
 exports.updateItem = async (req, res) => {
@@ -246,7 +246,7 @@ exports.updateItem = async (req, res) => {
     }
     if (azaliyor) {
         await gunluk.kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'kalem_azalt', hedefTur: 'order_item', hedefId: cur.id,
-            detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} → ×${newQty} · ${req.user.role}` });
+            detay: `${izin.masa} · ${cur.product_name} ×${cur.qty} → ×${newQty} · ${gunluk.rolEtiketi(req.user)}` });
     }
     res.json({ message: 'Güncellendi.' });
 };
