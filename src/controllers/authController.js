@@ -115,7 +115,8 @@ exports.verifyRegistration = async (req, res) => {
     // Demo lisans — 7 gün boyunca TÜM modüller açık (müşteri her şeyi denesin).
     // Demo sonunda satın alırken hangi modülleri tuttuğu lisansla belirlenir.
     // Tier'ın MASA LİMİTİ yine geçerli (kayıttaki paket seçimi sınırlar).
-    const demoEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const demoGun = await require('../services/yonetimAyar').denemeGunOku();   // root Sistem Ayarlari; ayar yoksa 7
+    const demoEnd = new Date(Date.now() + demoGun * 24 * 60 * 60 * 1000).toISOString();
     // Hub erişilemezse bile demoda tüm modüller açık olsun diye bilinen liste (fallback)
     // Deneme her zaman TAM: butun moduller (moduler lisans, QR_SIPARIS dahil). Hub listesi eksik olsa da
     // bu liste hep eklenir (asagida).
@@ -193,7 +194,7 @@ exports.verifyRegistration = async (req, res) => {
         licenseTier: form.tier,
         modules,
         licenseEndDate: demoEnd,
-        message: '7 günlük demo aktif. İşyeri kodunuzu kaydedin.'
+        message: `${demoGun} günlük demo aktif. İşyeri kodunuzu kaydedin.`
     });
 };
 
@@ -317,9 +318,10 @@ exports.login = async (req, res) => {
 exports.me = async (req, res) => {
     // Giris bilgileri karti icin: isyeri kodu, kaynak (SofraMix mi) ve sifrenin
     // kullanici tarafindan belirlenip belirlenmedigi.
+    // Destek oturumunda kullanici satiri yok (req.user.id NULL): isletme satiri yine okunur (LEFT JOIN)
     const ek = (await query(
         `SELECT t.business_code, t.parent_org, t.mutfak_ekrani, u.password_set_at
-           FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = ?`, [req.user.id])).rows[0] || {};
+           FROM tenants t LEFT JOIN users u ON u.id = ? AND u.tenant_id = t.id WHERE t.id = ?`, [req.user.id, req.user.tenantId])).rows[0] || {};
     res.json({
         id: req.user.id,
         email: req.user.email,
@@ -329,7 +331,8 @@ exports.me = async (req, res) => {
         businessName: req.user.businessName,
         businessCode: ek.business_code || null,
         parentOrg: ek.parent_org || null,
-        passwordSet: !!ek.password_set_at,
+        passwordSet: req.user.destek ? true : !!ek.password_set_at,   // destek: "sifrenizi belirleyin" notu cikmasin
+        destek: req.user.destek ? { oturumId: req.user.destek.oturumId, bitis: req.user.destek.bitis } : undefined,
         mutfakEkrani: !!ek.mutfak_ekrani,   // kenar cubugunda "Mutfak Ekrani" baglantisi
         licenseTier: req.user.licenseTier,
         modules: req.user.modules,

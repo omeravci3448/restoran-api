@@ -3,6 +3,7 @@ const H = require('../services/plakaHak');
 const C = require('../services/plakaCizim');
 const K = require('../services/kisaKod');
 const M = require('../services/lisansModul');
+const YG = require('../services/yonetimGunlugu');   // yonetim gunlugu: root'un yaptigi her degisiklik
 const has = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
 
 // --- Plaka Talepleri (root paneli) ---
@@ -115,6 +116,7 @@ exports.durum = async (req, res) => {
             message: `Bu talep "${H.DURUM_AD[v.rows[0].durum] || v.rows[0].durum}" durumunda; bu işlem yapılamaz.` });
     }
     const x = await query(`${SEC} WHERE p.id = ?`, [req.params.id]);
+    await YG.kaydet(req, { islem: 'plaka_durum', tenantId: x.rows[0].tenant_id, hedefTur: 'plaka_talebi', hedefId: req.params.id, ozet: `Plaka talebi ${x.rows[0].talep_no}: ${H.DURUM_AD[g.hedef] || g.hedef}` + (b.islem === 'kargoda' ? ` (${String(b.kargoFirma || '').trim()} ${String(b.takipNo || '').trim()})` : '') + (b.islem === 'reddet' ? ` - sebep: ${String(b.sebep || '').trim().slice(0, 200)}` : '') });
     res.json(hazirla(x.rows[0], await masaDurumlari(x.rows)));
 };
 
@@ -123,6 +125,7 @@ exports.not = async (req, res) => {
     const not = String((req.body || {}).not || '').trim().slice(0, 1000);
     const r = await query('UPDATE plaka_talepleri SET root_not = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [not || null, req.params.id]);
     if (!r.changes) return res.status(404).json({ message: 'Talep bulunamadı.' });
+    await YG.kaydet(req, { islem: 'plaka_not', hedefTur: 'plaka_talebi', hedefId: req.params.id, ozet: not ? 'Plaka talebi iç notu: ' + not.slice(0, 200) : 'Plaka talebi iç notu silindi' });
     res.json({ ok: true, root_not: not || null });
 };
 
@@ -161,6 +164,7 @@ exports.masaKisaKodYenile = async (req, res) => {
     const eski = r.rows[0].kisa_kod || null;
     const kod = await K.yenile(r.rows[0].id);
     console.log('[root] kisa kod yenilendi:', r.rows[0].tenant_id, r.rows[0].name, eski, '->', kod);
+    await YG.kaydet(req, { islem: 'kisa_kod', tenantId: r.rows[0].tenant_id, hedefTur: 'masa', hedefId: r.rows[0].id, ozet: `${r.rows[0].name}: kısa kod ${eski || '-'} -> ${kod}` });
     res.json({ kisaKod: kod, kisaAdres: K.kisaAdres(kod), eskiKod: eski,
         message: `${r.rows[0].name}: kısa kod yenilendi (${kod}). Basılı plakanın karekodu artık çalışmaz.` });
 };
@@ -171,7 +175,10 @@ exports.ayarlar = async (_req, res) => {
 };
 exports.ayarYaz = async (req, res) => {
     try {
-        res.json({ ...(await H.ayarYaz(req.body || {})), olculer: H.OLCULER });
+        const once = await H.ayarlar();
+        const sonra = await H.ayarYaz(req.body || {});
+        await YG.kaydet(req, { islem: 'plaka_ayar', ozet: 'Plaka ayarları: ' + (Object.keys(sonra).filter((k) => JSON.stringify(once[k]) !== JSON.stringify(sonra[k])).map((k) => `${k} ${once[k] ?? '-'} -> ${sonra[k] ?? '-'}`).join('; ') || 'değişiklik yok'), ayrinti: { once, sonra } });
+        res.json({ ...sonra, olculer: H.OLCULER });
     } catch (e) {
         if (e.status) return res.status(e.status).json({ message: e.message });
         throw e;
@@ -191,7 +198,7 @@ exports.kurallar = async (_req, res) => {
 };
 // POST /api/root/plaka/kurallar  { ad, moduller[], enAzTutar, enCokPlaka, aktif }
 exports.kuralEkle = async (req, res) => {
-    try { res.status(201).json(await H.kuralEkle(req.body || {})); }
+    try { const k = await H.kuralEkle(req.body || {}); await YG.kaydet(req, { islem: 'plaka_kural', hedefTur: 'plaka_kurali', hedefId: k && k.id, ozet: `Hediye plaka kuralı eklendi: ${(k && k.ad) || ''}`, ayrinti: { kural: k } }); res.status(201).json(k); }
     catch (e) { if (e.status) return res.status(e.status).json({ message: e.message }); throw e; }
 };
 // PATCH /api/root/plaka/kurallar/:id
@@ -199,12 +206,14 @@ exports.kuralGuncelle = async (req, res) => {
     try {
         const k = await H.kuralGuncelle(req.params.id, req.body || {});
         if (!k) return res.status(404).json({ message: 'Kural bulunamadı.' });
+        await YG.kaydet(req, { islem: 'plaka_kural', hedefTur: 'plaka_kurali', hedefId: k.id, ozet: `Hediye plaka kuralı güncellendi: ${k.ad || ''}`, ayrinti: { kural: k, govde: req.body } });
         res.json(k);
     } catch (e) { if (e.status) return res.status(e.status).json({ message: e.message }); throw e; }
 };
 // DELETE /api/root/plaka/kurallar/:id  (verilmis hediyeler etkilenmez; talep kural adini kopya tutar)
 exports.kuralSil = async (req, res) => {
     if (!(await H.kuralSil(req.params.id))) return res.status(404).json({ message: 'Kural bulunamadı.' });
+    await YG.kaydet(req, { islem: 'plaka_kural', hedefTur: 'plaka_kurali', hedefId: req.params.id, ozet: 'Hediye plaka kuralı silindi' });
     res.json({ ok: true });
 };
 // GET /api/root/plaka/kurallar/onizleme?birimMaliyet=&kargoMaliyet=  (bos ise kayitli ayar)

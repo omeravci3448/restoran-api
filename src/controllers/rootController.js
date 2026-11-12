@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../config/db');
 const totp = require('../services/totp');
+const YG = require('../services/yonetimGunlugu');   // yonetim gunlugu: root'un yaptigi her degisiklik
 
 // --- EKOSİSTEM YÖNETİMİ (root) ---
 //
@@ -264,11 +265,18 @@ exports.listTenants = async (_req, res) => {
                 -- Odeme gecmisi: "lisans almis mi, ne zaman, ne kadar".
                 (SELECT COUNT(*)      FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi') AS odeme_adedi,
                 (SELECT v.onay_tarihi FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi' ORDER BY v.onay_tarihi DESC LIMIT 1) AS son_odeme_tarihi,
-                (SELECT v.tutar_kurus FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi' ORDER BY v.onay_tarihi DESC LIMIT 1) AS son_odeme_kurus
+                (SELECT v.tutar_kurus FROM pos_provizyon v WHERE v.tenant_id = t.id AND v.durum = 'islendi' ORDER BY v.onay_tarihi DESC LIMIT 1) AS son_odeme_kurus,
+                -- Havale/EFT ile onaylanan lisans odemeleri (Genel Bakis ile ayni sinif: services/yonetimOzet.js)
+                (SELECT COUNT(*) FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi') AS havale_adedi,
+                (SELECT o.islenen_at FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi' ORDER BY o.islenen_at DESC LIMIT 1) AS havale_son_tarih,
+                (SELECT o.tutar FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi' ORDER BY o.islenen_at DESC LIMIT 1) AS havale_son_tutar
            FROM tenants t
           ORDER BY t.is_active DESC, t.business_name`);
 
     const L = require('../services/lisansDurumu');
+    const Oz = require('../services/yonetimOzet');
+    const tierler = await Oz.katalogTierleri();
+    const esik = Oz.esikGunu();
     res.json(r.rows.map(t => {
         let mods = [];
         try { mods = t.license_modules ? JSON.parse(t.license_modules) : []; } catch (_) {}
@@ -276,9 +284,16 @@ exports.listTenants = async (_req, res) => {
         // (bitis -> 3 gun salt-okunur -> kapali) tek yerde dursun. Iki ayri yerde
         // hesaplansaydi panel "aktif" derken kasa kapanmis olabilirdi.
         const d = L.hesapla(t.license_end_date);
-        const odemeYapmis = Number(t.odeme_adedi || 0) > 0;
+        // Deneme / odemeli / kurum: Genel Bakis ile ayni tek kural (havale + SofraMix odemesi, elle uzatma)
+        const sinif = Oz.sinifla({ ...t, provizyon_adedi: t.odeme_adedi }, tierler, esik);
+        const havaleSon = Oz.tarihCoz(t.havale_son_tarih), smxSon = Oz.tarihCoz(t.son_odeme_tarihi);
+        const havaleYeni = !!havaleSon && (!smxSon || havaleSon > smxSon);
         return {
             ...t,
+            odeme_adedi: Number(t.odeme_adedi || 0) + Number(t.havale_adedi || 0),
+            son_odeme_tarihi: havaleYeni ? t.havale_son_tarih : t.son_odeme_tarihi,
+            son_odeme_kurus: havaleYeni ? Math.round(Number(t.havale_son_tutar || 0) * 100) : t.son_odeme_kurus,
+            sinif,
             license_modules: mods,
             // Adisyon ve Kasa (BASE) yoksa isletme yalniz QR menu kullaniyor (panel menu kipinde)
             menu_kipi: !mods.includes('BASE') && !mods.includes('ALL'),
@@ -286,8 +301,8 @@ exports.listTenants = async (_req, res) => {
             lisans_kalan_gun: d.kalanGun,
             // Odemesi olan kiraci artik deneme DEGILDIR; tier guncellenmemis olsa
             // bile panelde musteri olarak gorunmeli.
-            deneme_mi: t.license_tier === 'TIER_DENEME' && !odemeYapmis,
-            odeme_yapmis: odemeYapmis,
+            deneme_mi: sinif === 'deneme',
+            odeme_yapmis: sinif === 'odemeli',
             kaynak_etiket: t.parent_org === 'SofraMix' ? 'SofraMix'
                 : (t.deneme_kaynak ? 'Tanıtım sayfası' : (t.parent_org || null)),
         };
@@ -330,6 +345,7 @@ exports.lisansUzat = async (req, res) => {
     await query(
         'UPDATE tenants SET license_end_date = ?, license_tier = ?, is_active = 1 WHERE id = ?',
         [bitis, tier, t.id]);
+    await YG.kaydet(req, { islem: 'lisans_uzat', tenantId: t.id, ozet: `Lisans bitişi ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}` + (tier !== t.license_tier ? `; paket ${t.license_tier || '-'} -> ${tier}` : ''), ayrinti: { onceki: t.license_end_date, yeni: bitis, gun: b.gun || null, tier } });
 
     res.json({ ok: true, id: t.id, license_end_date: bitis, license_tier: tier,
         message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });
@@ -403,6 +419,7 @@ exports.createTenant = async (req, res) => {
     await query(
         'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)',
         [uuidv4(), tenantId, eposta, await bcrypt.hash(sifre, 10), ad + ' Yönetimi', 'OWNER']);
+    await YG.kaydet(req, { islem: 'isletme_olustur', tenantId, ozet: `${ad} açıldı (işyeri kodu ${kod})`, ayrinti: { kod, slug, eposta, moduller, masaLimiti, bitis } });
 
     res.status(201).json({
         id: tenantId, businessCode: kod, slug, businessName: ad,
@@ -421,6 +438,7 @@ exports.updateTenant = async (req, res) => {
     const masaLimiti = limitGeldi ? ((f.tableLimit === '' || f.tableLimit == null) ? null : (Number(f.tableLimit) || null)) : null;
     const t = (await query('SELECT id FROM tenants WHERE id = ?', [req.params.id])).rows[0];
     if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+    const once = await YG.isletmeAnlik(t.id);   // yonetim gunlugu: once -> sonra farki
     // Modul secimi: bagimliliklar kendiliginden eklenir (orn. Masadan Siparis -> QR Menu + Adisyon ve Kasa)
     const moduller = Array.isArray(f.modules) ? bagimliliklariTamamla(f.modules).moduller : null;
 
@@ -452,6 +470,7 @@ exports.updateTenant = async (req, res) => {
             limitGeldi ? 1 : 0, masaLimiti,
             f.isActive == null ? null : (f.isActive ? 1 : 0),
             req.params.id]);
+    await YG.isletmeFarki(req, t.id, once);
     res.json({ ok: true, message: 'Güncellendi.', modules: moduller || undefined });
 };
 
@@ -468,6 +487,7 @@ exports.resetOwnerPassword = async (req, res) => {
     if (!u.rows.length) return res.status(404).json({ message: 'Bu işletmede yönetici hesabı yok.' });
     await query('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?',
         [await bcrypt.hash(yeni, 10), new Date().toISOString(), u.rows[0].id]);
+    await YG.kaydet(req, { islem: 'sifre_ver', tenantId: req.params.id, ozet: 'İşletme sahibine yeni giriş şifresi verildi (şifre kayda yazılmaz)' });
     res.json({ ok: true, message: 'Yönetici şifresi güncellendi.', email: t.rows[0].owner_email });
 };
 
@@ -514,6 +534,7 @@ exports.provizyonTekrarDene = async (req, res) => {
         yetkili_email: k.yetkili_eposta, yetkili_tel: k.yetkili_tel, tutar_kurus: k.tutar_kurus,
         kdv_kurus: k.kdv_kurus, yontem: k.yontem, onay_tarihi: k.onay_tarihi, kaynak: k.kaynak,
     });
+    await YG.kaydet(req, { islem: 'provizyon', tenantId: k.tenant_id || null, ozet: `SofraMix ödemesi yeniden denendi (${k.odeme_id}): ${s && s.durum ? s.durum : '-'}` });
     res.json(s);
 };
 
@@ -533,6 +554,7 @@ exports.soframixBagla = async (req, res) => {
     const oto = require('../services/soframixOtoBaglanti');
     if (!oto.acikMi()) return res.status(503).json({ message: 'Sunucuda SOFRAMIX_PLATFORM_URL/ANAHTAR ya da MARKETPLACE_KEK eksik.' });
     const s = await oto.otoBagla({ tenantId, isletmeNo: no.no, sebep: 'root' });
+    await YG.kaydet(req, { islem: 'soframix_bagla', tenantId, ozet: `SofraMix kanalı bağlama: ${s.durum}${s.neden ? ' (' + s.neden + ')' : ''}` });
     res.json({ ...s, isletmeNo: no.no });
 };
 
@@ -565,6 +587,7 @@ exports.provizyonPostaYenile = async (req, res) => {
             <p style="margin:20px 0"><a href="${PANEL}/aktivasyon/${j.ham}" style="background:#E2622A;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:700">Sifremi belirle</a></p>
             <p style="color:#374151;font-size:.92rem">Isyeri kodunuz: <b>${t.business_code}</b></p>
         </div>`, tenantId);
+    await YG.kaydet(req, { islem: 'sifre_baglantisi', tenantId, ozet: gitti ? `Şifre belirleme bağlantısı ${alici} adresine gönderildi` : 'Şifre belirleme bağlantısı üretildi (e-posta gitmedi, elden iletilecek)' });
     // SMTP calismiyorsa baglantiyi EKRANDA veriyoruz - Patron elden iletebilsin.
     res.json({ gonderildi: gitti, eposta: alici, sonGecerlilik: j.son,
         baglanti: gitti ? undefined : `${PANEL}/aktivasyon/${j.ham}` });
@@ -577,7 +600,7 @@ exports.provizyonCek = async (_req, res) => {
     if (!cekici.acikMi()) {
         return res.status(503).json({ message: 'SofraMix baglantisi tanimli degil (SOFRAMIX_PLATFORM_URL/ANAHTAR).' });
     }
-    try { res.json(await cekici.birTur()); }
+    try { const s = await cekici.birTur(); await YG.kaydet(_req, { islem: 'provizyon', ozet: 'SofraMix ödemeleri elle çekildi', ayrinti: s }); res.json(s); }
     catch (e) { res.status(502).json({ message: `SofraMix'e ulasilamadi: ${e.message}` }); }
 };
 
@@ -596,8 +619,10 @@ exports.katalogListe = async (_req, res) => {
 
 exports.katalogGuncelle = async (req, res) => {
     const K = require('../services/lisansKatalog');
+    const once = (await query('SELECT * FROM lisans_katalog WHERE id = ?', [req.params.id])).rows[0];
     const satir = await K.guncelle(req.params.id, req.body || {});
     if (!satir) return res.status(404).json({ message: 'Satır bulunamadı.' });
+    await YG.katalogFarki(req, once, satir);
     res.json(satir);
 };
 
@@ -606,10 +631,13 @@ exports.ayarGuncelle = async (req, res) => {
     const IZINLI = ['iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
     // Beyaz liste: gelen gövdedeki her anahtarı yazmak, bir gün başka bir
     // ayarın (örn. bir bayrak) buradan ezilmesine kapı açardı.
+    const once = await A.hepsi(IZINLI);
     for (const k of IZINLI) {
         if (Object.prototype.hasOwnProperty.call(req.body || {}, k)) await A.yaz(k, req.body[k]);
     }
-    res.json(await A.hepsi(IZINLI));
+    const sonra = await A.hepsi(IZINLI);
+    await YG.ayarFarki(req, IZINLI.filter((k) => once[k] !== sonra[k]).map((k) => ({ anahtar: k, once: once[k], sonra: sonra[k] })));
+    res.json(sonra);
 };
 
 // Bekleyen kayitlarda onay ekrani icin: talepten sonra lisans elle degisti mi (uyari), onaylanirsa kalkacak
@@ -705,6 +733,7 @@ exports.lisansOdemeOnayla = async (req, res) => {
         throw e;
     }
     const { o, t, bitis, etkinTur } = sonuc;
+    await YG.kaydet(req, { islem: 'odeme_onay', tenantId: t.id, hedefTur: 'lisans_odemesi', hedefId: o.id, ozet: `Ödeme onaylandı (${o.tur || etkinTur || 'eski kayıt'}): ${YG.TL(o.tutar)}; paket ${o.tier || '-'}; lisans ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}`, ayrinti: { tutar: o.tutar, tur: o.tur, tier: o.tier, moduller: o.moduller, gun, oncekiBitis: t.license_end_date, yeniBitis: bitis } });
     const tarih = LT.TARIH(bitis);
     const message = o.tur === 'yukseltme'
         ? `${t.business_name}: yükseltme onaylandı. Yeni paket bugün başladı, lisans ${tarih} tarihine kadar geçerli.`
@@ -721,5 +750,6 @@ exports.lisansOdemeReddet = async (req, res) => {
         `UPDATE lisans_odemeleri SET durum = 'reddedildi', admin_note = ?, islenen_at = CURRENT_TIMESTAMP
           WHERE id = ? AND durum = 'beklemede'`, [not.slice(0, 300), req.params.id]);
     if (!r.changes) return res.status(409).json({ message: 'Bekleyen bir ödeme bulunamadı.' });
+    await YG.kaydet(req, { islem: 'odeme_red', hedefTur: 'lisans_odemesi', hedefId: req.params.id, ozet: 'Ödeme bildirimi reddedildi: ' + not.slice(0, 200) });
     res.json({ ok: true });
 };

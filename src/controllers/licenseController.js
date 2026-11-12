@@ -108,8 +108,14 @@ exports.kimlikOpsiyonel = async (req, _res, next) => {
         if (!token) return next();
         const jwt = require('jsonwebtoken');
         const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-change-me');
+        if (payload.destek) {
+            // Destek oturumu: teklif o isletmenin indirimi ve donemiyle hesaplansin (oturum aciksa)
+            const d = await require('../services/destekOturumu').kimlik(payload);
+            if (!d.hata) req.user = { id: null, tenantId: d.u.tenant_id, role: 'OWNER' };
+        } else {
         const u = (await query('SELECT id, tenant_id, role FROM users WHERE id = ? AND is_active = 1', [payload.userId])).rows[0];
         if (u) req.user = { id: u.id, tenantId: u.tenant_id, role: u.role };
+        }
     } catch (_) { /* anonim devam */ }
     next();
 };

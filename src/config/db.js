@@ -1046,6 +1046,8 @@ const initDb = () => {
         db.run("CREATE INDEX IF NOT EXISTS idx_plaka_durum ON plaka_talepleri(durum, created_at)", [], () => {});
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_plaka_talep_no ON plaka_talepleri(talep_no) WHERE talep_no IS NOT NULL", [], () => {});
 
+        require('./yonetimDb').yonetimTablolari(db);   // root paneli: yonetim gunlugu, ic notlar, duyurular, destek oturumlari
+
         // GECIS (bir kez, tek islemde): mevcut isletmeler bugunku davranisini korur. Bkz MODUL_GECISI_SQL.
         // Kuyrugun en sonunda: tablolar ve katalog tohumu hazir olduktan sonra.
         modulGecisiBaslat(db);

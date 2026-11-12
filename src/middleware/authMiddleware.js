@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../config/db');
 const lisans = require('../services/lisansDurumu');
 const { AD: MODUL_AD } = require('../services/lisansModul');
+const destek = require('../services/destekOturumu');   // root destek oturumu (JWT'de destek claim'i)
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
@@ -15,16 +16,24 @@ async function protect(req, res, next) {
     try { payload = jwt.verify(token, JWT_SECRET); }
     catch { return res.status(401).json({ message: 'Token geçersiz.' }); }
 
-    const userRes = await query(
-        `SELECT u.*, t.id as tenant_id, t.business_name, t.license_end_date,
-                t.license_modules, t.license_tier, t.license_table_limit,
-                t.is_active as tenant_active
-           FROM users u JOIN tenants t ON t.id = u.tenant_id
-          WHERE u.id = ?`,
-        [payload.userId]
-    );
-    if (!userRes.rows.length) return res.status(401).json({ message: 'Kullanıcı bulunamadı.' });
-    const u = userRes.rows[0];
+    let u;
+    if (payload.destek) {
+        // Destek oturumu (root): kullanici satiri yok; oturum + isletme satiri. Kapali / suresi gecmis oturum 401.
+        const d = await destek.kimlik(payload);
+        if (d.hata) return res.status(d.hata.status).json(d.hata.body);
+        u = d.u;
+    } else {
+        const userRes = await query(
+            `SELECT u.*, t.id as tenant_id, t.business_name, t.license_end_date,
+                    t.license_modules, t.license_tier, t.license_table_limit,
+                    t.is_active as tenant_active
+               FROM users u JOIN tenants t ON t.id = u.tenant_id
+              WHERE u.id = ?`,
+            [payload.userId]
+        );
+        if (!userRes.rows.length) return res.status(401).json({ message: 'Kullanıcı bulunamadı.' });
+        u = userRes.rows[0];
+    }
 
     if (!u.is_active) return res.status(403).json({ message: 'Kullanıcı pasif.' });
     if (!u.tenant_active) return res.status(403).json({ code: 'TENANT_INACTIVE', message: 'İşletme pasif (lisans).' });
@@ -68,6 +77,13 @@ async function protect(req, res, next) {
         lisansKalanGun: ld.kalanGun,
         lisansToleransBitis: ld.toleransBitis,
     };
+    if (u.destek) {
+        // Destek oturumu: giris bilgisi / personel / hesap kapatma 403; her basarili yazma Islem Gunlugu'ne "MDA Destek"
+        req.user.destek = u.destek;
+        const yasak = destek.yasakMi(req);
+        if (yasak) return res.status(403).json(yasak);
+        destek.istekKaydi(req, res);
+    }
     next();
 }
 
@@ -112,6 +128,8 @@ function requireRole(...roles) {
 const bcryptMw = require('bcryptjs');
 const YSS = require('../services/yoneticiSifreSiniri');
 function requireManagerPin(req, res, next) {
+    // Destek oturumunda yonetici sifresi sorulmaz; atlama oturuma ve yonetim gunlugune yazilir (ilk seferinde)
+    if (req.user && req.user.destek) { destek.pinAtlandi(req); return next(); }
     query('SELECT manager_pin FROM tenants WHERE id = ?', [req.user.tenantId])
         .then(async (r) => {
             const hash = r.rows[0]?.manager_pin;
@@ -133,6 +151,8 @@ function requireManagerPin(req, res, next) {
 }
 
 function signToken(userId) {
+    // Her oturum acilisi (giris, kayit, deneme devri) buradan gecer: root isletme ayrintisindaki "son giris"
+    query('UPDATE users SET son_giris_at = ? WHERE id = ?', [new Date().toISOString(), userId]).catch(() => {});
     return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '12h' });
 }
 

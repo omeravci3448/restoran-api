@@ -29,6 +29,7 @@ async function protectRoot(req, res, next) {
     next();
 }
 
+router.use(require('../services/yonetimGunlugu').rootAraKatmani);   // yonetim gunlugu: acik kayit yazmayan basarili yazmalar
 router.post('/login', ctrl.login);
 router.post('/totp/kurulum', ctrl.totpKur);   // authenticator ilk kurulum (kisa omurlu jetonla)
 
@@ -80,5 +81,8 @@ router.get('/plaka/talepler/:id/baski.pdf', protectRoot, plaka.baski);
 router.post('/plaka/talepler/:id/durum', protectRoot, plaka.durum);
 router.post('/plaka/talepler/:id/not', protectRoot, plaka.not);
 router.post('/masalar/:id/kisa-kod-yenile', protectRoot, plaka.masaKisaKodYenile);
+
+// Yonetim: genel bakis, isletme ayrintisi + ic notlar, sistem ayarlari, duyurular, yonetim gunlugu, destek oturumlari
+router.use('/yonetim', protectRoot, require('./yonetimRootRoutes'));
 
 module.exports = router;

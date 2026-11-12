@@ -37,7 +37,7 @@ async function oncekiDeneme({ telefon, soframixBusinessId }) {
 // Yine de UNIQUE indeks son emniyet kapisi (es zamanli iki istek).
 async function denemeKaydet({ tenantId, telefon, soframixBusinessId, isletmeAdi, kaynak }) {
     const bitis = new Date();
-    bitis.setDate(bitis.getDate() + DENEME_GUN);
+    bitis.setDate(bitis.getDate() + await require('./yonetimAyar').denemeGunOku());   // ayar yoksa DENEME_GUN
     const id = uuidv4();
     await query(
         `INSERT INTO deneme_kayitlari
@@ -87,8 +87,9 @@ async function denemeBaslat({ isletmeAdi, yetkiliAd, eposta, telefon, soframixBu
     const mevcut = await query('SELECT id FROM tenants WHERE owner_email = ?', [mail]);
     if (mevcut.rows.length) return { durum: 'zaten_alinmis', sebep: 'eposta_kayitli', tenantId: mevcut.rows[0].id };
 
+    const gun = await require('./yonetimAyar').denemeGunOku();   // root Sistem Ayarlari; ayar yoksa DENEME_GUN (7)
     const bitis = new Date();
-    bitis.setDate(bitis.getDate() + DENEME_GUN);
+    bitis.setDate(bitis.getDate() + gun);
 
     const { kiraciAc, VARSAYILAN_MODULLER } = require('./posProvizyon');
     const y = await kiraciAc({
@@ -102,7 +103,7 @@ async function denemeBaslat({ isletmeAdi, yetkiliAd, eposta, telefon, soframixBu
         tenantId: y.tenantId, telefon, soframixBusinessId, isletmeAdi: ad,
         kaynak: kaynak || (soframixBusinessId ? 'soframix' : 'dogrudan'),
     });
-    return { durum: 'acildi', bitis, gun: DENEME_GUN, ...y };
+    return { durum: 'acildi', bitis, gun, ...y };
 }
 
 module.exports = {

@@ -2,7 +2,13 @@ const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 
 // "Kim ne yapti?" kaydi. Best-effort: gunluk yazilamazsa asil islem bozulmaz.
+// Destek oturumu (user.destek): kullanici "MDA Destek" (user_id bos). Bu istek icin ozel kayit yazildigi isaretlenir;
+// destek oturumunun genel "degisiklik" kaydi (services/destekOturumu.js istekKaydi) ayni istek icin ikinci satir yazmaz.
 async function kaydet({ tenantId, user, islem, hedefTur, hedefId, detay }) {
+    if (user && user.destek) {
+        if (islem !== 'destek_degisiklik') user.destek.gunlukYazildi = true;
+        user = { id: null, name: require('./destekOturumu').DESTEK_ADI };
+    }
     try {
         await query(
             `INSERT INTO islem_gunlugu (id, tenant_id, user_id, user_name, islem, hedef_tur, hedef_id, detay)

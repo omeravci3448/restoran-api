@@ -14,12 +14,19 @@ exports.stream = async (req, res) => {
 
     let row;
     try {
+        if (payload.destek) {
+            // Destek oturumu: kullanici satiri yok; oturum acik olmali (kapaninca akis da kesilir, asagida)
+            const d = await require('../services/destekOturumu').kimlik(payload);
+            row = d.hata ? null : { tenant_id: d.u.tenant_id, tenant_active: d.u.tenant_active, license_end_date: d.u.license_end_date, license_modules: d.u.license_modules };
+            if (!row) return res.status(401).end();
+        } else {
         const r = await query(
             `SELECT t.id AS tenant_id, t.is_active AS tenant_active, t.license_end_date, t.license_modules
                FROM users u JOIN tenants t ON t.id = u.tenant_id
               WHERE u.id = ?`,
             [payload.userId]);
         row = r.rows[0];
+        }
     } catch (_) { return res.status(500).end(); }
 
     if (!row || !row.tenant_active) return res.status(403).end();
@@ -46,8 +53,14 @@ exports.stream = async (req, res) => {
         try { res.write(': ka\n\n'); } catch (_) {}
     }, 25000);
 
+    // Destek oturumu kapatilir ya da suresi dolarsa akis da kapanir (30 sn'de bir bakilir)
+    const destekDenetim = payload.destek ? setInterval(async () => {
+        try { const d = await require('../services/destekOturumu').kimlik(payload); if (d.hata) res.end(); } catch (_) {}
+    }, 30000) : null;
+
     req.on('close', () => {
         clearInterval(keepAlive);
+        if (destekDenetim) clearInterval(destekDenetim);
         bus.removeClient(tenantId, res);
     });
 };

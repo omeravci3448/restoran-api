@@ -86,6 +86,8 @@ app.use('/api/plaka', require('./src/routes/plakaRoutes'));       // masa plakas
 app.use('/api/public', require('./src/routes/publicRoutes')); // QR menü için public erişim
 app.use('/api/aktivasyon', require('./src/routes/aktivasyonRoutes')); // ilk sifre belirleme (jeton = kimlik)
 app.use('/api/root', require('./src/routes/rootRoutes'));     // ekosistem yönetimi (işletme aç/yönet)
+app.use('/api/destek', require('./src/routes/destekRoutes'));       // destek oturumu: giris jetonu, serit, kapat
+app.use('/api/duyurular', require('./src/routes/duyuruRoutes'));   // root duyurulari (isletme paneli seridi)
 
 // 404
 app.use((_req, res) => res.status(404).json({ message: 'Endpoint bulunamadı.' }));

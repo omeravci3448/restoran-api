@@ -122,7 +122,7 @@ exports.denemeBaslat = async (req, res) => {
     let gonderildi = false;
     try {
         const cekici = require('../services/posOdemeCekici');
-        gonderildi = await cekici.postaDene(eposta, 'MDA Restoran POS - 7 gunluk denemeniz basladi',
+        gonderildi = await cekici.postaDene(eposta, `MDA Restoran POS - ${s.gun} gunluk denemeniz basladi`,
             `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
                 <h2 style="color:#E2622A;margin:0 0 12px">MDA Restoran POS</h2>
                 <p style="color:#374151">Merhaba ${adSoyad},</p>

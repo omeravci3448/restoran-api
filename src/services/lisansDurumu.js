@@ -9,7 +9,8 @@
 // "odemeni yap" baskisini kurar ama isletmeyi cikmaza sokmaz.
 // Veri hicbir asamada SILINMEZ.
 
-const TOLERANS_GUN = Number(process.env.LISANS_TOLERANS_GUN || 3);
+const TOLERANS_GUN = Number(process.env.LISANS_TOLERANS_GUN || 3);   // varsayilan; root Sistem Ayarlari'ndan degisebilir
+const toleransGun = () => require('./yonetimAyar').toleransGun();     // ayar yoksa TOLERANS_GUN (davranis ayni)
 
 const DURUM = { AKTIF: 'AKTIF', SALT_OKUNUR: 'SALT_OKUNUR', KAPALI: 'KAPALI' };
 
@@ -38,7 +39,7 @@ function hesapla(licenseEndDate, simdi = new Date()) {
 
     // Tolerans penceresi: bitisin uzerine TOLERANS_GUN gun, o gunun SONUNA kadar.
     const tolerans = new Date(bitis);
-    tolerans.setDate(tolerans.getDate() + TOLERANS_GUN);
+    tolerans.setDate(tolerans.getDate() + toleransGun());
     const toleransBitis = gunSonu(tolerans);
 
     if (simdi.getTime() <= toleransBitis.getTime()) {

@@ -58,7 +58,12 @@ function etiketle(t) {
         return { kaynak: 'Root paneli (elle açıldı)' + (t.parent_org ? ', ' + t.parent_org : ''), surum: 'Kurum lisansı' };
     }
     if (TIER_AD[tier]) {
-        return { kaynak: 'Site (kayıt formu)', surum: '7 günlük deneme, seçilen paket ' + TIER_AD[tier] + (bitis ? ', bitiş ' + bitis : '') };
+        // Deneme gunu root Sistem Ayarlari'ndan degisebilir: kayit ve bitis tarihinden hesaplanir (yoksa ayar, varsayilan 7)
+        const { tarihCoz } = require('./yonetimOzet');
+        const c = tarihCoz(t.created_at), b = tarihCoz(t.license_end_date);
+        const fark = c && b ? Math.round((b - c) / 86400000) : 0;
+        const gun = fark > 0 && fark <= 120 ? fark : require('./yonetimAyar').denemeGun();
+        return { kaynak: 'Site (kayıt formu)', surum: gun + ' günlük deneme, seçilen paket ' + TIER_AD[tier] + (bitis ? ', bitiş ' + bitis : '') };
     }
     return { kaynak: t.parent_org || 'Diğer', surum: tier || 'Bilinmiyor' };
 }
