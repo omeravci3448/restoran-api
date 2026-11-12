@@ -1,6 +1,7 @@
 // Guvenlik incelemesi (2026-11-12) duzeltmeleri. Her bulgu kendi bolumunde:
 //   Y1  destek yasaklari harf varyanti, mutlak istek satiri ve sondaki / ile atlanamaz (rota duzeyinde yasak +
 //       yol normallestirme); dusuk 1: salt-okunurda "GET /API/magaza" kisiti atlanamaz.
+//   O3  oturumu acan root pasif ya da silinmisse destek oturumu calismaz ve kapanir.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -137,6 +138,42 @@ async function temizle() {
     ok('mutlak istek satiri GET http://host/api/magaza/urunler 403', hamMagaza.status === 403 && /LICENSE_READONLY/.test(hamMagaza.govde), hamMagaza);
     ok('izinli olanlar acik: GET /API/magaza/siparisler 200', (await js('/API/magaza/siparisler', { token: S.token })).status === 200);
     ok('lisans ucu yazmasi acik: POST /API/License/quote 200', (await js('/API/License/quote', { token: S.token, body: { tier: 'TIER_6_10', modules: ['BASE'] } })).status === 200);
+
+    console.log('\n=== O3) Root pasif ya da silinmis: destek oturumu gecersiz ===');
+    const B = await kiraciKur({ ad: 'Root Pasif' });
+    async function ekRoot() {
+        const id = uuid();
+        await query('INSERT INTO root_users (id, email, password_hash, name, totp_enabled) VALUES (?, ?, ?, ?, 1)',
+            [id, `${EPOSTA_ON}root-${id.slice(0, 6)}@ornek.test`, 'x', 'Ek Root']);
+        return { id, jeton: jwt.sign({ rootId: id, scope: 'root' }, JWT_SECRET, { expiresIn: '1h' }) };
+    }
+    const oturum = async (oid) => (await query('SELECT bitis_at, kapanis_nedeni FROM destek_oturumlari WHERE id = ?', [oid])).rows[0];
+    const r2 = await ekRoot();
+    const d2 = await destekJetonu(r2.jeton, B.id);
+    ok('ek root destek oturumu calisir', (await js('/api/tables', { token: d2.token })).status === 200);
+    await query('UPDATE root_users SET is_active = 0 WHERE id = ?', [r2.id]);
+    const p2 = await js('/api/tables', { token: d2.token });
+    ok('root pasife alininca destek jetonu 401 DESTEK_OTURUMU_BITTI', p2.status === 401 && p2.d.code === 'DESTEK_OTURUMU_BITTI', p2);
+    const o2 = await oturum(d2.oturumId);
+    ok('oturum ROOT_GECERSIZ nedeniyle kapandi', !!o2.bitis_at && o2.kapanis_nedeni === 'ROOT_GECERSIZ', o2);
+    await query('UPDATE root_users SET is_active = 1 WHERE id = ?', [r2.id]);
+    ok('root yeniden aktif olsa da kapanan oturum acilmaz', (await js('/api/tables', { token: d2.token })).status === 401);
+    const r3 = await ekRoot();
+    const d3 = await destekJetonu(r3.jeton, B.id);
+    await query('DELETE FROM root_users WHERE id = ?', [r3.id]);
+    ok('root silinince destek jetonu 401', (await js('/api/categories', { token: d3.token, body: { name: 'GVN Silinmis Root' } })).status === 401);
+    ok('... oturum kapandi', (await oturum(d3.oturumId)).kapanis_nedeni === 'ROOT_GECERSIZ');
+    const r4 = await ekRoot();
+    const ac4 = await js('/api/root/yonetim/destek', { token: r4.jeton, body: { tenantId: B.id } });
+    await query('UPDATE root_users SET is_active = 0 WHERE id = ?', [r4.id]);
+    const g4 = await js('/api/destek/giris/' + ac4.d.jeton, { method: 'POST' });
+    ok('pasif root\'un acilmamis jetonu cevrilemez (410)', g4.status === 410 && !(g4.d && g4.d.token), g4);
+    const r5 = await ekRoot();
+    const d5 = await destekJetonu(r5.jeton, B.id);
+    await query('UPDATE root_users SET is_active = 0 WHERE id = ?', [r5.id]);
+    const liste = (await js('/api/root/yonetim/destek?tenantId=' + B.id, { token: rj })).d;
+    const s5 = (Array.isArray(liste) ? liste : (liste.oturumlar || [])).find((x) => x.id === d5.oturumId);
+    ok('root listesi acilirken pasif root\'un acik oturumu kapanir', s5 && s5.durum === 'KAPALI' && s5.kapanisNedeni === 'ROOT_GECERSIZ', s5 || liste);
 
     // --- SONRAKI BOLUMLER ---
 

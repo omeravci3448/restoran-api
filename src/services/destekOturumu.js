@@ -15,6 +15,8 @@ const { normalYol } = require('./istekYolu');
 //  3) Her istekte authMiddleware.protect kimlik() ile oturum satirina bakar: kapatilmis ya da suresi gecmisse
 //     401 DESTEK_OTURUMU_BITTI. Isletme verisine erisim yalniz oturumun isletmesiyle (req.user.tenantId).
 //  4) Sure ayardan (destek_oturumu_dk, varsayilan 120 dk) ve jetonun cevrildigi andan sayilir.
+//  5) Oturumu acan root hesabi pasife alinir ya da silinirse oturum o anda gecersizdir: kimlik() ve jeton cevirme
+//     root'un aktif oldugunu ister; oturum ROOT_GECERSIZ nedeniyle kapanir (guvenlik incelemesi O3).
 //
 // Sinirlar:
 //  - YASAK (403 DESTEK_YASAK): sahibin/personelin sifresi, e-postasi, giris bilgileri, yonetici sifresi; personel
@@ -32,13 +34,23 @@ const ozet = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const simdiIso = () => new Date().toISOString();
 function hata(status, message, code) { const e = new Error(message); e.status = status; if (code) e.code = code; return e; }
 
-// Suresi gecmis oturumlari ve kullanilmamis jetonlari kapatir (zamanlayici yok; okunurken kapatilir)
+// Suresi gecmis oturumlari, kullanilmamis jetonlari ve acan root'u pasif / silinmis oturumlari kapatir
+// (zamanlayici yok; okunurken kapatilir)
 async function suresiDolanlariKapat() {
     const s = simdiIso();
+    await rootuGecersizleriKapat();
     await query(`UPDATE destek_oturumlari SET bitis_at = planlanan_bitis_at, kapanis_nedeni = 'SURE_DOLDU'
                   WHERE bitis_at IS NULL AND baslangic_at IS NOT NULL AND planlanan_bitis_at <= ?`, [s]);
     await query(`UPDATE destek_oturumlari SET bitis_at = jeton_son_at, kapanis_nedeni = 'JETON_KULLANILMADI'
                   WHERE bitis_at IS NULL AND baslangic_at IS NULL AND jeton_son_at <= ?`, [s]);
+}
+
+// Acan root hesabi pasif ya da silinmis acik oturumlar (rootId verilirse yalniz o root'unkiler)
+async function rootuGecersizleriKapat(rootId) {
+    await query(`UPDATE destek_oturumlari SET bitis_at = ?, kapanis_nedeni = 'ROOT_GECERSIZ'
+                  WHERE bitis_at IS NULL ${rootId ? 'AND root_id = ?' : ''}
+                    AND NOT EXISTS (SELECT 1 FROM root_users ru WHERE ru.id = destek_oturumlari.root_id AND ru.is_active = 1)`,
+        rootId ? [simdiIso(), String(rootId)] : [simdiIso()]);
 }
 
 // --- 1) Root: oturum ac ---
@@ -76,6 +88,10 @@ async function girisJetonu(ham) {
     if (!r) throw hata(404, 'Destek bağlantısı geçersiz.');
     if (r.jeton_kullanildi_at) throw hata(410, 'Bu destek bağlantısı zaten kullanıldı. Yeni oturumu yönetim panelinden açın.');
     if (r.bitis_at) throw hata(410, 'Bu destek oturumu kapatılmış. Yeni oturumu yönetim panelinden açın.');
+    if (!(await rootAktifMi(r.root_id))) {
+        await rootuGecersizleriKapat(r.root_id);
+        throw hata(410, 'Destek oturumunu açan yönetici hesabı artık geçerli değil. Yeni oturumu yönetim panelinden açın.');
+    }
     const s = simdiIso();
     if (r.jeton_son_at <= s) {
         await suresiDolanlariKapat();
@@ -98,16 +114,27 @@ async function girisJetonu(ham) {
 // --- 3) Her istekte kimlik (authMiddleware.protect cagirir) ---
 // Doner: { u } (users JOIN tenants satiri gibi; id NULL) ya da { hata: { status, body } }
 const BITTI = (message) => ({ hata: { status: 401, body: { code: 'DESTEK_OTURUMU_BITTI', message } } });
+async function rootAktifMi(rootId) {
+    if (!rootId) return false;
+    return (await query('SELECT 1 AS v FROM root_users WHERE id = ? AND is_active = 1', [String(rootId)])).rows.length > 0;
+}
 async function kimlik(payload) {
     const id = payload && payload.destek && payload.destek.oturumId;
     if (!id || typeof id !== 'string') return BITTI('Destek oturumu geçersiz.');
     const r = (await query(
-        `SELECT d.id, d.tenant_id, d.bitis_at, d.baslangic_at, d.planlanan_bitis_at, d.pin_atlandi_at,
+        `SELECT d.id, d.tenant_id, d.root_id, d.bitis_at, d.baslangic_at, d.planlanan_bitis_at, d.pin_atlandi_at,
                 t.business_name, t.license_end_date, t.license_modules, t.license_tier, t.license_table_limit,
-                t.is_active AS tenant_active
+                t.is_active AS tenant_active, ru.is_active AS root_aktif
            FROM destek_oturumlari d JOIN tenants t ON t.id = d.tenant_id
+           LEFT JOIN root_users ru ON ru.id = d.root_id
           WHERE d.id = ?`, [id])).rows[0];
     if (!r) return BITTI('Destek oturumu bulunamadı.');
+    // Acan root pasif ya da silinmis: oturum gecersiz ve kapanir (O3)
+    if (!r.bitis_at && Number(r.root_aktif) !== 1) {
+        await rootuGecersizleriKapat(r.root_id || null).catch(() => {});
+        return BITTI('Destek oturumunu açan yönetici hesabı artık geçerli değil.');
+    }
+    if (Number(r.root_aktif) !== 1) return BITTI('Destek oturumu sona erdi.');
     if (payload.tenantId && payload.tenantId !== r.tenant_id) return BITTI('Destek oturumu geçersiz.');
     if (r.bitis_at || !r.baslangic_at) return BITTI('Destek oturumu sona erdi.');
     if (!r.planlanan_bitis_at || r.planlanan_bitis_at <= simdiIso()) {
@@ -221,6 +248,7 @@ async function kapat(id, kim) {
 const NEDEN_AD = {
     DESTEK_KAPATTI: 'Destek şeridinden kapatıldı', ROOT_KAPATTI: 'Yönetim panelinden kapatıldı', SURE_DOLDU: 'Süresi doldu',
     JETON_KULLANILMADI: 'Giriş bağlantısı kullanılmadı', YENI_OTURUM: 'Yeni oturum açılınca kapandı',
+    ROOT_GECERSIZ: 'Açan yönetici hesabı pasif ya da silinmiş',
 };
 function bicimle(x) {
     const s = simdiIso();
@@ -250,5 +278,5 @@ async function liste({ durum, tenantId, limit } = {}) {
 
 module.exports = {
     DESTEK_ADI, JETON_OMRU_SN, ac, girisJetonu, kimlik, yasakMi, istekKaydi, pinAtlandi, kapat, liste, bicimle,
-    suresiDolanlariKapat, etiket, NEDEN_AD, destekYasak, GIRIS_MESAJI, KAPATMA_MESAJI, BILDIRIM_MESAJI,
+    suresiDolanlariKapat, rootuGecersizleriKapat, etiket, NEDEN_AD, destekYasak, GIRIS_MESAJI, KAPATMA_MESAJI, BILDIRIM_MESAJI,
 };
