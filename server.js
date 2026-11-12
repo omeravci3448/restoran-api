@@ -92,14 +92,11 @@ app.use('/api/duyurular', require('./src/routes/duyuruRoutes'));   // root duyur
 // 404
 app.use((_req, res) => res.status(404).json({ message: 'Endpoint bulunamadı.' }));
 
-// Genel hata yakalama
-app.use((err, _req, res, _next) => {
-    console.error('[ERR]', err);
-    // Gövde çok büyük (örn küçültülmemiş dev görsel) → dostça 413
-    if (err.type === 'entity.too.large' || err.status === 413) {
-        return res.status(413).json({ message: 'Gönderilen veri çok büyük. Görseli küçültüp tekrar deneyin.' });
-    }
-    res.status(err.status || 500).json({ message: err.message || 'Sunucu hatası.' });
+// Genel hata yakalama: tam hata günlüğe; üretimde 500 yanıtında iç hata metni dönmez (services/hataYaniti.js)
+app.use((err, req, res, _next) => {
+    console.error('[ERR]', req.method, req.originalUrl, err);
+    const { durum, govde } = require('./src/services/hataYaniti').hataYaniti(err);
+    res.status(durum).json(govde);
 });
 
 initDb();

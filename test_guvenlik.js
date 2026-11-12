@@ -7,6 +7,7 @@
 //   O5  QR acik uclari lisans durumuna bakar: KAPALI'da siparis / garson / hesap kapali, menu acik;
 //       SALT_OKUNUR'da yalniz siparis kapali.
 //   D2  gecis: license_modules '"ALL"' (JSON metni) ya da duz ALL ise ["ALL"]; BASE'e dusmez.
+//   D4  genel hata yakalayici: uretimde 500 yanitinda ic hata metni donmez.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -271,6 +272,17 @@ async function temizle() {
     ok('\'"ALL"\' -> ["ALL"] (BASE\'e dusmedi)', (await lm(all1.id)) === '["ALL"]', await lm(all1.id));
     ok('duz ALL -> ["ALL"]', (await lm(all2.id)) === '["ALL"]', await lm(all2.id));
     ok('["ALL"] dokunulmadi', (await lm(all3.id)) === '["ALL"]', await lm(all3.id));
+
+    console.log('\n=== D4) Uretimde 500 yanitinda ic hata metni yok ===');
+    const { hataYaniti, GENEL_MESAJ } = require('./src/services/hataYaniti');
+    const ic = new Error('SQLITE_ERROR: no such table: gizli_tablo (C:/app/data/database.sqlite)');
+    const u500 = hataYaniti(ic, { uretim: true });
+    ok('uretim: 500 + genel Turkce mesaj, ic metin yok', u500.durum === 500 && u500.govde.message === GENEL_MESAJ && !/SQLITE|gizli_tablo|database/.test(JSON.stringify(u500)), u500);
+    ok('gelistirme: 500 ic metin doner (hata ayiklama)', hataYaniti(ic, { uretim: false }).govde.message === ic.message);
+    const k400 = hataYaniti(Object.assign(new Error('Masa adı boş olamaz.'), { status: 400 }), { uretim: true });
+    ok('uretim: 4xx kullanici mesaji oldugu gibi', k400.durum === 400 && k400.govde.message === 'Masa adı boş olamaz.', k400);
+    ok('buyuk govde 413', hataYaniti({ type: 'entity.too.large' }, { uretim: true }).durum === 413);
+    ok('gecersiz durum kodu 500 sayilir', hataYaniti(Object.assign(new Error('x'), { status: 999 }), { uretim: true }).durum === 500);
 
     // --- SONRAKI BOLUMLER ---
 
