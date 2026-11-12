@@ -158,14 +158,16 @@ exports.callWaiter = waiterCtrl.publicCall;
 
 // Kisa karekod cozumu: /q/<KOD> -> { slug, token }. Yalniz aktif masa + aktif isletme; degilse 404.
 // IP basina sinir: 6 haneli kod uzayi kaba kuvvetle taranmasin (services/kisaKod.js).
-// Oran siniri yalniz BOS denemeleri sayar (services/kisaKod.js): deneme beklemeden ONCE ayrilir, kod bulunursa
-// (aktif ya da silinmis masanin plakasi) geri verilir. Gecerli kodlar sinirlanmaz.
+// Oran siniri yalniz BOS denemeleri sayar (services/kisaKod.js); suren istek sayaci beklemeden ONCE artar.
+// Kod bulunursa (aktif ya da silinmis masanin plakasi) bos deneme sayilmaz.
 exports.kisaKodCoz = async (req, res) => {
     const K = require('../services/kisaKod');
     const ip = req.ip || (req.socket && req.socket.remoteAddress) || '?';
-    if (!K.denemeAyir(ip)) return res.status(429).json({ code: 'COK_FAZLA_ISTEK', message: 'Çok fazla deneme. Lütfen biraz sonra tekrar deneyin.' });
-    const c = await K.coz(req.params.kod);
-    if (c.durum === 'aktif' || c.durum === 'pasif') K.denemeIade(ip);
+    const bitir = K.denemeBaslat(ip);
+    if (!bitir) return res.status(429).json({ code: 'COK_FAZLA_ISTEK', message: 'Çok fazla deneme. Lütfen biraz sonra tekrar deneyin.' });
+    let c;
+    try { c = await K.coz(req.params.kod); }
+    finally { bitir(!!(c && (c.durum === 'aktif' || c.durum === 'pasif'))); }
     res.set('Cache-Control', 'no-store');
     if (c.durum === 'pasif') {
         return res.status(404).json({ code: 'KISA_KOD_PASIF', message: 'Bu masa artık kullanılmıyor. Lütfen personele başvurun.' });

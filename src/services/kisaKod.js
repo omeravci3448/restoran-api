@@ -104,12 +104,16 @@ async function coz(kod) {
 
 // --- Kaba kuvvetle kod taramaya karsi sinir (inceleme O1) ---
 // Yalniz BOS denemeler sayilir (bicimi tutmayan ya da var olmayan kod): gecerli kodlar ve silinmis masanin
-// plakasi sinirlanmaz. Sayac BEKLEMEDEN ONCE artar (ayni anda gelen istekler siniri asamaz), kod bulunursa
-// geri alinir. Anahtar: IPv4 adresi; IPv6'da /64 on eki (tek abonenin butun adresleri ayni anahtar).
-// 10 dakikada en cok 30 bos deneme. Bellek ici (tek konteyner yeterli).
-const sayac = new Map(); // anahtar -> { bas, bos }
+// plakasi bos sayilmaz. 10 dakikada en cok 30 bos deneme; sinir asilinca o anahtar (gecerli kod dahil) durur,
+// yoksa 429 ile 200 arasindaki fark tarama icin ipucu olurdu.
+// Ayni anda gelen isteklerin siniri asmamasi icin bekleme (veritabani sorgusu) ONCESINDE "suren istek" sayaci
+// artar: anahtar basina en cok 50 eszamanli sorgu. Boylece bos deneme tavani 30 + 50; gecerli okutmalar
+// yalniz bu cok yuksek eszamanlilik sinirina tabi (ayni restoran agindan art arda okutmalar etkilenmez).
+// Anahtar: IPv4 adresi; IPv6'da /64 on eki (tek abonenin butun adresleri ayni anahtar). Bellek ici.
+const sayac = new Map(); // anahtar -> { bas, bos, suren }
 const PENCERE = 10 * 60 * 1000;
 const BOS_SINIRI = 30;
+const ESZAMANLI_SINIR = 50;
 
 function ipAnahtari(ip) {
     let s = String(ip || '?').trim();
@@ -127,28 +131,30 @@ function ipAnahtari(ip) {
 function kayit(anahtar) {
     const s = Date.now();
     let k = sayac.get(anahtar);
-    if (!k || s - k.bas > PENCERE) { k = { bas: s, bos: 0 }; sayac.set(anahtar, k); }
+    if (!k || s - k.bas > PENCERE) { k = { bas: s, bos: 0, suren: k ? k.suren : 0 }; sayac.set(anahtar, k); }
     if (sayac.size > 20000) {
-        for (const [a, v] of sayac) if (s - v.bas > PENCERE) sayac.delete(a);
+        for (const [a, v] of sayac) if (s - v.bas > PENCERE && !v.suren) sayac.delete(a);
         if (sayac.size > 20000) sayac.clear();
     }
     return k;
 }
 
-// Istek basinda: sinir asildiysa false. Asilmadiysa deneme BOS sayilarak ayrilir (bekleme oncesi).
-function denemeAyir(ip) {
+// Istek basinda (bekleme ONCESI): sinir asildiysa null. Asilmadiysa "suren" sayaci artar ve bitirme islevi doner;
+// bitir(bulundu): suren azalir, kod bulunamadiysa bos deneme sayilir.
+function denemeBaslat(ip) {
     const k = kayit(ipAnahtari(ip));
-    if (k.bos >= BOS_SINIRI) return false;
-    k.bos++;
-    return true;
-}
-// Kod bulunduysa (aktif ya da pasif) ayrilan deneme geri verilir
-function denemeIade(ip) {
-    const k = sayac.get(ipAnahtari(ip));
-    if (k && k.bos > 0) k.bos--;
+    if (k.bos >= BOS_SINIRI || k.suren >= ESZAMANLI_SINIR) return null;
+    k.suren++;
+    let bitti = false;
+    return (bulundu) => {
+        if (bitti) return;
+        bitti = true;
+        k.suren = Math.max(0, k.suren - 1);
+        if (!bulundu) k.bos++;
+    };
 }
 
 module.exports = {
     ALFABE, UZUNLUK, uret, normalle, kisaAdres, kamuAdresi, masayaAta, yenile, eksikleriDoldur, coz,
-    ipAnahtari, denemeAyir, denemeIade, BOS_SINIRI,
+    ipAnahtari, denemeBaslat, BOS_SINIRI, ESZAMANLI_SINIR,
 };
