@@ -132,6 +132,13 @@ function tara() {
 // Yonetim APK'sinin sorusu: istemcinin bildigi son olay id'si verilirse ondan sonraki olay sayisi
 // ve en yenisinin ozeti doner. Istemci id vermezse (ilk kurulum) yalniz son id doner: telefon bunu
 // baslangic noktasi yapar, eski olaylar icin bildirim cikmaz.
+// Telefon bildirim basliklari (APK 1.5 bilinmeyen turde bunu kullanir; eski APK alani yok sayar)
+const OLAY_BASLIK = {
+    yeni_kayit: 'Yeni restoran kaydı', paket_alindi: 'Paket satın alındı',
+    plaka_talebi: 'Masa plakası talebi', plaka_odeme: 'Plaka ödemesi bildirildi',
+    magaza_siparis: 'Mağaza siparişi', magaza_odeme: 'Mağaza ödemesi bildirildi',
+};
+
 async function telefonOzeti(istemciSonId) {
     await tara().catch((e) => console.error('[olay] tarama:', e.message));
     const sonId = Number((await query('SELECT MAX(id) AS m FROM root_olaylar')).rows[0].m) || 0;
@@ -139,8 +146,10 @@ async function telefonOzeti(istemciSonId) {
     const verildi = istemciSonId !== undefined && istemciSonId !== null && istemciSonId !== '' && Number.isFinite(n) && n >= 0;
     if (!verildi || sonId <= n) return { sonId, yeni: 0, son: null };
     const yeni = Number((await query('SELECT COUNT(*) AS c FROM root_olaylar WHERE id > ?', [n])).rows[0].c) || 0;
-    const s = (await query('SELECT id, tur, baslik, detay, created_at FROM root_olaylar ORDER BY id DESC LIMIT 1')).rows[0];
-    return { sonId, yeni, son: s ? { id: s.id, tur: s.tur, isletme: s.baslik, aciklama: s.detay, zaman: s.created_at } : null };
+    const s = (await query('SELECT id, tur, ref, baslik, detay, created_at FROM root_olaylar ORDER BY id DESC LIMIT 1')).rows[0];
+    // ref: olayin kaydi (magaza siparisinde siparis kimligi: bildirime dokununca o siparis acilir)
+    return { sonId, yeni, son: s ? { id: s.id, tur: s.tur, ref: s.ref || null, isletme: s.baslik, aciklama: s.detay, zaman: s.created_at,
+        bildirimBasligi: (OLAY_BASLIK[s.tur] || 'Yeni bildirim') + ': ' + (s.baslik || 'İşletme') } : null };
 }
 
 function baslat() {

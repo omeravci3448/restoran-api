@@ -325,6 +325,11 @@ async function temizle() {
     const ilkOlay = Math.min(...(await query("SELECT id FROM root_olaylar WHERE tenant_id = ? AND tur LIKE 'plaka_%'", [yillik.id])).rows.map((x) => x.id));
     const oz = await require('./src/services/yeniKayitIzleyici').telefonOzeti(ilkOlay - 1);
     ok('yonetim APK ozeti: plaka olaylari sayilir, son olay turuyla doner', oz.yeni >= 4 && oz.son && typeof oz.son.tur === 'string' && oz.sonId >= ilkOlay, oz);
+    ok('APK 1.5: olay ozetinde ref (kayit kimligi) ve bildirim basligi', !!oz.son.ref && typeof oz.son.bildirimBasligi === 'string'
+        && oz.son.bildirimBasligi.endsWith(': ' + oz.son.isletme), oz.son);
+    await query("INSERT INTO root_olaylar (tur, ref, tenant_id, baslik, detay) VALUES ('ileride_gelecek_tur', ?, ?, 'PLKT Test Bilinmeyen', 'x')", ['plkt-' + uuid(), yillik.id]);
+    const ozB = await require('./src/services/yeniKayitIzleyici').telefonOzeti(ilkOlay - 1);
+    ok('APK 1.5: bilinmeyen turde genel baslik (Yeni bildirim: ...)', ozB.son.tur === 'ileride_gelecek_tur' && ozB.son.bildirimBasligi === 'Yeni bildirim: PLKT Test Bilinmeyen', ozB.son);
     const sy = (await js('/api/root/plaka/sayac', { token: rj })).d;
     ok('root sayac: islem bekleyen >= 1', sy.bekleyen >= 1, sy);
 
