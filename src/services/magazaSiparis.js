@@ -9,12 +9,18 @@ const E = require('./magazaEposta');
 // --- Magaza siparisleri ---
 //
 // Akis: ODEME_BEKLENIYOR -> ODEME_ALINDI -> HAZIRLANIYOR -> KARGODA -> TESLIM_EDILDI
-//   - Isletme yalniz ODEME_BEKLENIYOR iken IPTAL edebilir.
-//   - Odeme bildirilmemis siparis N gun sonra SISTEM tarafindan IPTAL edilir (magazaZamanlayici.js; 0 = kapali).
+//   - Isletme yalniz ODEME_BEKLENIYOR iken VE odeme bildirmeden once IPTAL edebilir (Patron'a bildirim gider).
+//     Odeme bildirildikten sonra iptal icin MDA Yazilim ile iletisime gecilir (para yoldaysa stok sessizce acilmasin).
+//   - Odeme bildirilmemis siparis, olusurken yazilan otomatik_iptal_at aninda SISTEM tarafindan IPTAL edilir
+//     (magazaZamanlayici.js). Sure siparise yazilir; ayar sonradan degisse de geriye donuk uygulanmaz.
+//   - Odeme bildirilmis ama onaylanmamis siparis icin 2. ve 3. gunde Patron'a hatirlatma (magazaZamanlayici.js).
 //   - Odeme alindi / kargoya verildi / reddedildi / otomatik iptal: isletmeye e-posta (magazaEposta.js).
-//   - Root REDDEDILDI yapabilir (kargodan once, sebep zorunlu); sebebi isletme gorur.
+//   - Root REDDEDILDI yapabilir (kargodan once, sebep zorunlu); sebebi isletme gorur. Odemesi alinmis siparis
+//     reddedildiyse root "Iade yapildi" (tarih + not) isaretler.
 //   - Root, stoktaki urunde HAZIRLANIYOR adimini atlayip dogrudan kargoya verebilir.
-//   - Geri donus yok: yanlis isaretleme root tarafinda yeni bir islem gerektirir (bkz. rapor).
+//   - Geri donus yok: yanlis isaretleme root tarafinda yeni bir islem gerektirir.
+// Acik siparis siniri: hic onayli ucretli lisans odemesi ya da POS provizyonu olmayan (deneme) isletme ayni anda en
+// cok 1 sonuclanmamis siparis tutar; lisansli isletme en cok 5 odemesi beklenen siparis tutar (stok kilitlenmesin).
 //
 // Tutarlar SUNUCUDA, veritabanindaki fiyatlardan hesaplanir; istemcinin gonderdigi fiyat okunmaz.
 // Stok adedi girilmis urunde siparis olusurken adet AYRILIR (ayni transaction), iptal/redde geri doner.
@@ -37,7 +43,8 @@ const ROOT_GECIS = {
     KARGODA: [DURUM.TESLIM_EDILDI],
 };
 const ODEME_YONTEMLERI = { HAVALE: { ad: 'Havale/EFT', acik: true } };
-const ACIK_SIPARIS_SINIRI = 5;     // ayni isletmenin ayni anda odemesi beklenen siparis sayisi
+const ACIK_SIPARIS_SINIRI = 5;          // lisansli isletme: ayni anda odemesi beklenen siparis
+const DENEME_ACIK_SIPARIS_SINIRI = 1;   // odeme yapmamis (deneme) isletme: ayni anda sonuclanmamis siparis
 const FILTRE = {
     bekleyen: [DURUM.ODEME_BEKLENIYOR],
     hazirlanacak: [DURUM.ODEME_ALINDI, DURUM.HAZIRLANIYOR],
@@ -71,6 +78,7 @@ function girdiNormalle(kalemler) {
 
 // siki=false (sepet ekrani): satista olmayan urun atlanir, fazla adet stoga indirilir, sorun listelenir.
 // siki=true (siparis): herhangi bir sorun 409 - isletme sepeti gozden gecirmeden siparis olusmaz.
+// Denetim GERCEK stokla yapilir; isletmeye donen maksAdet ve mesaj kesin stogu sizdirmaz (MU.gorunurStok).
 async function sepetCoz(kalemler, { siki = false, kargoAyar }) {
     const istek = girdiNormalle(kalemler);
     const ids = istek.map(x => x.urunId);
@@ -84,11 +92,14 @@ async function sepetCoz(kalemler, { siki = false, kargoAyar }) {
         const u = urun.get(k.urunId);
         if (!u) { sorunlar.push({ urunId: k.urunId, sebep: 'SATISTA_DEGIL', mesaj: 'Sepetteki bir ürün artık satışta değil.' }); continue; }
         const st = MU.etkinStok(u);
+        const gor = MU.gorunurStok(u);
         if (st.durum === 'TUKENDI') { sorunlar.push({ urunId: u.id, ad: u.ad, sebep: 'TUKENDI', mesaj: `"${u.ad}" tükendi.` }); continue; }
         let adet = k.adet;
         if (adet > st.maksAdet) {
-            sorunlar.push({ urunId: u.id, ad: u.ad, sebep: 'STOK_YETERSIZ', maksAdet: st.maksAdet,
-                mesaj: `"${u.ad}" için en fazla ${st.maksAdet} adet sipariş verilebilir.` });
+            sorunlar.push({ urunId: u.id, ad: u.ad, sebep: 'STOK_YETERSIZ', maksAdet: gor.maksAdet,
+                mesaj: st.maksAdet <= MU.GORUNUR_STOK_SINIRI
+                    ? `"${u.ad}" için en fazla ${st.maksAdet} adet sipariş verilebilir.`
+                    : `"${u.ad}" için stokta istenen kadar ürün yok.` });
             if (siki) continue;
             adet = st.maksAdet;
         }
@@ -96,7 +107,7 @@ async function sepetCoz(kalemler, { siki = false, kargoAyar }) {
             urunId: u.id, ad: u.ad, kapak: kapak.get(u.id) || null, adet,
             birimKurus: u.fiyat_kurus, birimKdvDahilKurus: H.kdvDahilBirim(u.fiyat_kurus, u.kdv_orani), kdvOrani: u.kdv_orani,
             ...H.satirHesapla(u.fiyat_kurus, adet, u.kdv_orani),
-            stok: { durum: st.durum, tedarikGun: st.tedarikGun }, maksAdet: st.maksAdet,
+            stok: { durum: gor.durum, tedarikGun: gor.tedarikGun, adetMetni: gor.adetMetni }, maksAdet: gor.maksAdet,
             stokTakip: u.stok_adedi !== null && u.stok_adedi !== undefined,
         });
     }
@@ -137,13 +148,38 @@ function faturaDenetle(f, teslimatAdres) {
     return { tip, unvan, vergiDairesi: vergiDairesi || null, vergiNo, tcNo, adres };
 }
 
+// Cift gonderim korumasi: istemci siparis tamamlama ekrani basina bir anahtar uretir (uuid).
+function istekAnahtariOku(v) {
+    if (v === undefined || v === null || v === '') return null;
+    const s = String(v);
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(s)) throw hata(400, 'Sipariş anahtarı geçersiz.', 'ISTEK_ANAHTARI');
+    return s;
+}
+async function anahtarliSiparis(tenantId, anahtar) {
+    if (!anahtar) return null;
+    const r = await query('SELECT id FROM magaza_siparisler WHERE tenant_id = ? AND istek_anahtari = ?', [tenantId, anahtar]);
+    return r.rows[0] ? r.rows[0].id : null;
+}
+
+// Onayli ucretli lisans odemesi ya da islenmis POS provizyonu var mi? Yoksa isletme deneme sayilir.
+async function odemeYapmisMi(tenantId) {
+    const r = await query(
+        `SELECT (SELECT COUNT(*) FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'onaylandi' AND tutar > 0)
+              + (SELECT COUNT(*) FROM pos_provizyon WHERE tenant_id = ? AND durum = 'islendi') AS n`, [tenantId, tenantId]);
+    return (Number(r.rows[0] && r.rows[0].n) || 0) > 0;
+}
+
 async function gecmisYaz(siparisId, olay, aciklama, kim, kimAd) {
     await query('INSERT INTO magaza_siparis_gecmisi (siparis_id, olay, aciklama, kim, kim_ad, created_at) VALUES (?, ?, ?, ?, ?, ?)',
         [siparisId, olay, aciklama ? String(aciklama).slice(0, 500) : null, kim, kimAd ? String(kimAd).slice(0, 120) : null, simdi()]);
 }
 
+// Doner: { id, tekrar } - tekrar=true ise ayni istek anahtariyla daha once olusmus siparis.
 async function siparisOlustur({ tenantId, kullanici, govde }) {
     const g = govde || {};
+    const anahtar = istekAnahtariOku(g.istekAnahtari);
+    const onceki = await anahtarliSiparis(tenantId, anahtar);
+    if (onceki) return { id: onceki, tekrar: true };
     const ayar = await MA.oku();
     if (!ayar.acik) throw hata(403, 'Mağaza şu anda kapalı.', 'MAGAZA_KAPALI');
     const yontem = String(g.odemeYontemi || 'HAVALE');
@@ -153,6 +189,7 @@ async function siparisOlustur({ tenantId, kullanici, govde }) {
     const odeme = await MA.odemeBilgisi();
     if (!odeme.iban) throw hata(409, 'Ödeme bilgileri henüz tanımlanmadı; sipariş şu an alınamıyor. Lütfen MDA Yazılım ile iletişime geçin.', 'ODEME_BILGISI_YOK');
     if (g.kosullarKabul !== true) throw hata(400, 'Satış koşullarını okuyup onaylayın.', 'KOSULLAR');
+    if (g.ticariBeyan !== true) throw hata(400, 'Ürünleri ticari ya da mesleki faaliyetiniz için satın aldığınızı onaylayın.', 'TICARI_BEYAN');
     if (String(g.kosullarSurum || '') !== ayar.kosullarSurum) {
         throw hata(409, 'Satış koşulları güncellendi. Lütfen güncel metni okuyup yeniden onaylayın.', 'KOSULLAR_DEGISTI',
             { kosullar: { metin: ayar.kosullarMetni, surum: ayar.kosullarSurum } });
@@ -163,10 +200,22 @@ async function siparisOlustur({ tenantId, kullanici, govde }) {
     const t = (await query('SELECT business_name, business_code FROM tenants WHERE id = ?', [tenantId])).rows[0] || {};
 
     const sonuc = await tx(async () => {
-        const acik = Number((await query("SELECT COUNT(*) AS c FROM magaza_siparisler WHERE tenant_id = ? AND durum = 'ODEME_BEKLENIYOR'",
-            [tenantId])).rows[0].c) || 0;
-        if (acik >= ACIK_SIPARIS_SINIRI) {
-            throw hata(409, `Ödemesi beklenen ${acik} siparişiniz var. Yeni sipariş için önce bunların ödemesini yapın ya da iptal edin.`, 'ACIK_SIPARIS_SINIRI');
+        // Ayni anahtarla esanli iki istek: transaction sirayla calisir, ikincisi ilkini burada bulur
+        const esanli = await anahtarliSiparis(tenantId, anahtar);
+        if (esanli) return { id: esanli, tekrar: true };
+        if (await odemeYapmisMi(tenantId)) {
+            const acik = Number((await query("SELECT COUNT(*) AS c FROM magaza_siparisler WHERE tenant_id = ? AND durum = 'ODEME_BEKLENIYOR'",
+                [tenantId])).rows[0].c) || 0;
+            if (acik >= ACIK_SIPARIS_SINIRI) {
+                throw hata(409, `Ödemesi beklenen ${acik} siparişiniz var. Yeni sipariş için önce bunların ödemesini yapın ya da iptal edin.`, 'ACIK_SIPARIS_SINIRI');
+            }
+        } else {
+            const acik = Number((await query(
+                "SELECT COUNT(*) AS c FROM magaza_siparisler WHERE tenant_id = ? AND durum NOT IN ('TESLIM_EDILDI', 'IPTAL', 'REDDEDILDI')",
+                [tenantId])).rows[0].c) || 0;
+            if (acik >= DENEME_ACIK_SIPARIS_SINIRI) {
+                throw hata(409, 'Deneme sürümünde aynı anda yalnız bir açık sipariş verilebilir. Açık siparişiniz teslim edildiğinde, iptal edildiğinde ya da reddedildiğinde yeni sipariş verebilirsiniz.', 'ACIK_SIPARIS_SINIRI');
+            }
         }
         // Fiyat, KDV, stok: transaction icinde taze okunur (ayni anda iki siparis ayni stogu ayiramaz)
         const s = await sepetCoz(g.kalemler, { siki: true, kargoAyar: MA.kargoAyari(ayar) });
@@ -183,18 +232,23 @@ async function siparisOlustur({ tenantId, kullanici, govde }) {
         }
         const no = Number((await query('SELECT COALESCE(MAX(no), 1000) + 1 AS n FROM magaza_siparisler')).rows[0].n);
         const id = uuidv4(), z = simdi();
+        // Otomatik iptal ani siparise yazilir (o anki ayar); sonradan degisen ayar bu siparise uygulanmaz
+        const gun = ayar.otomatikIptalGun > 0 ? ayar.otomatikIptalGun : null;
+        const iptalAt = gun ? new Date(Date.parse(z) + gun * 86400000).toISOString() : null;
         await query(
             `INSERT INTO magaza_siparisler (id, no, tenant_id, isletme_adi, isyeri_kodu, olusturan_kullanici_id, olusturan_ad,
                 durum, odeme_yontemi, ara_toplam_kurus, kdv_kurus, kargo_kurus, genel_toplam_kurus,
                 teslimat_alici, teslimat_telefon, teslimat_adres,
                 fatura_tip, fatura_unvan, fatura_vergi_dairesi, fatura_vergi_no, fatura_tc_no, fatura_adres,
-                siparis_notu, kosullar_kabul_at, kosullar_surum, kosullar_metin, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'ODEME_BEKLENIYOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                siparis_notu, kosullar_kabul_at, kosullar_surum, kosullar_metin, ticari_beyan_at,
+                istek_anahtari, otomatik_iptal_at, otomatik_iptal_gun, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'ODEME_BEKLENIYOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, no, tenantId, t.business_name || null, t.business_code || null, kullanici.id || null, kullanici.ad || null,
                 yontem, s.araToplamKurus, s.kdvKurus, s.kargoKurus, s.genelToplamKurus,
                 teslimat.alici, teslimat.telefon, teslimat.adres,
                 fatura.tip, fatura.unvan, fatura.vergiDairesi, fatura.vergiNo, fatura.tcNo, fatura.adres,
-                not, z, ayar.kosullarSurum, ayar.kosullarMetni, z, z]);
+                not, z, ayar.kosullarSurum, ayar.kosullarMetni, z,
+                anahtar, iptalAt, gun, z, z]);
         let sira = 0;
         for (const k of s.kalemler) {
             await query(
@@ -205,11 +259,12 @@ async function siparisOlustur({ tenantId, kullanici, govde }) {
                     k.toplamKurus, k.stokTakip ? k.adet : 0, ++sira]);
         }
         await gecmisYaz(id, DURUM.ODEME_BEKLENIYOR, 'Sipariş oluşturuldu', 'ISLETME', kullanici.ad);
-        return id;
+        return { id, tekrar: false };
     });
+    if (sonuc.tekrar) return sonuc;
 
-    const kayit = (await query('SELECT * FROM magaza_siparisler WHERE id = ?', [sonuc])).rows[0];
-    const kalemler = (await query('SELECT * FROM magaza_siparis_kalemleri WHERE siparis_id = ? ORDER BY sira', [sonuc])).rows;
+    const kayit = (await query('SELECT * FROM magaza_siparisler WHERE id = ?', [sonuc.id])).rows[0];
+    const kalemler = (await query('SELECT * FROM magaza_siparis_kalemleri WHERE siparis_id = ? ORDER BY sira', [sonuc.id])).rows;
     B.yeniSiparis(kayit, kalemler).catch(() => {});     // bildirim transaction DISINDA (geri alinan siparis icin posta gitmesin)
     return sonuc;
 }
@@ -241,20 +296,25 @@ async function odemeBildir({ id, tenantId, kullanici, referans }) {
 
 async function isletmeIptal({ id, tenantId, kullanici, sebep }) {
     const neden = H.metin(sebep, 300) || 'İşletme siparişi iptal etti.';
-    await tx(async () => {
+    const s = await tx(async () => {
         const s = (await query('SELECT * FROM magaza_siparisler WHERE id = ? AND tenant_id = ?', [String(id), tenantId])).rows[0];
         if (!s) throw hata(404, 'Sipariş bulunamadı.');
         if (s.durum !== DURUM.ODEME_BEKLENIYOR) {
             throw hata(409, 'Yalnız ödemesi beklenen sipariş iptal edilebilir. Bu sipariş için MDA Yazılım ile iletişime geçin.', 'GECERSIZ_DURUM');
         }
+        if (s.odeme_bildirildi_at) {
+            throw hata(409, 'Ödemeniz bildirildiği için siparişi iptal etmek için MDA Yazılım ile iletişime geçin.', 'ODEME_BILDIRILDI');
+        }
         const z = simdi();
         const r = await query(
             `UPDATE magaza_siparisler SET durum = 'IPTAL', kapanis_at = ?, kapatan = 'ISLETME', kapanis_sebebi = ?, updated_at = ?
-              WHERE id = ? AND durum = 'ODEME_BEKLENIYOR'`, [z, neden, z, s.id]);
+              WHERE id = ? AND durum = 'ODEME_BEKLENIYOR' AND odeme_bildirildi_at IS NULL`, [z, neden, z, s.id]);
         if (r.changes !== 1) throw hata(409, 'Sipariş durumu değişti, sayfayı yenileyin.', 'GECERSIZ_DURUM');
         await stokIade(s.id);
         await gecmisYaz(s.id, DURUM.IPTAL, neden, 'ISLETME', kullanici.ad);
+        return s;
     });
+    B.isletmeIptal(s, neden).catch(() => {});        // Patron'a bildirim (transaction disinda)
 }
 
 // --- Root eylemleri ---
@@ -303,31 +363,43 @@ async function durumDegistir({ id, hedef, govde, rootAd }) {
     if (E.TURLER.includes(hedef)) E.durumBildir(String(id), hedef).catch(() => {});
 }
 
-// Sistem iptali (magazaZamanlayici.js): odeme bildirilmemis ve sinirdan eski siparis. Kosul UPDATE icinde yeniden
-// denetlenir; arada 'odemeyi yaptim' ya da root islemi geldiyse siparise dokunulmaz (false doner).
-async function sistemIptal({ id, sebep, sinir }) {
+// Sistem iptali (magazaZamanlayici.js): odeme bildirilmemis ve otomatik iptal ani gecmis siparis. Kosul UPDATE icinde
+// yeniden denetlenir; arada "odemeyi yaptim" ya da root islemi geldiyse siparise dokunulmaz (false doner).
+// Sebepteki gun, siparise olusurken yazilan suredir (ayar sonradan degismis olabilir).
+async function sistemIptal({ id, simdiIso }) {
     return tx(async () => {
+        const s = (await query('SELECT id, otomatik_iptal_gun FROM magaza_siparisler WHERE id = ?', [String(id)])).rows[0];
+        if (!s) return false;
+        const sebep = `Ödeme ${s.otomatik_iptal_gun || ''} gün içinde ulaşmadığı için sipariş iptal edildi.`.replace('  ', ' ');
         const z = simdi();
         const r = await query(
             `UPDATE magaza_siparisler SET durum = 'IPTAL', kapanis_at = ?, kapatan = 'SISTEM', kapanis_sebebi = ?, updated_at = ?
-              WHERE id = ? AND durum = 'ODEME_BEKLENIYOR' AND odeme_bildirildi_at IS NULL AND created_at <= ?`,
-            [z, String(sebep).slice(0, 500), z, String(id), sinir]);
+              WHERE id = ? AND durum = 'ODEME_BEKLENIYOR' AND odeme_bildirildi_at IS NULL
+                AND otomatik_iptal_at IS NOT NULL AND otomatik_iptal_at <= ?`,
+            [z, sebep, z, s.id, simdiIso || z]);
         if (r.changes !== 1) return false;
-        await stokIade(String(id));
-        await gecmisYaz(String(id), DURUM.IPTAL, sebep, 'SISTEM', 'Otomatik iptal');
+        await stokIade(s.id);
+        await gecmisYaz(s.id, DURUM.IPTAL, sebep, 'SISTEM', 'Otomatik iptal');
         return true;
     });
 }
 
-// Ic not, fatura isareti, kargo bilgisi duzeltmesi (yalniz kargodaki/teslim edilmis sipariste).
+const tarihGecerli = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v + 'T00:00:00Z'))
+    && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+
+// Ic not, fatura isareti, iade isareti, kargo bilgisi duzeltmesi.
 async function rootGuncelle({ id, govde, rootAd }) {
     const g = govde || {};
     const has = (k) => Object.prototype.hasOwnProperty.call(g, k);
     const s = (await query('SELECT * FROM magaza_siparisler WHERE id = ?', [String(id)])).rows[0];
     if (!s) throw hata(404, 'Sipariş bulunamadı.');
+    const kapali = s.durum === DURUM.IPTAL || s.durum === DURUM.REDDEDILDI;
     const set = {};
     const olaylar = [];
     if (has('icNot')) set.ic_not = H.metin(g.icNot, 2000) || null;
+    if ((has('faturaKesildi') && g.faturaKesildi) || (!has('faturaKesildi') && has('faturaNo'))) {
+        if (kapali) throw hata(409, 'İptal edilmiş ya da reddedilmiş siparişe fatura işareti konamaz.', 'FATURA_DURUM');
+    }
     if (has('faturaKesildi')) {
         if (g.faturaKesildi) {
             set.fatura_kesildi_at = s.fatura_kesildi_at || simdi();
@@ -341,6 +413,22 @@ async function rootGuncelle({ id, govde, rootAd }) {
         }
     } else if (has('faturaNo')) {
         set.fatura_no = H.metin(g.faturaNo, 50) || null;
+    }
+    if (has('iadeYapildi')) {
+        if (g.iadeYapildi) {
+            if (s.durum !== DURUM.REDDEDILDI || !s.odeme_alindi_at) {
+                throw hata(409, 'İade işareti yalnız ödemesi alınmış ve reddedilmiş siparişte kullanılabilir.', 'IADE_DURUM');
+            }
+            const tarih = has('iadeTarihi') && g.iadeTarihi ? String(g.iadeTarihi) : simdi().slice(0, 10);
+            if (!tarihGecerli(tarih)) throw hata(400, 'İade tarihi geçersiz (YYYY-AA-GG).', 'IADE_TARIHI');
+            set.iade_tarihi = tarih;
+            set.iade_notu = H.metin(g.iadeNotu, 300) || null;
+            set.iade_isaretlendi_at = s.iade_isaretlendi_at || simdi();
+            olaylar.push(['IADE', `İade yapıldı (${tarih})` + (set.iade_notu ? ': ' + set.iade_notu : '')]);
+        } else {
+            set.iade_tarihi = null; set.iade_notu = null; set.iade_isaretlendi_at = null;
+            if (s.iade_isaretlendi_at) olaylar.push(['IADE', 'İade işareti kaldırıldı']);
+        }
     }
     if (has('kargoFirma') || has('kargoTakipNo')) {
         if (![DURUM.KARGODA, DURUM.TESLIM_EDILDI].includes(s.durum)) {
@@ -389,7 +477,7 @@ async function ayrintiParcalari(id) {
     return { kalemler, gecmis };
 }
 
-// Isletme: fatura alanlari ve ic not HIC donmez.
+// Isletme: fatura alanlari, ic not ve iade notu HIC donmez.
 async function isletmeListe(tenantId) {
     const r = await query(`SELECT ${ozetSecimi} FROM magaza_siparisler s WHERE s.tenant_id = ? ORDER BY s.created_at DESC LIMIT 200`, [tenantId]);
     return r.rows.map(ozet);
@@ -407,15 +495,15 @@ async function isletmeAyrinti(id, tenantId) {
         olusturanAd: s.olusturan_ad,
         odemeReferans: s.odeme_referans,
         kosullar: { kabulAt: s.kosullar_kabul_at, surum: s.kosullar_surum, metin: s.kosullar_metin },
-        // FATURA olaylari root'un defter kaydi; isletmeye gosterilmez (fatura no ozet alaninda doner)
-        gecmis: gecmis.filter(x => x.olay !== 'FATURA')
+        iade: s.iade_isaretlendi_at ? { tarih: s.iade_tarihi } : null,
+        // FATURA ve IADE olaylari root'un defter kaydi; isletmeye gosterilmez (fatura no ve iade tarihi ayri alanda)
+        gecmis: gecmis.filter(x => x.olay !== 'FATURA' && x.olay !== 'IADE')
             .map(x => ({ olay: x.olay, aciklama: x.aciklama, kim: x.kim, zaman: x.created_at })),
     };
     if (s.durum === DURUM.ODEME_BEKLENIYOR) {
         out.odeme = { ...(await MA.odemeBilgisi()), odemeAciklamasi: noMetin(s.no) };
-        const gun = (await MA.oku()).otomatikIptalGun;
-        if (gun && !s.odeme_bildirildi_at) {
-            out.otomatikIptal = { gun, tarih: new Date(new Date(s.created_at).getTime() + gun * 86400000).toISOString() };
+        if (!s.odeme_bildirildi_at && s.otomatik_iptal_at) {
+            out.otomatikIptal = { gun: s.otomatik_iptal_gun, tarih: s.otomatik_iptal_at };
         }
     }
     return out;
@@ -451,7 +539,11 @@ async function rootListe({ filtre, limit }) {
           ORDER BY CASE WHEN s.durum = 'ODEME_BEKLENIYOR' AND s.odeme_bildirildi_at IS NOT NULL THEN 0 ELSE 1 END, s.created_at DESC
           LIMIT ?`, [...(durumlar || []), n]);
     return {
-        siparisler: r.rows.map(s => ({ ...ozet(s), isletmeAdi: s.isletme_adi, isyeriKodu: s.isyeri_kodu, tenantId: s.tenant_id })),
+        siparisler: r.rows.map(s => ({
+            ...ozet(s), isletmeAdi: s.isletme_adi, isyeriKodu: s.isyeri_kodu, tenantId: s.tenant_id,
+            // Odemesi alinip reddedilen sipariste para iadesi izlenir: BEKLIYOR | YAPILDI (digerlerinde null)
+            iade: s.durum === DURUM.REDDEDILDI && s.odeme_alindi_at ? (s.iade_isaretlendi_at ? 'YAPILDI' : 'BEKLIYOR') : null,
+        })),
         sayilar: await sayilar(),
     };
 }
@@ -482,13 +574,18 @@ async function rootAyrinti(id) {
                   vergiNo: s.fatura_vergi_no, tcKimlikNo: s.fatura_tc_no, adres: s.fatura_adres },
         siparisNotu: s.siparis_notu, odemeReferans: s.odeme_referans, icNot: s.ic_not,
         kosullar: { kabulAt: s.kosullar_kabul_at, surum: s.kosullar_surum, metin: s.kosullar_metin },
+        ticariBeyanAt: s.ticari_beyan_at,
+        otomatikIptal: s.otomatik_iptal_at ? { gun: s.otomatik_iptal_gun, tarih: s.otomatik_iptal_at } : null,
+        iade: s.iade_isaretlendi_at ? { tarih: s.iade_tarihi, not: s.iade_notu, isaretlendiAt: s.iade_isaretlendi_at } : null,
+        iadeIsaretlenebilir: s.durum === DURUM.REDDEDILDI && !!s.odeme_alindi_at,
+        faturaIsaretlenebilir: !(s.durum === DURUM.IPTAL || s.durum === DURUM.REDDEDILDI),
         gecmis: gecmis.map(x => ({ olay: x.olay, aciklama: x.aciklama, kim: x.kim, kimAd: x.kim_ad, zaman: x.created_at })),
         gecisler: ROOT_GECIS[s.durum] || [],
     };
 }
 
 module.exports = {
-    DURUM, DURUM_AD, KAPALI, ROOT_GECIS, ODEME_YONTEMLERI, ACIK_SIPARIS_SINIRI, FILTRE,
+    DURUM, DURUM_AD, KAPALI, ROOT_GECIS, ODEME_YONTEMLERI, ACIK_SIPARIS_SINIRI, DENEME_ACIK_SIPARIS_SINIRI, FILTRE,
     sepetCoz, siparisOlustur, odemeBildir, isletmeIptal, durumDegistir, sistemIptal, rootGuncelle,
-    isletmeListe, isletmeAyrinti, aktifSayisi, rootListe, rootAyrinti, sayilar,
+    isletmeListe, isletmeAyrinti, aktifSayisi, rootListe, rootAyrinti, sayilar, odemeYapmisMi,
 };

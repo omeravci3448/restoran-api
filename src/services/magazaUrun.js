@@ -15,7 +15,9 @@ const STOK = ['STOKTA', 'SIPARIS_UZERINE', 'TUKENDI'];
 const YAYIN = ['TASLAK', 'YAYINDA'];
 const EN_FAZLA_RESIM = 12;
 
-function hata(status, message, code) { const e = new Error(message); e.status = status; if (code) e.code = code; return e; }
+function hata(status, message, code, ek) {
+    const e = new Error(message); e.status = status; if (code) e.code = code; if (ek) e.ek = ek; return e;
+}
 const simdi = () => new Date().toISOString();
 
 function jsonDizi(s) {
@@ -32,6 +34,19 @@ function etkinStok(u) {
     }
     const maks = takip ? Math.min(Number(u.stok_adedi), H.EN_FAZLA_ADET) : H.EN_FAZLA_ADET;
     return { durum: u.stok_durumu === 'SIPARIS_UZERINE' ? 'SIPARIS_UZERINE' : 'STOKTA', tedarikGun, maksAdet: maks };
+}
+
+// Isletmeye gosterilen stok: kesin adet SIZDIRILMAZ. Adet takibi olan urunde 10'dan fazlasi "10+" yazilir ve tek
+// satirda secilebilecek en fazla adet (maksAdet) 10'a kirpilir; 10 ve alti oldugu gibi gosterilir. Adet takibi
+// olmayan urunde sayi yok, en fazla 999. Siparis denetimi her zaman GERCEK stokla yapilir (gorunurStok yalniz gosterim).
+const GORUNUR_STOK_SINIRI = 10;
+function gorunurStok(u) {
+    const st = etkinStok(u);
+    const takip = u.stok_adedi !== null && u.stok_adedi !== undefined;
+    if (!takip || st.durum === 'TUKENDI') return { durum: st.durum, tedarikGun: st.tedarikGun, adetMetni: null, maksAdet: st.maksAdet };
+    const n = Number(u.stok_adedi);
+    return { durum: st.durum, tedarikGun: st.tedarikGun, adetMetni: n > GORUNUR_STOK_SINIRI ? GORUNUR_STOK_SINIRI + '+' : String(n),
+             maksAdet: Math.min(n, GORUNUR_STOK_SINIRI) };
 }
 
 async function resimHaritasi(urunIdler) {
@@ -62,7 +77,7 @@ async function kapakHaritasi(urunIdler) {
     return out;
 }
 
-function rootSatir(u, resimler, siparisSayisi) {
+function rootSatir(u, resimler, siparisSayisi, ayrilan) {
     const st = etkinStok(u);
     return {
         id: u.id, ad: u.ad, kategori: u.kategori || '', kisaAciklama: u.kisa_aciklama || '',
@@ -72,6 +87,7 @@ function rootSatir(u, resimler, siparisSayisi) {
         etkinStok: st.durum, yayin: u.yayin, sira: u.sira,
         resimler: resimler || [], kapak: kapakOf(resimler)?.yol || null,
         siparisSayisi: Number(siparisSayisi || 0),
+        acikSiparisteAyrilan: Number(ayrilan || 0),     // stok adedine DAHIL DEGIL (fiziksel = stok + ayrilan)
         createdAt: u.created_at, updatedAt: u.updated_at,
     };
 }
@@ -84,13 +100,24 @@ async function kategoriler(sadeceYayinda) {
     return r.rows.map(x => x.kategori);
 }
 
+// Acik (kargoya verilmemis) siparislerde stoktan ayrilmis adet, urun basina. Fiziksel sayim = stok_adedi + bu.
+async function ayrilanHaritasi(urunId) {
+    const r = await query(
+        `SELECT k.urun_id, SUM(k.stok_ayrildi) AS n FROM magaza_siparis_kalemleri k
+           JOIN magaza_siparisler s ON s.id = k.siparis_id
+          WHERE s.durum IN ('ODEME_BEKLENIYOR', 'ODEME_ALINDI', 'HAZIRLANIYOR') AND k.stok_ayrildi > 0
+          ${urunId ? 'AND k.urun_id = ?' : ''} GROUP BY k.urun_id`, urunId ? [urunId] : []);
+    return new Map(r.rows.map(x => [x.urun_id, Number(x.n) || 0]));
+}
+
 // --- Root ---
 async function rootListe() {
     const r = await query(
         `SELECT u.*, (SELECT COUNT(DISTINCT k.siparis_id) FROM magaza_siparis_kalemleri k WHERE k.urun_id = u.id) AS siparis_sayisi
            FROM magaza_urunler u WHERE u.silindi_at IS NULL ORDER BY u.sira, u.created_at`);
     const resim = await resimHaritasi(r.rows.map(x => x.id));
-    return { urunler: r.rows.map(u => rootSatir(u, resim.get(u.id), u.siparis_sayisi)), kategoriler: await kategoriler(false) };
+    const ayrilan = await ayrilanHaritasi(null);
+    return { urunler: r.rows.map(u => rootSatir(u, resim.get(u.id), u.siparis_sayisi, ayrilan.get(u.id))), kategoriler: await kategoriler(false) };
 }
 
 async function rootTek(id) {
@@ -99,7 +126,8 @@ async function rootTek(id) {
            FROM magaza_urunler u WHERE u.id = ? AND u.silindi_at IS NULL`, [id]);
     if (!r.rows.length) return null;
     const resim = await resimHaritasi([id]);
-    return rootSatir(r.rows[0], resim.get(id), r.rows[0].siparis_sayisi);
+    const ayrilan = await ayrilanHaritasi(id);
+    return rootSatir(r.rows[0], resim.get(id), r.rows[0].siparis_sayisi, ayrilan.get(id));
 }
 
 // Gelen alanlari denetler; yalniz GELEN alanlar sutun listesine girer (kismi guncelleme).
@@ -184,33 +212,59 @@ async function olustur(g) {
     return rootTek(id);
 }
 
+// Stok adedi degisiyorsa IYIMSER KILIT: istemci formu actigi andaki adedi beklenenStokAdedi olarak gonderir. Arada
+// gelen siparis adedi dusurduyse (ya da iptal geri verdiyse) kayit yapilmaz, 409 + guncel adet doner. Aksi halde
+// eski form, siparisin ayirdigi adedi geri yazar ve iptalde stok fiziksel sayinin ustune cikardi.
 async function guncelle(id, g) {
     const mevcut = (await query('SELECT * FROM magaza_urunler WHERE id = ? AND silindi_at IS NULL', [id])).rows[0];
     if (!mevcut) throw hata(404, 'Ürün bulunamadı.');
     const s = alanlar(g);
     yayinDenetle({ ...mevcut, ...s });
     const k = Object.keys(s);
-    if (k.length) {
-        await query(`UPDATE magaza_urunler SET ${k.map(x => x + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`,
-            [...k.map(x => s[x]), simdi(), id]);
+    if (!k.length) return rootTek(id);
+    const stokDegisiyor = Object.prototype.hasOwnProperty.call(s, 'stok_adedi');
+    let beklenen = null;
+    if (stokDegisiyor) {
+        if (!Object.prototype.hasOwnProperty.call(g, 'beklenenStokAdedi')) {
+            throw hata(400, 'Stok adedi değiştirilirken formdaki önceki adet (beklenenStokAdedi) gönderilmeli.', 'STOK_KILIDI');
+        }
+        beklenen = g.beklenenStokAdedi === '' || g.beklenenStokAdedi === null ? null : Number(g.beklenenStokAdedi);
+        if (beklenen !== null && !Number.isInteger(beklenen)) throw hata(400, 'Beklenen stok adedi geçersiz.', 'STOK_KILIDI');
+    }
+    const r = await query(
+        `UPDATE magaza_urunler SET ${k.map(x => x + ' = ?').join(', ')}, updated_at = ?
+          WHERE id = ? AND silindi_at IS NULL${stokDegisiyor ? ' AND stok_adedi IS ?' : ''}`,
+        [...k.map(x => s[x]), simdi(), id, ...(stokDegisiyor ? [beklenen] : [])]);
+    if (r.changes !== 1) {
+        const guncel = (await query('SELECT stok_adedi FROM magaza_urunler WHERE id = ? AND silindi_at IS NULL', [id])).rows[0];
+        if (!guncel) throw hata(404, 'Ürün bulunamadı.');
+        const adet = guncel.stok_adedi === null ? 'takip yok' : guncel.stok_adedi;
+        throw hata(409, `Bu arada sipariş geldi, stok güncellendi. Güncel stok adedi: ${adet}. Kontrol edip yeniden kaydedin.`,
+            'STOK_DEGISTI', { stokAdedi: guncel.stok_adedi });
     }
     return rootTek(id);
 }
 
+// Siparis kontrolu ve silme TEK transaction icinde: arada gelen siparis, silinmis urune kalem yazamaz ya da kalemi
+// olan urun kalici silinemez. Resim dosyalari transaction bittikten sonra silinir (geri alinan islemde dosya kaybolmasin).
 async function sil(id) {
-    const u = (await query('SELECT id FROM magaza_urunler WHERE id = ? AND silindi_at IS NULL', [id])).rows[0];
-    if (!u) throw hata(404, 'Ürün bulunamadı.');
-    const kullanildi = (await query('SELECT 1 FROM magaza_siparis_kalemleri WHERE urun_id = ? LIMIT 1', [id])).rows.length > 0;
-    if (kullanildi) {
-        // Siparislerde geciyor: satir + resimler kalir (eski siparislerin gorunumu bozulmasin)
-        await query("UPDATE magaza_urunler SET silindi_at = ?, yayin = 'TASLAK', updated_at = ? WHERE id = ?", [simdi(), simdi(), id]);
-        return { silindi: true, yumusak: true };
-    }
-    const resimler = (await query('SELECT yol FROM magaza_urun_resimleri WHERE urun_id = ?', [id])).rows;
-    await query('DELETE FROM magaza_urun_resimleri WHERE urun_id = ?', [id]);
-    await query('DELETE FROM magaza_urunler WHERE id = ?', [id]);
-    for (const r of resimler) await R.sil(r.yol);
-    return { silindi: true, yumusak: false };
+    const sonuc = await tx(async () => {
+        const u = (await query('SELECT id FROM magaza_urunler WHERE id = ? AND silindi_at IS NULL', [id])).rows[0];
+        if (!u) throw hata(404, 'Ürün bulunamadı.');
+        const kullanildi = (await query('SELECT 1 FROM magaza_siparis_kalemleri WHERE urun_id = ? LIMIT 1', [id])).rows.length > 0;
+        if (kullanildi) {
+            // Siparislerde geciyor: satir + resimler kalir (eski siparislerin gorunumu bozulmasin)
+            const z = simdi();
+            await query("UPDATE magaza_urunler SET silindi_at = ?, yayin = 'TASLAK', updated_at = ? WHERE id = ?", [z, z, id]);
+            return { yumusak: true, yollar: [] };
+        }
+        const resimler = (await query('SELECT yol FROM magaza_urun_resimleri WHERE urun_id = ?', [id])).rows;
+        await query('DELETE FROM magaza_urun_resimleri WHERE urun_id = ?', [id]);
+        await query('DELETE FROM magaza_urunler WHERE id = ?', [id]);
+        return { yumusak: false, yollar: resimler.map(r => r.yol) };
+    });
+    for (const y of sonuc.yollar) await R.sil(y);
+    return { silindi: true, yumusak: sonuc.yumusak };
 }
 
 // ids: istenen sira (silinmemis urunlerin kimlikleri). Listede olmayanlar sona kalir.
@@ -274,11 +328,11 @@ async function resimKapak(urunId, resimId) {
 
 // --- Isletme (yalniz YAYINDA ve silinmemis) ---
 function isletmeSatir(u, resimler) {
-    const st = etkinStok(u);
+    const st = gorunurStok(u);
     return {
         id: u.id, ad: u.ad, kategori: u.kategori || '', kisaAciklama: u.kisa_aciklama || '',
         fiyatKurus: u.fiyat_kurus, kdvOrani: u.kdv_orani, fiyatKdvDahilKurus: H.kdvDahilBirim(u.fiyat_kurus, u.kdv_orani),
-        stok: { durum: st.durum, tedarikGun: st.tedarikGun }, maksAdet: st.maksAdet,
+        stok: { durum: st.durum, tedarikGun: st.tedarikGun, adetMetni: st.adetMetni }, maksAdet: st.maksAdet,
         kapak: kapakOf(resimler)?.yol || null,
     };
 }
@@ -301,7 +355,7 @@ async function isletmeDetay(id) {
 }
 
 module.exports = {
-    STOK, YAYIN, EN_FAZLA_RESIM, etkinStok, kapakHaritasi,
+    STOK, YAYIN, EN_FAZLA_RESIM, GORUNUR_STOK_SINIRI, etkinStok, gorunurStok, kapakHaritasi,
     rootListe, rootTek, olustur, guncelle, sil, sirala,
     resimEkle, resimSil, resimSirala, resimKapak,
     isletmeListe, isletmeDetay,

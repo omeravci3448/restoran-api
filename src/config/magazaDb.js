@@ -127,6 +127,25 @@ function magazaTablolari(db) {
         created_at TEXT
     )`);
     db.run('CREATE INDEX IF NOT EXISTS idx_magaza_gecmis_siparis ON magaza_siparis_gecmisi(siparis_id, id)');
+
+    // --- Inceleme turu (2026-11) - sonradan eklenen sutunlar (var olan veritabaninda ALTER, hata yutulur) ---
+    // istek_anahtari: istemcinin urettigi tekil anahtar; ayni kiracida ayni anahtarla gelen ikinci istek ilk siparisi
+    //   dondurur (cift tiklama / yeniden gonderim ikinci siparis acmasin).
+    // otomatik_iptal_at / _gun: siparis olusurken o anki ayardan yazilir; ayar sonradan degisse de geriye donuk uygulanmaz.
+    // ticari_beyan_at: "Urunleri ticari ya da mesleki faaliyetim icin satin aliyorum" onayinin ani.
+    // iade_*: odemesi alinmis ve reddedilmis sipariste root'un "Iade yapildi" isareti (tarih + not; not isletmeye gitmez).
+    for (const sql of [
+        'ALTER TABLE magaza_siparisler ADD COLUMN istek_anahtari TEXT',
+        'ALTER TABLE magaza_siparisler ADD COLUMN otomatik_iptal_at TEXT',
+        'ALTER TABLE magaza_siparisler ADD COLUMN otomatik_iptal_gun INTEGER',
+        'ALTER TABLE magaza_siparisler ADD COLUMN ticari_beyan_at TEXT',
+        'ALTER TABLE magaza_siparisler ADD COLUMN iade_tarihi TEXT',
+        'ALTER TABLE magaza_siparisler ADD COLUMN iade_notu TEXT',
+        'ALTER TABLE magaza_siparisler ADD COLUMN iade_isaretlendi_at TEXT',
+    ]) db.run(sql, [], () => {});
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_magaza_istek_anahtari ON magaza_siparisler(tenant_id, istek_anahtari)
+            WHERE istek_anahtari IS NOT NULL`, [], () => {});
+    db.run('CREATE INDEX IF NOT EXISTS idx_magaza_otomatik_iptal ON magaza_siparisler(durum, otomatik_iptal_at)', [], () => {});
 }
 
 module.exports = { magazaTablolari };

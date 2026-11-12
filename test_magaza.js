@@ -18,7 +18,10 @@ const ROOT_EPOSTA = 'rootmagaza@ornek.test', ROOT_PAROLA = 'MagazaTestParola123'
 const AD_A = 'Magaza Test Lokanta', AD_B = 'Magaza Test Kafe';
 const ONEK = 'MGTEST ';
 const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari', 'magaza_otomatik_iptal_gun',
+    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta',
     'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
+const SATICI = { unvan: 'MDA Yazılım Test Satıcı', adres: 'Örnek Mah. Test Cad. No 1, Merkez, Afyonkarahisar', vergiDairesi: 'Tınaztepe',
+    vkn: '1234567890', telefon: '0272 000 00 00', eposta: 'magaza-satici@ornek.test' };
 const UNVAN_A = 'Magaza Test Gida Ticaret Ltd. Sti.';
 const VKN_A = '4840847211';
 const TCKN = '10000000146';            // gecerli kontrol haneli deneme numarasi
@@ -68,7 +71,7 @@ async function temizle() {
             await query('DELETE FROM magaza_siparisler WHERE id = ?', [s.id]);
         }
         await query('DELETE FROM root_olaylar WHERE tenant_id = ?', [r.id]).catch(() => {});
-        for (const tb of ['license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari', 'deneme_kayitlari', 'users'])
+        for (const tb of ['lisans_odemeleri', 'license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari', 'deneme_kayitlari', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
@@ -110,6 +113,10 @@ async function temizle() {
     const A = await isletmeAc(AD_A, 'magaza-a@ornek.test');
     const Bi = await isletmeAc(AD_B, 'magaza-b@ornek.test');
     ok('iki isletme acildi + sahip girisi', !!A.token && !!Bi.token, [A, Bi]);
+    // Onayli ucretli lisans odemesi olan isletme lisansli sayilir (acik siparis siniri 5); olmayan deneme (sinir 1)
+    const lisansla = (tid) => query("INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum) VALUES (?, ?, 'TIER_1_5', '[]', 1000, 'onaylandi')",
+        [require('crypto').randomUUID(), tid]);
+    await lisansla(A.id);
     await query("UPDATE tenants SET license_tier = 'TIER_DENEME', license_end_date = ? WHERE id = ?",
         [new Date(Date.now() + 7 * 86400000).toISOString(), Bi.id]);
     await js('/api/auth/staff', { token: A.token, body: { email: 'mudur@ornek.test', password: 'mudur12345', name: 'Müdür Ayşe', role: 'MANAGER' } });
@@ -181,7 +188,14 @@ async function temizle() {
         && rl.d.kategoriler.includes('Bilgisayar') && rl.d.kategoriler.includes('Yazıcı'), rl.d.kategoriler);
     ok('elle Tukendi -> etkin stok TUKENDI', rl.d.urunler.find(x => x.id === p5.id).etkinStok === 'TUKENDI');
 
-    console.log('\n=== 5) Magaza ACIK: taslak urun isletmeye hic gorunmez ===');
+    console.log('\n=== 5) Magaza ACIK: satici bilgisi sart; taslak urun isletmeye hic gorunmez ===');
+    for (const ad of AYARLAR.filter(x => x.startsWith('magaza_satici_'))) await query('DELETE FROM sistem_ayarlari WHERE anahtar = ?', [ad]);
+    a = await R('/ayarlar', { method: 'PUT', body: { acik: true } });
+    ok('satici bilgisi eksikken magaza acilamaz (409 SATICI_BILGISI_EKSIK, 6 eksik)', a.status === 409 && a.d.code === 'SATICI_BILGISI_EKSIK' && a.d.eksik.length === 6, a);
+    ok('11 haneli (TC) satici numarasi 400', (await R('/ayarlar', { method: 'PUT', body: { satici: { vkn: '10000000146' } } })).status === 400);
+    ok('gecersiz satici e-postasi 400', (await R('/ayarlar', { method: 'PUT', body: { satici: { eposta: 'eposta-degil' } } })).status === 400);
+    a = await R('/ayarlar', { method: 'PUT', body: { satici: { ...SATICI, vkn: '123 456 78 90' } } });
+    ok('satici bilgileri kaydedildi (VKN bosluklu yazim kabul)', a.status === 200 && a.d.saticiEksik.length === 0 && a.d.satici.vkn === '1234567890' && a.d.acik === false, a.d);
     a = await R('/ayarlar', { method: 'PUT', body: { acik: true, kargoUcret: 150, kargoUcretsizEsik: 2000 } });
     await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('iban', 'TR00 0000 0000 0000 0000 0000 00') ON CONFLICT(anahtar) DO UPDATE SET deger = excluded.deger");
     await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('iban_sahibi', 'MDA Yazilim Test') ON CONFLICT(anahtar) DO UPDATE SET deger = excluded.deger");
@@ -233,10 +247,15 @@ async function temizle() {
         && h.d.teslimat.adres.includes('Dumlupınar') && typeof h.d.kosullar.surum === 'string' && h.d.kosullar.metin.includes('14 gün')
         && h.d.odemeYontemleri.length === 1 && h.d.odemeYontemleri[0].kod === 'HAVALE' && h.d.odemeHazir === true, h.d);
     ok('varsayilan kosullar tuketici ifadesi icermez', !/cayma|tüketici|hakem heyeti/i.test(h.d.kosullar.metin));
+    ok('kosullarin basinda satici bilgileri + yeni maddeler, jeton kalmamis', h.d.kosullar.metin.startsWith('Satıcı bilgileri')
+        && h.d.kosullar.metin.includes(SATICI.unvan) && h.d.kosullar.metin.includes(SATICI.vkn) && h.d.kosullar.metin.includes(SATICI.eposta)
+        && ['Afyonkarahisar Mahkemeleri ve İcra Daireleri', '7 iş günü', 'tutanağı', '/kvkk', 'bariz', 'ticari ya da mesleki', '7 gün içinde ödemesi satıcı hesabına ulaşmazsa kendiliğinden iptal edilir']
+            .every(x => h.d.kosullar.metin.includes(x)) && !h.d.kosullar.metin.includes('{{'), h.d.kosullar.metin.slice(0, 300));
     const teslimat = { alici: 'Ahmet Yılmaz', telefon: '0532 111 22 33', adres: 'Dumlupınar Mah. Kurtuluş Cad. No 12, Merkez, Afyonkarahisar' };
     const faturaA = { tip: 'KURUMSAL', unvan: UNVAN_A, vergiDairesi: 'Tınaztepe', vergiNo: VKN_A };
     const siparis = (x = {}) => ({ kalemler: [{ urunId: p2.id, adet: 2, fiyat: 1 }, { urunId: p1.id, adet: 1 }], teslimat, fatura: faturaA,
-        kosullarKabul: true, kosullarSurum: h.d.kosullar.surum, odemeYontemi: 'HAVALE', ...x });
+        kosullarKabul: true, ticariBeyan: true, kosullarSurum: h.d.kosullar.surum, odemeYontemi: 'HAVALE', ...x });
+    ok('ticari amac beyani onaylanmadan 400 TICARI_BEYAN', (d = await MA_('/siparisler', { body: siparis({ ticariBeyan: false }) })).status === 400 && d.d.code === 'TICARI_BEYAN', d);
     ok('kosullar onaylanmadan 400', (d = await MA_('/siparisler', { body: siparis({ kosullarKabul: false }) })).status === 400 && d.d.code === 'KOSULLAR', d);
     ok('eski kosul surumu 409 KOSULLAR_DEGISTI', (d = await MA_('/siparisler', { body: siparis({ kosullarSurum: 'eski' }) })).status === 409 && d.d.code === 'KOSULLAR_DEGISTI' && !!d.d.kosullar, d);
     ok('kart odemesi henuz yok: 400', (await MA_('/siparisler', { body: siparis({ odemeYontemi: 'KART' }) })).status === 400);
@@ -275,10 +294,12 @@ async function temizle() {
     ok('sepet ekrani fazla adedi stoga indirir + uyarir', s.d.kalemler[0].adet === 3 && s.d.sorunlar[0].sebep === 'STOK_YETERSIZ' && s.d.sorunlar[0].maksAdet === 3, s.d);
     const hB = await MB('/hazirlik');
     const sipB = (x = {}) => ({ kalemler: [{ urunId: p2.id, adet: 3 }], teslimat, fatura: { tip: 'SAHIS', unvan: 'Veli Kaya', tcKimlikNo: TCKN },
-        kosullarKabul: true, kosullarSurum: hB.d.kosullar.surum, ...x });
+        kosullarKabul: true, ticariBeyan: true, kosullarSurum: hB.d.kosullar.surum, ...x });
     const o2r = await MB('/siparisler', { body: sipB() });
     const O2 = o2r.d;
     ok('deneme hesabi (B) de siparis verebilir; sahis faturasi TC ile', o2r.status === 201 && O2.genelToplamKurus === 26999, o2r.d);
+    ok('deneme isletmede ikinci acik siparis 409 ACIK_SIPARIS_SINIRI', (d = await MB('/siparisler', { body: sipB({ kalemler: [{ urunId: p4.id, adet: 1 }] }) })).status === 409
+        && d.d.code === 'ACIK_SIPARIS_SINIRI' && /Deneme sürümünde/.test(d.d.message), d);
     ok('stok 0 -> isletme listesinde kendiliginden Tukendi', (await MA_('/urunler')).d.urunler.find(x => x.id === p2.id).stok.durum === 'TUKENDI');
     const p2r = (await R('/urunler')).d.urunler.find(x => x.id === p2.id);
     ok('root listesinde stok 0 + etkin TUKENDI', p2r.stokAdedi === 0 && p2r.etkinStok === 'TUKENDI', p2r);
@@ -287,6 +308,9 @@ async function temizle() {
     d = await MB('/siparisler/' + O2.id + '/iptal', { body: { sebep: 'Yanlış adet' } });
     ok('B iptal etti (ODEME_BEKLENIYOR) -> IPTAL', d.status === 200 && d.d.durum === 'IPTAL' && d.d.kapatan === 'ISLETME' && d.d.kapanisSebebi === 'Yanlış adet', d.d);
     ok('iptalde stok geri dondu: 0 -> 3', (await R('/urunler')).d.urunler.find(x => x.id === p2.id).stokAdedi === 3);
+    const olayIptal = await bekle(async () => (await query("SELECT * FROM root_olaylar WHERE tur = 'magaza_iptal' AND ref = ?", [O2.id])).rows[0]);
+    ok('isletme iptali Patron\'a bildirim (root_olaylar magaza_iptal)', !!olayIptal && olayIptal.detay.includes('işletme tarafından iptal edildi'), olayIptal);
+    ok('iptalden sonra deneme isletme yeniden siparis verebilir (limit serbest)', (await MB('/sepet', { body: { kalemler: [{ urunId: p4.id, adet: 1 }] } })).status === 200);
     ok('urun yeniden Stokta', (await MA_('/urunler')).d.urunler.find(x => x.id === p2.id).stok.durum === 'STOKTA');
     ok('iptal edilmis siparis tekrar iptal edilemez 409', (await MB('/siparisler/' + O2.id + '/iptal', { body: {} })).status === 409);
     const O3 = (await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p2.id, adet: 1 }] }) })).d;
@@ -311,6 +335,9 @@ async function temizle() {
     d = await MA_('/siparisler/' + O1.id + '/odeme-bildir', { body: { referans: 'DEKONT-77' } });
     ok('odeme bildirildi 200', d.status === 200 && !!d.d.odemeBildirildiAt && d.d.odemeReferans === 'DEKONT-77' && d.d.durum === 'ODEME_BEKLENIYOR', d.d);
     ok('odeme bildirildikten sonra otomatik iptal tarihi yok', !d.d.otomatikIptal, d.d.otomatikIptal);
+    const odemeSonrasiIptal = await MA_('/siparisler/' + O1.id + '/iptal', { body: {} });
+    ok('odeme bildirildikten sonra isletme iptal edemez (409 ODEME_BILDIRILDI)', odemeSonrasiIptal.status === 409 && odemeSonrasiIptal.d.code === 'ODEME_BILDIRILDI'
+        && odemeSonrasiIptal.d.message.includes('MDA Yazılım ile iletişime geçin'), odemeSonrasiIptal);
     ok('ikinci bildirim 409', (d = await MA_('/siparisler/' + O1.id + '/odeme-bildir', { body: {} })).status === 409 && d.d.code === 'ZATEN_BILDIRILDI', d);
     const olay2 = await bekle(async () => (await query("SELECT * FROM root_olaylar WHERE tur = 'magaza_odeme' AND ref = ?", [O1.id])).rows[0]);
     ok('root_olaylar: magaza_odeme yazildi', !!olay2 && olay2.detay.startsWith('Mağaza ödemesi bildirildi'), olay2);
@@ -377,6 +404,25 @@ async function temizle() {
     ok('sahis faturasi: TC isletmeye donmez', !JSON.stringify(d.d).includes(TCKN));
     d = await R('/siparisler/' + O1.id, { method: 'PATCH', body: { faturaKesildi: false } });
     ok('fatura isareti kaldirilabilir', d.d.faturaKesildiAt === null && d.d.faturaNo === null, d.d);
+    ok('reddedilmis siparise fatura isareti 409 FATURA_DURUM', (d = await R('/siparisler/' + O3.id, { method: 'PATCH', body: { faturaKesildi: true, faturaNo: 'X1' } })).status === 409 && d.d.code === 'FATURA_DURUM', d);
+    ok('reddedilmis siparise yalniz fatura no da 409', (await R('/siparisler/' + O3.id, { method: 'PATCH', body: { faturaNo: 'X2' } })).status === 409);
+    ok('iptal edilmis siparise fatura isareti 409', (await R('/siparisler/' + O2.id, { method: 'PATCH', body: { faturaKesildi: true } })).status === 409);
+    ok('odemesi alinmamis reddedilmis sipariste iade 409 IADE_DURUM', (d = await R('/siparisler/' + O3.id, { method: 'PATCH', body: { iadeYapildi: true } })).status === 409 && d.d.code === 'IADE_DURUM', d);
+    ok('teslim edilmis sipariste iade 409', (await R('/siparisler/' + O1.id, { method: 'PATCH', body: { iadeYapildi: true } })).status === 409);
+    const O5 = (await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p4.id, adet: 1 }] }) })).d;
+    await R('/siparisler/' + O5.id + '/durum', { body: { durum: 'ODEME_ALINDI' } });
+    await R('/siparisler/' + O5.id + '/durum', { body: { durum: 'REDDEDILDI', sebep: 'Ürün tedarik edilemedi, ödemeniz iade edilecek.' } });
+    const listeIade = async (sid) => ((await R('/siparisler?filtre=iptal')).d.siparisler.find(x => x.id === sid) || {}).iade;
+    ok('root listesi: odemesi alinmis red -> iade BEKLIYOR, odemesiz red -> null',
+        (await listeIade(O5.id)) === 'BEKLIYOR' && (await listeIade(O3.id)) === null);
+    ok('gecersiz iade tarihi 400', (await R('/siparisler/' + O5.id, { method: 'PATCH', body: { iadeYapildi: true, iadeTarihi: '2026-13-40' } })).status === 400);
+    d = await R('/siparisler/' + O5.id, { method: 'PATCH', body: { iadeYapildi: true, iadeTarihi: '2026-11-12', iadeNotu: 'EFT dekont 998877' } });
+    ok('iade yapildi (tarih + not) + gecmis', d.status === 200 && d.d.iade && d.d.iade.tarih === '2026-11-12' && d.d.iade.not === 'EFT dekont 998877'
+        && d.d.gecmis.some(x => x.olay === 'IADE'), d.d.iade);
+    ok('root listesi: iade YAPILDI', (await listeIade(O5.id)) === 'YAPILDI');
+    d = await MA_('/siparisler/' + O5.id);
+    ok('isletme iade tarihini gorur, notu gormez', !!d.d.iade && d.d.iade.tarih === '2026-11-12' && !JSON.stringify(d.d).includes('998877'), d.d.iade);
+    ok('iade isareti kaldirilabilir', (await R('/siparisler/' + O5.id, { method: 'PATCH', body: { iadeYapildi: false } })).d.iade === null);
     ok('bos PATCH 400', (await R('/siparisler/' + O1.id, { method: 'PATCH', body: {} })).status === 400);
 
     console.log('\n=== 13) Yumusak silme: siparisteki urun silinir, siparis kopyasi kalir ===');
@@ -459,9 +505,20 @@ async function temizle() {
         && d.d.kosullar.surum === a.d.kosullarSurum, d);
     a = await R('/ayarlar', { method: 'PUT', body: { satisKosullari: '' } });
     ok('bos metin -> varsayilan metne doner', a.d.kosullarVarsayilan === true && a.d.kosullarSurum === h.d.kosullar.surum, a.d);
+    ok('root: ham metin jetonlu, onizleme satici bloguyla ve jetonsuz', a.d.satisKosullari.includes('{{OTOMATIK_IPTAL}}') && a.d.kosullarOnizleme.startsWith('Satıcı bilgileri')
+        && !a.d.kosullarOnizleme.includes('{{'), a.d.kosullarOnizleme && a.d.kosullarOnizleme.slice(0, 120));
+    a = await R('/ayarlar', { method: 'PUT', body: { satici: { unvan: SATICI.unvan + ' A.Ş.' } } });
+    ok('satici bilgisi degisince kosul surumu degisir', a.d.kosullarSurum !== h.d.kosullar.surum);
+    a = await R('/ayarlar', { method: 'PUT', body: { satici: { unvan: SATICI.unvan } } });
+    ok('acikken satici alani bosaltilamaz (409)', (await R('/ayarlar', { method: 'PUT', body: { satici: { telefon: '' } } })).status === 409);
+    ok('acik: "false" yazisi kapali sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 'false' } })).d.acikAyar === false);
+    ok('acik: "evet" kapali sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 'evet' } })).d.acikAyar === false);
+    ok('acik: 1 acik sayilir', (await R('/ayarlar', { method: 'PUT', body: { acik: 1 } })).d.acik === true);
+    ok('surum eski haline dondu', (await R('/ayarlar')).d.kosullarSurum === h.d.kosullar.surum);
     ok('ayar yaniti: odeme bilgisi salt okunur doner', a.d.odeme && a.d.odeme.iban.startsWith('TR00'));
 
-    console.log('\n=== 17) Acik siparis siniri (ayni anda 5 odemesi beklenen) ===');
+    console.log('\n=== 17) Acik siparis siniri (lisansli isletme: ayni anda 5 odemesi beklenen) ===');
+    await lisansla(Bi.id);
     const hB2 = await MB('/hazirlik');
     let son;
     for (let i = 0; i < 6; i++) son = await MB('/siparisler', { body: sipB({ kalemler: [{ urunId: p4.id, adet: 1 }], kosullarSurum: hB2.d.kosullar.surum }) });
@@ -471,9 +528,10 @@ async function temizle() {
     await R('/ayarlar', { method: 'PUT', body: { acik: false } });
     d = await MB('/durum');
     ok('magaza kapali ama aktif siparisi olan isletme menude gorebilir (acik=false, aktif=5)', d.d.acik === false && d.d.aktifSiparis === 5, d.d);
-    const bekleyenB = (await MB('/siparisler')).d.find(x => x.durum === 'ODEME_BEKLENIYOR');
-    ok('magaza kapaliyken odeme bildirimi calisir', (await MB('/siparisler/' + bekleyenB.id + '/odeme-bildir', { body: {} })).status === 200);
-    ok('magaza kapaliyken iptal calisir', (await MB('/siparisler/' + bekleyenB.id + '/iptal', { body: {} })).status === 200);
+    const bekleyenlerB = (await MB('/siparisler')).d.filter(x => x.durum === 'ODEME_BEKLENIYOR');
+    ok('magaza kapaliyken odeme bildirimi calisir', (await MB('/siparisler/' + bekleyenlerB[0].id + '/odeme-bildir', { body: {} })).status === 200);
+    ok('magaza kapaliyken iptal calisir (odeme bildirilmemis siparis)', (await MB('/siparisler/' + bekleyenlerB[1].id + '/iptal', { body: {} })).status === 200);
+    ok('odeme bildirilmis siparis iptal edilemez', (await MB('/siparisler/' + bekleyenlerB[0].id + '/iptal', { body: {} })).status === 409);
     await R('/ayarlar', { method: 'PUT', body: { acik: true } });
 
     console.log('\n=== 18) Yonetici sifresi (Lisans sayfasiyla ayni kilit) ===');
@@ -481,6 +539,36 @@ async function temizle() {
     ok('sifresiz urun listesi 403 MANAGER_PIN_REQUIRED', (d = await MB('/urunler')).status === 403 && d.d.code === 'MANAGER_PIN_REQUIRED', d);
     ok('sifreli istek 200', (await MB('/urunler', { headers: { 'x-manager-pin': '246810' } })).status === 200);
     ok('/durum sifre istemez (menu cizilebilsin)', (await MB('/durum')).status === 200);
+
+    console.log('\n=== 19) Stok kilidi, ayrilmis adet, cift gonderim, isletmeye gorunen stok ===');
+    const p7 = (await R('/urunler', { body: { ad: ONEK + 'Kagit 15', fiyat: 10, kdvOrani: 20, stokAdedi: 15, yayin: 'YAYINDA' } })).d;
+    ul = await MA_('/urunler');
+    let g7 = ul.d.urunler.find(x => x.id === p7.id);
+    ok('10dan fazla stok: isletmeye "10+" ve en fazla 10 secim', g7.stok.adetMetni === '10+' && g7.maksAdet === 10 && !('stokAdedi' in g7), g7);
+    ud = await MA_('/urunler/' + p7.id);
+    ok('ayrintida da 10+ / 10', ud.d.stok.adetMetni === '10+' && ud.d.maksAdet === 10, ud.d.stok);
+    s = await MA_('/sepet', { body: { kalemler: [{ urunId: p7.id, adet: 20 }] } });
+    ok('fazla adet uyarisi kesin stogu sizdirmaz', s.d.sorunlar[0].sebep === 'STOK_YETERSIZ' && !/en fazla [0-9]+ adet/.test(s.d.sorunlar[0].mesaj) && s.d.sorunlar[0].mesaj.includes('stokta istenen kadar ürün yok') && s.d.sorunlar[0].maksAdet === 10, s.d.sorunlar);
+    const anahtar = 'test-' + require('crypto').randomUUID();
+    const ilk = await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p7.id, adet: 6 }], istekAnahtari: anahtar }) });
+    const ikinci = await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p7.id, adet: 6 }], istekAnahtari: anahtar }) });
+    ok('ayni istek anahtari: ilk 201, ikinci 200 ayni siparis (tekrar)', ilk.status === 201 && ikinci.status === 200 && ikinci.d.id === ilk.d.id && ikinci.d.tekrar === true, [ilk.status, ikinci.status, ikinci.d && ikinci.d.message]);
+    ok('cift gonderimde stok bir kez dustu (15 -> 9)', (await R('/urunler')).d.urunler.find(x => x.id === p7.id).stokAdedi === 9);
+    ok('baska isletme ayni anahtarla ayri siparis acar (anahtar isletme basina)', (d = await MB('/siparisler', { body: sipB({ kalemler: [{ urunId: p4.id, adet: 1 }], istekAnahtari: anahtar }), headers: { 'x-manager-pin': '246810' } })).status === 201 && d.d.id !== ilk.d.id, d.status);
+    ok('gecersiz istek anahtari 400', (await MA_('/siparisler', { body: siparis({ kalemler: [{ urunId: p7.id, adet: 1 }], istekAnahtari: 'kısa!' }) })).status === 400);
+    g7 = (await MA_('/urunler')).d.urunler.find(x => x.id === p7.id);
+    ok('10 ve alti kesin gosterilir (9)', g7.stok.adetMetni === '9' && g7.maksAdet === 9, g7.stok);
+    const r7 = (await R('/urunler')).d.urunler.find(x => x.id === p7.id);
+    ok('root listesinde acik siparislerde ayrilmis adet (6)', r7.acikSiparisteAyrilan === 6, r7);
+    ok('beklenen adet olmadan stok degisikligi 400 STOK_KILIDI', (d = await R('/urunler/' + p7.id, { method: 'PUT', body: { stokAdedi: 30 } })).status === 400 && d.d.code === 'STOK_KILIDI', d);
+    d = await R('/urunler/' + p7.id, { method: 'PUT', body: { stokAdedi: 30, beklenenStokAdedi: 15, ad: ONEK + 'Kagit 15 yeni' } });
+    ok('eski adetle kayit 409 STOK_DEGISTI + guncel adet; hicbir alan yazilmadi', d.status === 409 && d.d.code === 'STOK_DEGISTI' && d.d.stokAdedi === 9
+        && d.d.message.includes('Bu arada sipariş geldi') && (await R('/urunler')).d.urunler.find(x => x.id === p7.id).ad === ONEK + 'Kagit 15', d);
+    d = await R('/urunler/' + p7.id, { method: 'PUT', body: { stokAdedi: 30, beklenenStokAdedi: 9 } });
+    ok('guncel adetle kayit 200', d.status === 200 && d.d.stokAdedi === 30, d.d);
+    ok('stok degistirmeyen kayit beklenen adet istemez', (await R('/urunler/' + p7.id, { method: 'PUT', body: { kisaAciklama: 'Kısa' } })).status === 200);
+    await MA_('/siparisler/' + ilk.d.id + '/iptal', { body: {} });
+    ok('iptalde ayrilan adet geri doner (30 + 6)', (await R('/urunler')).d.urunler.find(x => x.id === p7.id).stokAdedi === 36);
 
     kapat();
     await uyu(400);

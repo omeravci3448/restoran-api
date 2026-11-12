@@ -54,11 +54,15 @@ exports.siparisGuncelle = sar(async (req, res) => {
 async function ayarYaniti() {
     const a = await MA.oku();
     return {
-        acik: a.acik,
+        acik: a.acik,                          // isletmelere gorunen durum (satici bilgisi eksikse kapali)
+        acikAyar: a.acikAyar,                  // root'un isaretledigi durum
+        satici: a.satici,
+        saticiEksik: a.saticiEksik,
         kargoUcretKurus: a.kargoUcretKurus,
         kargoEsikKurus: a.kargoEsikKurus,
         otomatikIptalGun: a.otomatikIptalGun,
-        satisKosullari: a.kosullarMetni,
+        satisKosullari: a.kosullarHam,          // duzenlenen govde (jetonlu); satici bilgisi ayrica eklenir
+        kosullarOnizleme: a.kosullarMetni,      // isletmenin gordugu ve onayladigi tam metin
         kosullarVarsayilan: a.kosullarVarsayilan,
         kosullarSurum: a.kosullarSurum,
         varsayilanKosullar: MA.VARSAYILAN_KOSULLAR,

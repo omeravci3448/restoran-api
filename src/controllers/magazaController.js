@@ -92,8 +92,9 @@ exports.hazirlik = sar(async (req, res) => {
 });
 
 exports.siparisOlustur = sar(async (req, res) => {
-    const id = await MS.siparisOlustur({ tenantId: req.user.tenantId, kullanici: kullanici(req), govde: req.body });
-    res.status(201).json(await MS.isletmeAyrinti(id, req.user.tenantId));
+    // Ayni istek anahtariyla ikinci gonderim (cift tiklama, ag tekrari): yeni siparis acilmaz, ilk siparis 200 ile doner
+    const r = await MS.siparisOlustur({ tenantId: req.user.tenantId, kullanici: kullanici(req), govde: req.body });
+    res.status(r.tekrar ? 200 : 201).json({ ...(await MS.isletmeAyrinti(r.id, req.user.tenantId)), tekrar: !!r.tekrar });
 });
 
 exports.siparisler = sar(async (req, res) => {

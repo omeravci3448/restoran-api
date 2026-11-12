@@ -24,7 +24,10 @@ const AD = { A: 'Magaza Oto Lokanta', B: 'Magaza Oto Kafe', C: 'Magaza Oto Pasta
 const EPOSTA = { A: 'oto-a@ornek.test', B: 'oto-b@ornek.test', C: 'oto-c@ornek.test' };
 const ONEK = 'MGOTO ';
 const AYARLAR = ['magaza_acik', 'magaza_kargo_ucret_kurus', 'magaza_kargo_esik_kurus', 'magaza_satis_kosullari',
-    'magaza_otomatik_iptal_gun', 'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta'];
+    'magaza_otomatik_iptal_gun', 'iban', 'iban_sahibi', 'banka_adi', 'odeme_aciklama', 'bildirim_eposta',
+    'magaza_satici_unvan', 'magaza_satici_adres', 'magaza_satici_vergi_dairesi', 'magaza_satici_vkn', 'magaza_satici_telefon', 'magaza_satici_eposta'];
+const SATICI = { unvan: 'MDA Yazılım Oto Test', adres: 'Örnek Mah. Test Cad. No 1, Merkez, Afyonkarahisar', vergiDairesi: 'Tınaztepe',
+    vkn: '1234567890', telefon: '0272 000 00 00', eposta: 'oto-satici@ornek.test' };
 
 let pass = 0, fail = 0;
 const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
@@ -81,7 +84,7 @@ async function temizle() {
             await query('DELETE FROM magaza_siparisler WHERE id = ?', [s.id]);
         }
         await query('DELETE FROM root_olaylar WHERE tenant_id = ?', [r.id]).catch(() => {});
-        for (const tb of ['tables', 'license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari', 'users'])
+        for (const tb of ['tables', 'lisans_odemeleri', 'license_cache', 'islem_gunlugu', 'aktivasyon_jetonlari', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
@@ -120,20 +123,27 @@ const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString();
     };
     const A = await ac('A'), B = await ac('B'), C = await ac('C');
     ok('uc isletme acildi', !!(A.token && B.token && C.token));
+    // Lisansli isletme (onayli ucretli odeme): ayni anda en cok 5 odemesi beklenen siparis
+    for (const x of [A, B, C]) {
+        await query("INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum) VALUES (?, ?, 'TIER_1_5', '[]', 1000, 'onaylandi')",
+            [require('crypto').randomUUID(), x.id]);
+    }
     await query("UPDATE tenants SET owner_email = 'pasta@ornek.local' WHERE id = ?", [C.id]);   // gecersiz alici
     const R = (yol, o = {}) => js('/api/root/magaza' + yol, { token: ROOT, ...o });
     const M = (tok) => (yol, o = {}) => js('/api/magaza' + yol, { token: tok, ...o });
     await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('iban', 'TR00 0000 0000 0000 0000 0000 00') ON CONFLICT(anahtar) DO UPDATE SET deger = excluded.deger");
     await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'magaza_otomatik_iptal_gun'");
-    const a = await R('/ayarlar', { method: 'PUT', body: { acik: true, kargoUcret: 0, kargoUcretsizEsik: 0 } });
+    const a = await R('/ayarlar', { method: 'PUT', body: { satici: SATICI, acik: true, kargoUcret: 0, kargoUcretsizEsik: 0 } });
     ok('varsayilan otomatik iptal suresi 7 gun', a.status === 200 && a.d.otomatikIptalGun === 7, a.d && a.d.otomatikIptalGun);
     const P1 = (await R('/urunler', { body: { ad: ONEK + 'Stoklu Rulo', fiyat: 100, kdvOrani: 20, stokAdedi: 10, yayin: 'YAYINDA' } })).d;
     const P2 = (await R('/urunler', { body: { ad: ONEK + 'Yazici', fiyat: 50, kdvOrani: 20, yayin: 'YAYINDA' } })).d;
     ok('urunler', !!(P1.id && P2.id));
     const stok = async () => (await query('SELECT stok_adedi FROM magaza_urunler WHERE id = ?', [P1.id])).rows[0].stok_adedi;
-    const surum = (await M(A.token)('/hazirlik')).d.kosullar.surum;
+    let surum = (await M(A.token)('/hazirlik')).d.kosullar.surum;
+    // Otomatik iptal suresi kosul metnine girer: sure degisince surum degisir, isletme yeni metni onaylar
+    const surumYenile = async () => { surum = (await M(A.token)('/hazirlik')).d.kosullar.surum; };
     const siparis = async (tok, kalemler) => (await M(tok)('/siparisler', { body: {
-        kalemler, kosullarKabul: true, kosullarSurum: surum,
+        kalemler, kosullarKabul: true, ticariBeyan: true, kosullarSurum: surum,
         teslimat: { alici: 'Ahmet Yılmaz', telefon: '0532 111 22 33', adres: 'Dumlupınar Mah. Kurtuluş Cad. No 12, Merkez, Afyonkarahisar' },
         fatura: { tip: 'KURUMSAL', unvan: 'Test Gıda Ltd. Şti.', vergiDairesi: 'Tınaztepe', vergiNo: '1234567890' } } })).d;
     const D = (id, govde) => R('/siparisler/' + id + '/durum', { body: govde });
@@ -186,51 +196,90 @@ const gunOnce = (n) => new Date(Date.now() - n * 86400000).toISOString();
     const dogrudan = await E.durumBildir('yok-boyle-siparis', 'ODEME_ALINDI');
     ok('olmayan siparis icin durumBildir hata firlatmaz', dogrudan && dogrudan.gonderildi === false && dogrudan.sebep === 'SIPARIS_YOK', dogrudan);
 
-    console.log('\n=== 3) Odenmeyen siparisin otomatik iptali ===');
+    console.log('\n=== 3) Odenmeyen siparisin otomatik iptali (siparise yazilan tarihle) ===');
     const O4 = await siparis(B.token, [{ urunId: P1.id, adet: 3 }]);
     const O5 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
     const O6 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
     ok('stok 8 -> 3 (O4: 3, O5: 1, O6: 1)', await stok() === 3, await stok());
-    ok('odeme bildirilmemis siparis ayrintisinda otomatik iptal tarihi (7 gun)', (d = await M(B.token)('/siparisler/' + O6.id)).d.otomatikIptal
-        && d.d.otomatikIptal.gun === 7 && Math.abs(new Date(d.d.otomatikIptal.tarih) - (new Date(d.d.createdAt).getTime() + 7 * 86400000)) < 1000, d.d.otomatikIptal);
+    const k6 = (await query('SELECT created_at, otomatik_iptal_at, otomatik_iptal_gun FROM magaza_siparisler WHERE id = ?', [O6.id])).rows[0];
+    ok('olusurken otomatik iptal ani yazildi (olusma + 7 gun)', k6.otomatik_iptal_gun === 7
+        && Date.parse(k6.otomatik_iptal_at) - Date.parse(k6.created_at) === 7 * 86400000, k6);
+    d = await M(B.token)('/siparisler/' + O6.id);
+    ok('isletme ayrintisinda ayni tarih', !!d.d.otomatikIptal && d.d.otomatikIptal.gun === 7 && d.d.otomatikIptal.tarih === k6.otomatik_iptal_at, d.d.otomatikIptal);
     await M(B.token)('/siparisler/' + O5.id + '/odeme-bildir', { body: { referans: 'DEKONT-1' } });
-    ok('odeme bildirilmis sipariste otomatik iptal tarihi yok', !(await M(B.token)('/siparisler/' + O5.id)).d.otomatikIptal);
-    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id IN (?, ?)', [gunOnce(8), O4.id, O5.id]);
+    ok('odeme bildirilmis sipariste otomatik iptal tarihi gosterilmez', !(await M(B.token)('/siparisler/' + O5.id)).d.otomatikIptal);
+    await query('UPDATE magaza_siparisler SET otomatik_iptal_at = ? WHERE id IN (?, ?)', [gunOnce(1), O4.id, O5.id]);
     sayi = gelen.length;
     let z = await Z.otomatikIptal();
-    ok('8 gunluk, odeme bildirilmemis O4 iptal; odeme bildirilmis O5 ve yeni O6 dokunulmadi',
-        !z.kapali && z.iptal.length === 1 && z.iptal[0] === O4.id, z);
+    ok('tarihi gecmis ve odeme bildirilmemis O4 iptal; odeme bildirilmis O5 ve tarihi gelmemis O6 dokunulmadi',
+        z.iptal.length === 1 && z.iptal[0] === O4.id, z);
     d = await M(B.token)('/siparisler/' + O4.id);
     ok('O4: IPTAL, kapatan SISTEM, sebep', d.d.durum === 'IPTAL' && d.d.kapatan === 'SISTEM'
         && d.d.kapanisSebebi === 'Ödeme 7 gün içinde ulaşmadığı için sipariş iptal edildi.' && !!d.d.kapanisAt, d.d);
     ok('stok geri dondu: 3 -> 6', await stok() === 6, await stok());
     ok('O5 hala odeme bekliyor (odeme bildirilmis)', (await M(B.token)('/siparisler/' + O5.id)).d.durum === 'ODEME_BEKLENIYOR');
-    ok('O6 hala odeme bekliyor (7 gun dolmadi)', (await M(B.token)('/siparisler/' + O6.id)).d.durum === 'ODEME_BEKLENIYOR');
+    ok('O6 hala odeme bekliyor (tarihi gelmedi)', (await M(B.token)('/siparisler/' + O6.id)).d.durum === 'ODEME_BEKLENIYOR');
     d = await R('/siparisler/' + O4.id);
     ok('gecmise yazildi (IPTAL, SISTEM)', d.d.gecmis.some(x => x.olay === 'IPTAL' && x.kim === 'SISTEM' && x.aciklama.startsWith('Ödeme 7 gün')), d.d.gecmis);
     m = posta(EPOSTA.B, O4.noMetin + ' iptal edildi');
     ok('otomatik iptal e-postasi: sebep', !!m && m.text.includes('Sebep: Ödeme 7 gün içinde ulaşmadığı için sipariş iptal edildi.') && m.html.includes(AD.B), gelen.slice(sayi).map(x => x.subject));
     z = await Z.otomatikIptal();
     ok('ikinci tarama: iptal yok, cift stok iadesi yok', z.iptal.length === 0 && await stok() === 6, [z, await stok()]);
+    const surum7 = surum;
     ok('ayar 0 kabul edilir', (await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 0 } })).d.otomatikIptalGun === 0);
-    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id = ?', [gunOnce(30), O6.id]);
-    z = await Z.otomatikIptal();
-    ok('0 = kapali: 30 gunluk siparis bile iptal edilmedi', z.kapali === true && (await M(B.token)('/siparisler/' + O6.id)).d.durum === 'ODEME_BEKLENIYOR', z);
-    ok('kapaliyken ayrintida otomatik iptal tarihi yok', !(await M(B.token)('/siparisler/' + O6.id)).d.otomatikIptal);
+    await surumYenile();
+    ok('sure degisince kosul surumu degisir (metindeki iptal cumlesi)', surum !== surum7);
+    const O7 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
+    ok('ayar 0 iken olusan siparise otomatik iptal tarihi yazilmaz', (await query('SELECT otomatik_iptal_at FROM magaza_siparisler WHERE id = ?', [O7.id])).rows[0].otomatik_iptal_at === null
+        && !(await M(B.token)('/siparisler/' + O7.id)).d.otomatikIptal);
+    z = await Z.otomatikIptal({ simdi: new Date(Date.now() + 8 * 86400000) });
+    ok('ayar 0 olsa da eski O6 kendi tarihiyle iptal; tarihsiz O7 iptal olmaz (ayar geriye donuk uygulanmaz)',
+        z.iptal.length === 1 && z.iptal[0] === O6.id && (await M(B.token)('/siparisler/' + O7.id)).d.durum === 'ODEME_BEKLENIYOR', z);
+    ok('O6 sebebi kendi suresiyle (7 gun)', (await M(B.token)('/siparisler/' + O6.id)).d.kapanisSebebi === 'Ödeme 7 gün içinde ulaşmadığı için sipariş iptal edildi.');
     ok('gecersiz sure 400 (366, -1, 2,5, yazi)', (await Promise.all([366, -1, 2.5, 'abc'].map(v => R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: v } }))))
         .every(x => x.status === 400));
     await R('/ayarlar', { method: 'PUT', body: { otomatikIptalGun: 3 } });
-    const O7 = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
-    await query('UPDATE magaza_siparisler SET created_at = ? WHERE id = ?', [new Date(Date.now() - (3 * 86400000 - 3600000)).toISOString(), O7.id]);
+    await surumYenile();
+    const OUC = await siparis(B.token, [{ urunId: P1.id, adet: 1 }]);
+    z = await Z.otomatikIptal({ simdi: new Date(Date.now() + 2 * 86400000) });
+    ok('sure 3 gun: 2. gunde iptal yok', z.iptal.length === 0, z);
     tasiyiciModu = 'firlat';
     gunlukOnce = gunluk.length;
-    z = await Z.otomatikIptal();
-    ok('sure 3 gun: 30 gunluk O6 iptal, 3 gunu dolmamis O7 dokunulmadi', z.iptal.length === 1 && z.iptal[0] === O6.id
+    z = await Z.otomatikIptal({ simdi: new Date(Date.now() + 3 * 86400000 + 3600000) });
+    ok('sure 3 gun: 3 gun dolunca iptal; tarihsiz O7 yine dokunulmadi', z.iptal.length === 1 && z.iptal[0] === OUC.id
         && (await M(B.token)('/siparisler/' + O7.id)).d.durum === 'ODEME_BEKLENIYOR', z);
-    ok('sebep yeni sureyle', (await M(B.token)('/siparisler/' + O6.id)).d.kapanisSebebi === 'Ödeme 3 gün içinde ulaşmadığı için sipariş iptal edildi.');
+    ok('sebep siparisin kendi suresiyle (3 gun)', (await M(B.token)('/siparisler/' + OUC.id)).d.kapanisSebebi === 'Ödeme 3 gün içinde ulaşmadığı için sipariş iptal edildi.');
     ok('e-posta hatasi otomatik iptali durdurmadi + gunluge yazildi', gunluk.slice(gunlukOnce).some(x => x.includes('[magaza] e-posta gonderilemedi')));
     tasiyiciModu = 'ok';
-    ok('stok: O6 iadesi (6 - O7 1 + O6 1 = 6)', await stok() === 6, await stok());
+    ok('stok iadeleri dogru (10 - O1 2 - O5 1 - O7 1 = 6)', await stok() === 6, await stok());
+
+    console.log('\n=== 3b) Onay bekleyen odeme hatirlatmasi (Patron) ===');
+    const loglar = []; const eskiLog = console.log;
+    console.log = (...x) => { loglar.push(x.join(' ')); eskiLog.apply(console, x); };
+    await query('UPDATE magaza_siparisler SET odeme_bildirildi_at = ? WHERE id = ?', [new Date(Date.now() - 2.5 * 86400000).toISOString(), O5.id]);
+    let hz = await Z.hatirlatmalar();
+    ok('2. gun: bir hatirlatma (asama 2)', hz.gonderilen.length === 1 && hz.gonderilen[0].id === O5.id && hz.gonderilen[0].asama === 2, hz);
+    const olayH = (await query("SELECT * FROM root_olaylar WHERE tur = 'magaza_hatirlatma' AND ref = ?", [O5.id + ':2'])).rows[0];
+    ok('root_olaylar magaza_hatirlatma yazildi', !!olayH && olayH.detay.includes('2 gündür onay bekliyor'), olayH);
+    ok('Patron\'a e-posta denendi (rootaBildir)', !!await bekle(() => loglar.find(x => x.includes('[email/DEV]') && x.includes('onay bekliyor'))));
+    hz = await Z.hatirlatmalar();
+    ok('ayni gun ikinci hatirlatma yok', hz.gonderilen.length === 0, hz);
+    hz = await Z.hatirlatmalar({ simdi: new Date(Date.now() + 0.6 * 86400000) });
+    ok('3. gune girdi ama son hatirlatmadan 24 saat gecmedi: yok (gunde en cok bir)', hz.gonderilen.length === 0, hz);
+    hz = await Z.hatirlatmalar({ simdi: new Date(Date.now() + 1.1 * 86400000) });
+    ok('3. gun: bir kez daha (asama 3)', hz.gonderilen.length === 1 && hz.gonderilen[0].id === O5.id && hz.gonderilen[0].asama === 3, hz);
+    hz = await Z.hatirlatmalar({ simdi: new Date(Date.now() + 6 * 86400000) });
+    ok('ucuncu hatirlatma yok', hz.gonderilen.length === 0, hz);
+    const OHT = await siparis(B.token, [{ urunId: P2.id, adet: 1 }]);
+    await M(B.token)('/siparisler/' + OHT.id + '/odeme-bildir', { body: {} });
+    await query('UPDATE magaza_siparisler SET odeme_bildirildi_at = ? WHERE id = ?', [new Date(Date.now() - 3.5 * 86400000).toISOString(), OHT.id]);
+    hz = await Z.hatirlatmalar();
+    ok('gecikmis tarama: hic hatirlatilmamis 3,5 gunluk sipariste yalniz bir hatirlatma (asama 3)',
+        hz.gonderilen.length === 1 && hz.gonderilen[0].id === OHT.id && hz.gonderilen[0].asama === 3, hz);
+    await D(OHT.id, { durum: 'ODEME_ALINDI' });
+    hz = await Z.hatirlatmalar({ simdi: new Date(Date.now() + 10 * 86400000) });
+    ok('onaylanan sipariste hatirlatma yok', !hz.gonderilen.some(x => x.id === OHT.id), hz);
+    console.log = eskiLog;
 
     console.log('\n=== 4) Lisansi salt-okunur isletmede magaza uclari acik ===');
     // Karar (D1, 2026-11-12): suresi dolmus lisansta magazada YENI siparis ve sepet yok, urun listesi de kapali;
