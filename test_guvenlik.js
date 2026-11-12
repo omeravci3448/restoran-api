@@ -2,6 +2,8 @@
 //   Y1  destek yasaklari harf varyanti, mutlak istek satiri ve sondaki / ile atlanamaz (rota duzeyinde yasak +
 //       yol normallestirme); dusuk 1: salt-okunurda "GET /API/magaza" kisiti atlanamaz.
 //   O3  oturumu acan root pasif ya da silinmisse destek oturumu calismaz ve kapanir.
+//   O4  destek oturumunda ticari beyan ve yukumluluk yasak (magaza siparisi / odeme bildirimi, ucretli plaka talebi /
+//       plaka odeme bildirimi, lisans "odemeyi yaptim"); teklif, lisans talebi ve hediye plaka serbest.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -11,6 +13,20 @@ const jwt = require('jsonwebtoken');
 const { spawn } = require('child_process');
 const { v4: uuid } = require('uuid');
 const { query, initDb } = require('./src/config/db');
+const zlib = require('zlib');
+const fsx = require('fs');
+const pathx = require('path');
+const { UPLOADS_DIR } = require('./src/services/imageService');
+// Plaka talebi logo ister: kucuk gecerli PNG
+const CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (b) => { let c = 0xFFFFFFFF; for (const x of b) c = CRC[(c ^ x) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+const pngParca = (t, v) => { const u = Buffer.alloc(4); u.writeUInt32BE(v.length); const tv = Buffer.concat([Buffer.from(t), v]); const c = Buffer.alloc(4); c.writeUInt32BE(crc32(tv)); return Buffer.concat([u, tv, c]); };
+function png(gen, yuk) {
+    const ham = Buffer.alloc((gen * 4 + 1) * yuk, 200);
+    for (let y = 0; y < yuk; y++) ham[y * (gen * 4 + 1)] = 0;
+    const ih = Buffer.alloc(13); ih.writeUInt32BE(gen, 0); ih.writeUInt32BE(yuk, 4); ih[8] = 8; ih[9] = 6;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), pngParca('IHDR', ih), pngParca('IDAT', zlib.deflateSync(ham)), pngParca('IEND', Buffer.alloc(0))]);
+}
 
 const PORT = 46251, TABAN = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = 'guvenlik-test-jwt';
@@ -21,6 +37,8 @@ let pass = 0, fail = 0;
 const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
     : (fail++, console.log('  FAIL ' + n + (e !== undefined ? ' :: ' + JSON.stringify(e).slice(0, 400) : ''))); };
 const uyu = (ms) => new Promise(r => setTimeout(r, ms));
+const KOD_TABAN = Math.floor(Math.random() * 9999);
+let kodSayac = 0;
 
 async function js(yol, { token, body, method, headers } = {}) {
     const r = await fetch(TABAN + yol, { method: method || (body ? 'POST' : 'GET'),
@@ -47,7 +65,7 @@ function hamIstek(satir, { token, govde } = {}) {
 async function kiraciKur({ ad, tier = 'TIER_6_10', moduller = ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON'], bitis, kayitGun = -200 }) {
     const id = uuid();
     const slug = 'gvn-' + crypto.randomBytes(4).toString('hex');
-    const kod = String(80000 + Math.floor(Math.random() * 9999));
+    const kod = String(80000 + (KOD_TABAN + kodSayac++) % 9999);   // ayni kosuda tekil (rastgele kod cakisiyordu)
     await query(
         `INSERT INTO tenants (id, slug, business_code, business_name, owner_email, phone, address, license_tier, license_modules,
                               license_end_date, is_active, created_at)
@@ -81,8 +99,9 @@ async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
         for (const tb of ['destek_oturumlari', 'islem_gunlugu', 'yonetim_gunlugu', 'lisans_odemeleri', 'license_cache', 'categories', 'tables',
-            'push_subscriptions', 'gecis_haklari', 'users'])
+            'push_subscriptions', 'gecis_haklari', 'plaka_talepleri', 'root_olaylar', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
+        fsx.rmSync(pathx.join(UPLOADS_DIR, r.id), { recursive: true, force: true });
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
     }
     await query(`DELETE FROM yonetim_gunlugu WHERE root_id IN (SELECT id FROM root_users WHERE email LIKE '${EPOSTA_ON}%')`).catch(() => {});
@@ -124,7 +143,9 @@ async function temizle() {
     ok('personel eklenmedi', (await query("SELECT COUNT(*) AS n FROM users WHERE tenant_id = ? AND email LIKE 'gvn-x%'", [A.id])).rows[0].n === 0);
     ok('hesap kapatma talebi yazilmadi', !(await query('SELECT closure_requested_at FROM tenants WHERE id = ?', [A.id])).rows[0].closure_requested_at);
     ok('izinli yazma calisir (POST /API/Categories 201)', (await js('/API/Categories', { token: DK, body: { name: 'GVN Kategori' } })).status === 201);
-    const etiket = (await query("SELECT detay FROM islem_gunlugu WHERE tenant_id = ? AND islem = 'destek_degisiklik' ORDER BY created_at DESC LIMIT 1", [A.id])).rows[0];
+    // Destek gunlugu satiri yanit bittikten sonra yazilir: kisa sure bekle
+    let etiket = null;
+    for (let i = 0; i < 20 && !etiket; i++) { etiket = (await query("SELECT detay FROM islem_gunlugu WHERE tenant_id = ? AND islem = 'destek_degisiklik' ORDER BY created_at DESC LIMIT 1", [A.id])).rows[0]; if (!etiket) await uyu(100); }
     ok('gunluk etiketi normallestirilmis yolla', etiket && /\(POST \/api\/categories\)/.test(etiket.detay), etiket);
     ok('isletme sahibi kendi hesabindan personel ekleyebilir (yasak yalniz destekte)', (await js('/api/auth/staff', { token: A.token, body: { email: `gvn-p-${A.slug}@ornek.test`, name: 'Kasa', role: 'CASHIER', password: 'kasa12345' } })).status === 201);
 
@@ -174,6 +195,33 @@ async function temizle() {
     const liste = (await js('/api/root/yonetim/destek?tenantId=' + B.id, { token: rj })).d;
     const s5 = (Array.isArray(liste) ? liste : (liste.oturumlar || [])).find((x) => x.id === d5.oturumId);
     ok('root listesi acilirken pasif root\'un acik oturumu kapanir', s5 && s5.durum === 'KAPALI' && s5.kapanisNedeni === 'ROOT_GECERSIZ', s5 || liste);
+
+    console.log('\n=== O4) Destekte ticari beyan ve yukumluluk yasak ===');
+    const C = await kiraciKur({ ad: 'Beyan' });
+    const { token: DC } = await destekJetonu(rj, C.id);
+    const beyanYasak = (x) => x.status === 403 && x.d && x.d.code === 'DESTEK_YASAK' && x.d.message === 'Bu işlem işletmenin kendi beyanını gerektirir.';
+    ok('magaza siparisi olusturma 403 + aciklama', beyanYasak(await js('/api/magaza/siparisler', { token: DC, body: { kalemler: [] } })));
+    ok('magaza odeme bildirimi 403', beyanYasak(await js('/api/magaza/siparisler/yok-boyle/odeme-bildir', { token: DC, body: {} })));
+    ok('plaka odeme bildirimi 403', beyanYasak(await js('/api/plaka/talepler/yok-boyle/odeme', { token: DC, body: {} })));
+    // Lisans: teklif ve talep serbest, "odemeyi yaptim" yasak
+    ok('lisans teklifi serbest (200)', (await js('/api/license/quote', { token: DC, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } })).status === 200);
+    const talep = await js('/api/license/purchase', { token: DC, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL', 'GARSON'] } });
+    ok('lisans talebi serbest (201, bekleyen kayit)', talep.status === 201, talep);
+    ok('lisans "odemeyi yaptim" 403', beyanYasak(await js(`/api/license/purchases/${talep.d.id}/mark-paid`, { token: DC, body: { paymentRef: 'x' } })));
+    ok('... kayit odeme bildirilmemis kaldi', !(await query('SELECT odeme_bildirildi_at FROM lisans_odemeleri WHERE id = ?', [talep.d.id])).rows[0].odeme_bildirildi_at);
+    ok('isletme sahibi "odemeyi yaptim" diyebilir (200)', (await js(`/api/license/purchases/${talep.d.id}/mark-paid`, { token: C.token, body: { paymentRef: 'x' } })).status === 200);
+    // Plaka: ucretli talep yasak, yalniz hediye serbest
+    fsx.mkdirSync(pathx.join(UPLOADS_DIR, C.id), { recursive: true });
+    fsx.writeFileSync(pathx.join(UPLOADS_DIR, C.id, 'logo.png'), png(700, 240));
+    await query('UPDATE tenants SET logo_url = ? WHERE id = ?', [`/uploads/${C.id}/logo.png`, C.id]);
+    const m1 = await js('/api/tables', { token: C.token, body: { code: 'G1', name: 'Masa G1' } });
+    const plakaGovde = { tableIds: [m1.d && m1.d.id], aliciAd: 'Test Alici', telefon: '05320000000', adres: 'Test Mahallesi Deneme Sokak No 1' };
+    await query('UPDATE tenants SET plaka_hediye_hakki = 0 WHERE id = ?', [C.id]);
+    ok('ucretli plaka talebi 403 (hediye hakki yok)', beyanYasak(await js('/api/plaka/talepler', { token: DC, body: plakaGovde })));
+    ok('... talep acilmadi', (await query('SELECT COUNT(*) AS n FROM plaka_talepleri WHERE tenant_id = ?', [C.id])).rows[0].n === 0);
+    await query('UPDATE tenants SET plaka_hediye_hakki = 1 WHERE id = ?', [C.id]);
+    const hediye = await js('/api/plaka/talepler', { token: DC, body: plakaGovde });
+    ok('yalniz hediye plakalik talep destekte serbest (201)', hediye.status === 201, hediye);
 
     // --- SONRAKI BOLUMLER ---
 

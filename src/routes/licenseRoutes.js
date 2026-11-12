@@ -25,7 +25,9 @@ const mgr = [protect, requireRole('OWNER', 'MANAGER'), requireManagerPin];
 // ManagerGate'i gecmeden once cizilebilmeli.
 router.get('/yenileme-kanali', protect, ctrl.yenilemeKanali);
 router.post('/purchase', ...mgr, ctrl.purchase);
-router.post('/purchases/:id/mark-paid', ...mgr, ctrl.markPaid);
+// "Odemeyi yaptim" isletmenin kendi beyani: destek oturumunda 403 (guvenlik incelemesi O4). Teklif ve talep serbest.
+router.post('/purchases/:id/mark-paid', protect, require('../services/destekOturumu').destekYasak(require('../services/destekOturumu').BEYAN_MESAJI),
+    requireRole('OWNER', 'MANAGER'), requireManagerPin, ctrl.markPaid);
 router.post('/purchases/:id/cancel', ...mgr, ctrl.cancelPurchase); // bekleyen bildirimi musteri iptal eder (secimi degistirmek icin)
 router.get('/purchases', ...mgr, ctrl.purchases);
 router.get('/purchases/:id', ...mgr, ctrl.purchaseStatus);

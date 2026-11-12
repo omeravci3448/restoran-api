@@ -11,6 +11,7 @@ router.get('/talepler', ctrl.liste);
 // Talep, iptal ve "odemeyi yaptim": lisans satin almadaki gibi yonetici sifresi (ayarlanmissa) istenir
 router.post('/talepler', requireManagerPin, ctrl.olustur);
 router.post('/talepler/:id/iptal', requireManagerPin, ctrl.iptal);
-router.post('/talepler/:id/odeme', requireManagerPin, ctrl.odemeYaptim);
+// Destek oturumunda plaka odeme bildirimi yok (isletmenin kendi beyani; ucretli talep plakaController.olustur'da)
+router.post('/talepler/:id/odeme', require('../services/destekOturumu').destekYasak(require('../services/destekOturumu').BEYAN_MESAJI), requireManagerPin, ctrl.odemeYaptim);
 
 module.exports = router;

@@ -151,6 +151,12 @@ exports.olustur = async (req, res) => {
             const hd = await H.hediyeDurumu(t.id);
             const kalan = hd.durum === 'VAR' ? hd.adet : 0;
             const d = H.dagit(masalar.length, kalan, ay);
+            // Destek oturumunda ucretli plaka talebi acilmaz: odeme yukumlulugu isletmenin kendi beyani (O4).
+            // Yalniz hediye plakalik talep serbest.
+            if (d.ucretli > 0 && req.user && req.user.destek) {
+                const D = require('../services/destekOturumu');
+                throw hata(403, 'DESTEK_YASAK', D.BEYAN_MESAJI);
+            }
             if (d.ucretli > 0 && !d.ucretliAcik) {
                 throw hata(409, 'UCRETLI_KAPALI', kalan > 0
                     ? `Hediye hakkınız ${kalan} plaka. Fazlası ücretli plaka olur; ücretli plaka için bizimle iletişime geçin.`

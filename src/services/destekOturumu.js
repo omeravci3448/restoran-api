@@ -158,6 +158,10 @@ async function kimlik(payload) {
 // normallestirilmis yolla (istekYolu.normalYol: buyuk/kucuk harf, mutlak istek satiri, sondaki /).
 const GIRIS_MESAJI = 'Destek oturumunda giriş bilgileri ve personel hesapları değiştirilemez (şifre, e-posta, yönetici şifresi, '
     + 'personel ekleme, düzenleme ya da silme). Bu işlemleri işletme sahibi kendi hesabından yapar.';
+// Ticari beyan ve yukumluluk (guvenlik incelemesi O4): magaza siparisi ve odeme bildirimi, ucretli plaka talebi ve
+// plaka odeme bildirimi, lisans "odemeyi yaptim". Serbest: lisans teklifi, lisans talebi (bekleyen kayit, baglayici
+// degil), SofraMix / pazaryeri baglanti ayari.
+const BEYAN_MESAJI = 'Bu işlem işletmenin kendi beyanını gerektirir.';
 const KAPATMA_MESAJI = 'Destek oturumunda hesap kapatma talebi gönderilemez. Bu işlemi işletme sahibi kendi hesabından yapar.';
 const BILDIRIM_MESAJI = 'Destek oturumunda telefon bildirimi açılamaz.';
 const YASAKLAR = [
@@ -278,5 +282,5 @@ async function liste({ durum, tenantId, limit } = {}) {
 
 module.exports = {
     DESTEK_ADI, JETON_OMRU_SN, ac, girisJetonu, kimlik, yasakMi, istekKaydi, pinAtlandi, kapat, liste, bicimle,
-    suresiDolanlariKapat, rootuGecersizleriKapat, etiket, NEDEN_AD, destekYasak, GIRIS_MESAJI, KAPATMA_MESAJI, BILDIRIM_MESAJI,
+    suresiDolanlariKapat, rootuGecersizleriKapat, etiket, NEDEN_AD, destekYasak, GIRIS_MESAJI, KAPATMA_MESAJI, BILDIRIM_MESAJI, BEYAN_MESAJI,
 };

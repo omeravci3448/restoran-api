@@ -23,6 +23,8 @@ let pass = 0, fail = 0;
 const ok = (n, c, e) => { c ? (pass++, console.log('  OK  ' + n))
     : (fail++, console.log('  FAIL ' + n + (e !== undefined ? ' :: ' + JSON.stringify(e).slice(0, 400) : ''))); };
 const uyu = (ms) => new Promise(r => setTimeout(r, ms));
+const KOD_TABAN = Math.floor(Math.random() * 9999);
+let kodSayac = 0;
 const ayniKume = (a, b) => Array.isArray(a) && a.length === b.length && b.every((x) => a.includes(x));
 
 async function js(yol, { token, body, method, headers } = {}) {
@@ -38,7 +40,7 @@ const sqlTarih = (gun) => new Date(Date.now() + gun * GUN).toISOString().replace
 async function kiraciKur({ ad, tier, moduller, bitisGun, kayitGun = -200, kvkk = false }) {
     const id = uuid();
     const slug = 'ehk-' + crypto.randomBytes(4).toString('hex');
-    const kod = String(70000 + Math.floor(Math.random() * 9999));
+    const kod = String(70000 + (KOD_TABAN + kodSayac++) % 9999);   // ayni kosuda tekil (rastgele kod cakisiyordu)
     await query(
         `INSERT INTO tenants (id, slug, business_code, business_name, owner_email, phone, address, license_tier, license_modules,
                               license_end_date, is_active, created_at, kvkk_consent_at)
