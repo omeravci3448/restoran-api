@@ -29,7 +29,7 @@ async function js(yol, { token, body, method, headers } = {}) {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(headers || {}) },
         body: body ? JSON.stringify(body) : undefined });
     let d = null; try { d = await r.json(); } catch (_) { d = null; }
-    return { status: r.status, d };
+    return { status: r.status, d, h: r.headers };
 }
 
 const PIN = '482913';
@@ -162,9 +162,11 @@ async function temizle() {
     const ay = await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { deneme_gun: 10 } });
     const dg1 = await js('/api/public/deneme-gun');
     ok('Sistem Ayarlari deneme suresi 10 -> uc 10 doner', ay.status === 200 && dg1.d.gun === 10, [ay.status, ay.d, dg1.d]);
+    ok('deneme gunu ucu tarayici onbellegine alinmaz (ayar degisince hemen gorunur)', dg1.h && /no-cache/.test(dg1.h.get('cache-control') || ''), dg1.h && dg1.h.get('cache-control'));
+    // Eski hale: once uc (sunucudaki ayar onbellegi tazelensin), sonra satir testten onceki gibi (yoksa silinir)
+    await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { deneme_gun: eskiDg ? Number(eskiDg.deger) : 7 } });
     if (eskiDg) await query("UPDATE sistem_ayarlari SET deger = ? WHERE anahtar = 'deneme_gun'", [eskiDg.deger]);
     else await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'deneme_gun'");
-    await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { deneme_gun: eskiDg ? Number(eskiDg.deger) : 7 } });
     const urun = await js('/api/root/magaza/urunler', { token: rj, body: { ad: 'ODZ Test Yazıcı', fiyatKurus: 100000, kdvOrani: 20, durum: 'TASLAK' } });
     await uyu(300);
     const yg = (await query("SELECT islem, ozet, hedef_tur, hedef_id FROM yonetim_gunlugu WHERE root_id = ? AND islem = 'magaza' ORDER BY id DESC LIMIT 5", [rootId])).rows;

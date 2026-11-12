@@ -156,19 +156,20 @@ exports.placeOrder = async (req, res) => {
 const waiterCtrl = require('./waiterController');
 exports.callWaiter = waiterCtrl.publicCall;
 
-// Kisa karekod cozumu: /q/<KOD> -> { slug, token }. Yalniz aktif masa + aktif isletme; degilse 404.
-// IP basina sinir: 6 haneli kod uzayi kaba kuvvetle taranmasin (services/kisaKod.js).
-// Oran siniri yalniz BOS denemeleri sayar (services/kisaKod.js); suren istek sayaci beklemeden ONCE artar.
-// Kod bulunursa (aktif ya da silinmis masanin plakasi) bos deneme sayilmaz.
 // Deneme suresi (gun): tanitim, kayit ve giris sayfalarindaki "N gun ucretsiz" metinleri root Sistem Ayarlari'ndan
-// okur (karar 2026-11-12). Ayar yoksa 7 (DENEME_GUN).
+// okur (karar 2026-11-12). Ayar yoksa 7 (DENEME_GUN). Tarayici onbellege almaz: ayar degisince sayfalar hemen
+// yeni sureyi gosterir (uc hafif; sayfa basina bir istek).
 exports.denemeGun = async (_req, res) => {
     let gun = 7;
     try { gun = await require('../services/yonetimAyar').denemeGunOku(); } catch (_) { gun = Number(process.env.DENEME_GUN || 7); }
-    res.set('Cache-Control', 'public, max-age=300');
+    res.set('Cache-Control', 'no-cache');
     res.json({ gun });
 };
 
+// Kisa karekod cozumu: /q/<KOD> -> { slug, token }. Yalniz aktif masa + aktif isletme; degilse 404.
+// IP basina sinir: 8 haneli kod uzayi kaba kuvvetle taranmasin (services/kisaKod.js).
+// Oran siniri yalniz BOS denemeleri sayar (services/kisaKod.js); suren istek sayaci beklemeden ONCE artar.
+// Kod bulunursa (aktif ya da silinmis masanin plakasi) bos deneme sayilmaz.
 exports.kisaKodCoz = async (req, res) => {
     const K = require('../services/kisaKod');
     const ip = req.ip || (req.socket && req.socket.remoteAddress) || '?';
