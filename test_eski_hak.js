@@ -166,7 +166,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     console.log('\n=== 3) Avci benzeri: eski bekleyen odeme kaydi onaylanir ===');
     const rA = await rootKaydi(aOdeme);
     ok('onay penceresi: Masadan Siparis ve Maliyet ve Kar Raporu eski hak olarak korunacak, kalkacak yok',
-        ayniKume(rA.eski_hak_moduller, ['FINANSAL_RAPORLAMA', 'QR_SIPARIS']) && rA.kalkacak_moduller.length === 0 && rA.etkin_tur === 'ilk', rA);
+        ayniKume(rA.eski_hak_moduller, ['FINANSAL_RAPORLAMA', 'QR_SIPARIS']) && rA.kalkacak_moduller.length === 0 && rA.etkin_tur === null, rA);
     ok('onay 200', (await onayla(aOdeme)).status === 200);
     ok('onaydan sonra lisans: odenen + Masadan Siparis + Maliyet ve Kar Raporu (modul kaybi yok)',
         ayniKume(await modulleri(A.id), ['MENU_DIGITAL', 'GARSON', 'STOK', 'BASE', 'FINANSAL_RAPORLAMA', 'QR_SIPARIS']), await modulleri(A.id));
@@ -209,10 +209,12 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     const ay1 = (await js('/api/root/yonetim/isletme/' + Y.id, { token: rj })).d;
     ok('ayrintida kaldirildi tarihi ve kaldiran', !!ay1.lisans.eskiHak.kaldirildi && !!ay1.lisans.eskiHak.kaldiran, ay1.lisans.eskiHak);
     const qY3 = (await js('/api/license/quote', { token: Y.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d;
-    ok('kaldirildiktan sonra teklifte korunmaz', qY3.eskiHakModuller.length === 0 && !qY3.korunanModuller.includes('QR_SIPARIS'), qY3);
+    // Kaldirilan hak korunmaz: satistaki Garson artik ucretsiz kalmaz. (Gizli Masadan Siparis, deneme olmayan isletmede
+    // genel kuralla - satista olmayan mevcut modul - korunur; o hak kaldirmaya bagli degil.)
+    ok('kaldirildiktan sonra teklifte eski hak yok, Garson korunmaz', qY3.eskiHakModuller.length === 0 && !qY3.korunanModuller.includes('GARSON'), qY3);
     const alY = await js('/api/license/purchase', { token: Y.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
     await onayla(alY.d.id);
-    ok('sonraki onayda Masadan Siparis ve Garson kalkar', ayniKume(await modulleri(Y.id), ['BASE', 'MENU_DIGITAL']), await modulleri(Y.id));
+    ok('sonraki onayda Garson kalkar (eski hak korunmadi)', !(await modulleri(Y.id)).includes('GARSON') && ayniKume(await modulleri(Y.id), ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS']), await modulleri(Y.id));
     ok('olmayan isletme 404', (await js('/api/root/yonetim/isletme/yok-boyle/eski-haklar/kaldir', { token: rj, body: {} })).status === 404);
     ok('hak kaydi olmayan isletme 404', (await js(`/api/root/yonetim/isletme/${N.id}/eski-haklar/kaldir`, { token: rj, body: {} })).status === 404);
 

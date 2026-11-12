@@ -7,10 +7,10 @@ const GH = require('./gecisHaklari');
 // --- Lisans talebi: deneme -> paket -> yukseltme (Patron karari 2026-11-11) ---
 //
 // Tur talep aninda belirlenir ve teklif KILITLENIR (lisans_odemeleri'ne yazilir, onayda yeniden hesaplanmaz):
-//   ilk        ODEME GECMISI OLMAYAN isletmenin ilk alimi (karar 2026-11-12: kademe adina bakilmaz; "Kayit ol"
-//              ile acilan denemeler ve elle acilmis ama hic odeme kaydi olmayan isletmeler dahil). Odeme gecmisi =
-//              onayli ve tutari > 0 lisans odemesi ya da islenmis SofraMix provizyonu. Secim serbest. Onayda lisans
-//              ONAY GUNUNDEN baslar, 1 yil (kalan gunler eklenmez, kredi yok).
+//   ilk        DENEME SINIFINDAKI isletmenin ilk alimi (guvenlik incelemesi O1, 2026-11-12): TIER_DENEME ya da
+//              "Kayit ol" formuyla acilan kademeli deneme (yonetimOzet.isletmeSinifi; yonetim paneliyle ayni kural).
+//              Odeme kaydi olmayan ama deneme olmayan isletme (TIER_MUSTERI, root'un actigi) normal yenileme /
+//              yukseltme yapar. Secim serbest. Onayda lisans ONAY GUNUNDEN baslar, 1 yil (kalan gun yok, kredi yok).
 //   yenileme   Bitise 30 gun ya da daha az kaldiysa ya da lisans bittiyse: eski davranis, onayda 1 yil mevcut
 //              bitisin uzerine eklenir (bitmisse onay gunu + 1 yil). Secim serbest: modul cikarma ve kucuk pakete
 //              gecis YALNIZ burada. Donem icinde ayni secim de erken yenileme sayilir.
@@ -81,11 +81,21 @@ async function odemeGecmisiVar(tenantId) {
     return Number(r.rows[0].n) > 0;
 }
 
+// DENEME SINIFI (karar 2026-11-12, guvenlik incelemesi O1): "ilk alim" turu ve korumasiz onay YALNIZ deneme
+// sinifindaki isletmede: TIER_DENEME ya da kayit formu denemesi (yonetimOzet.isletmeSinifi; yonetim paneliyle ayni
+// kural, tek yer). Odeme kaydi olmayan ama deneme sinifinda olmayan isletme (TIER_MUSTERI, root'un actigi, kademeli
+// ama kaydi yok) normal yenileme / yukseltme yapar: bitisin uzerine eklenir, kredi katalog fiyatindan hesaplanir.
+// (Eskiden odeme gecmisine bakiliyordu: odeme kaydi olmayan TIER_20_PLUS ayni paketi yenileyince "ilk" sayilip kalan
+// gunlerini kaybediyordu.)
+async function denemeSinifiMi(tenantId) {
+    return (await require('./yonetimOzet').isletmeSinifi(tenantId)) === 'deneme';
+}
+
 // Onayda (ve teklif onizlemesinde) korunacak moduller. t: { id, license_tier, license_modules }
-// Odeme gecmisi yoksa koruma yok (aktif pazaryeri kanali istisnasi: MARKETPLACE). Eski musteri haklari
+// Deneme sinifinda koruma yok (aktif pazaryeri kanali istisnasi: MARKETPLACE). Eski musteri haklari
 // (services/gecisHaklari.js) her durumda korunur.
 async function korunanHesapla(t, odenen, tam) {
-    const deneme = !(await odemeGecmisiVar(t.id));
+    const deneme = await denemeSinifiMi(t.id);
     const aktifKanal = deneme ? await aktifPazaryeriKanali(t.id) : false;
     const eskiHak = await GH.aktifHak(t.id);
     return M.korunacakModuller({
@@ -123,7 +133,7 @@ async function kiraciDurumu(tenantId, simdi = new Date()) {
     const mevcutLimit = mevcutTier ? mevcutTier.masa_limiti : t.license_table_limit;
     return {
         t, tam, katalogKodlari, satista, sahip, satistaOlmayan, mevcutTier, mevcutLimit: mevcutLimit == null ? null : Number(mevcutLimit),
-        deneme: !(await odemeGecmisiVar(t.id)), tierDeneme: t.license_tier === 'TIER_DENEME',
+        deneme: await denemeSinifiMi(t.id), tierDeneme: t.license_tier === 'TIER_DENEME',
         kalanGun: kalanGunHesapla(t.license_end_date, simdi),
         // Eski musteri hakki: lisansta hala olan haklar (ucrete girmez, sepette kaldirilamaz)
         eskiHak: (await GH.aktifHak(t.id)).filter((m) => M.varMi(ham, m)),
@@ -320,5 +330,5 @@ function lisansDegisiklikleri(o, t, tam) {
 module.exports = {
     YENILEME_ESIGI_GUN, YIL_GUN, tarihOku, kalanGunHesapla, kiraciDurumu, donemTuru, donemBilgisi, mevcutPaketDegeri,
     krediHesapla, teklifHazirla, onayBitisi, lisansDegisiklikleri, TL, TARIH, tierAdi, modulAdi,
-    satistakiModuller, aktifPazaryeriKanali, korunanHesapla, onayModulleri, odemeGecmisiVar,
+    satistakiModuller, aktifPazaryeriKanali, korunanHesapla, onayModulleri, odemeGecmisiVar, denemeSinifiMi,
 };

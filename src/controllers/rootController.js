@@ -667,8 +667,8 @@ exports.lisansOdemeleri = async (req, res) => {
             ek.yeni_moduller_onizleme = onay.moduller;
             ek.lisans_degisiklikleri = LT.lisansDegisiklikleri(x, t, tam);
             ek.kalkacak_moduller = mevcut.filter((k) => !M.varMi(onay.moduller, k));
-            const gecmis = await LT.odemeGecmisiVar(x.tenant_id);
-            const etkinTur = x.tur || (!gecmis ? 'ilk' : null);
+            // Tur yazilmamis (eski) kayit: deneme sinifindaysa ilk alim, degilse mevcut bitisin uzerine (O1)
+            const etkinTur = x.tur || ((await LT.denemeSinifiMi(x.tenant_id)) ? 'ilk' : null);
             ek.etkin_tur = etkinTur;
             ek.yeni_bitis_onizleme = LT.onayBitisi({ tur: etkinTur, mevcutBitis: x.license_end_date, gun: 365 });
             // Odeme kaydi olmayan ama lisansi uzun sure gecerli isletme (elle acilmis/uzatilmis): ilk alim sayildi,
@@ -703,8 +703,9 @@ exports.lisansOdemeOnayla = async (req, res) => {
             const t = (await query('SELECT * FROM tenants WHERE id = ?', [o.tenant_id])).rows[0];
             if (!t) throw hataNesnesi(404, 'İşletme bulunamadı.');
 
-            // Tur yazilmamis (deploy oncesi) kayitta odeme gecmisi yoksa ilk alim gibi: onay gununden
-            const etkinTur = o.tur || (!(await LT.odemeGecmisiVar(t.id)) ? 'ilk' : null);
+            // Tur yazilmamis (deploy oncesi) kayit: deneme sinifindaysa ilk alim gibi (onay gununden), degilse
+            // mevcut bitisin uzerine (guvenlik incelemesi O1: odeme kaydi olmayan musteri gun kaybetmesin)
+            const etkinTur = o.tur || ((await LT.denemeSinifiMi(t.id)) ? 'ilk' : null);
             const bitis = LT.onayBitisi({ tur: etkinTur, mevcutBitis: t.license_end_date, gun });
             // Modul listesi de yaziliyor: musteri parasini odedigi modulu goremezse "aldim ama yok" der.
             // Yeni liste = odenen + korunan (satista olmayan mevcut moduller; deneme ise yalniz aktif kanal varsa

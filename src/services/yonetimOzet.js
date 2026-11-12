@@ -52,6 +52,16 @@ function sinifla(t, tierler, esikGun) {
     }
     return 'kurum';
 }
+// Isletme sinifi TEK YERDEN (genel bakis, isletme listesi, ayrinti, duyuru hedefi ve lisans talebi ayni kurali
+// kullanir): 'deneme' | 'odemeli' | 'kurum'. null: isletme yok.
+async function isletmeSinifi(tenantId) {
+    const t = (await query(
+        `SELECT t.license_tier, t.license_end_date, t.created_at, ${ODEME_ALANLARI} FROM tenants t WHERE t.id = ?`,
+        [String(tenantId || '')])).rows[0];
+    if (!t) return null;
+    return sinifla(t, await katalogTierleri(), esikGunu());
+}
+
 function esikGunu() {
     return Math.max(31, require('./yonetimAyar').denemeGun() + 7);
 }
@@ -295,6 +305,6 @@ async function isletmeAyrinti(id) {
 }
 
 module.exports = {
-    ODEME_ALANLARI, OZEL_TIER_AD, katalogTierleri, tierAdi, sinifla, esikGunu, durumu, istanbulParcalari, donemBaslangiclari,
+    ODEME_ALANLARI, OZEL_TIER_AD, katalogTierleri, tierAdi, sinifla, isletmeSinifi, esikGunu, durumu, istanbulParcalari, donemBaslangiclari,
     magazaVarMi, isletmeler, genelBakis, isletmeAyrinti, tarihCoz,
 };

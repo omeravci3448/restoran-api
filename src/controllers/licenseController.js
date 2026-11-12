@@ -173,21 +173,14 @@ async function yenilemeKanali(tenantId) {
     // Dogrudan (SofraMix disi) deneme hesabi POS icinden paket satin alir: ayni havale/EFT akisi,
     // root onayinda lisans 1 yil uzar ve kiraci "musteri"ye doner (rootController). Deneme oldugu
     // bilgisi arayuzde "Paketi Satin Al" metni ve kisa aciklama icin tasinir.
-    // Ilk alim (odeme gecmisi yok): onay gununden 1 yil. "Deneme" metni yalniz gercek denemelerde (tanitim
-    // denemesi ya da "Kayit ol" formuyla acilan); elle acilmis odeme kaydi olmayan isletmeye notr metin.
-    const ilkAlim = !(await LT.odemeGecmisiVar(tenantId));
-    if (t.license_tier === 'TIER_DENEME' || (ilkAlim && t.kvkk_consent_at)) {
+    // Ilk alim YALNIZ deneme sinifinda (TIER_DENEME ya da kayit formu denemesi; lisansTalep.denemeSinifiMi): onay
+    // gununden 1 yil. Odeme kaydi olmayan ama deneme olmayan isletme normal yenileme yapar (bitisin uzerine).
+    if (await LT.denemeSinifiMi(tenantId)) {
         return {
-            ilkAlim,
+            ilkAlim: true,
             kanal: 'yerel', deneme: true,
             mesaj: 'Deneme sürümündesiniz. Paketi satın aldığınızda lisansınız ödemenizin onaylandığı gün başlar ve '
                  + '1 yıl geçerli olur; kayıtlarınız ve ayarlarınız olduğu gibi kalır. Ödeme havale/EFT ile yapılır.',
-        };
-    }
-    if (ilkAlim) {
-        return {
-            kanal: 'yerel', ilkAlim: true,
-            mesaj: 'İlk paket alımınızda lisansınız ödemenizin onaylandığı gün başlar ve 1 yıl geçerli olur.',
         };
     }
     return { kanal: 'yerel' };
