@@ -36,7 +36,7 @@ const ISLEM_AD = {
     isletme_notu: 'İç not',
     destek_ac: 'Destek oturumu açıldı',
     destek_kapat: 'Destek oturumu kapatıldı',
-    destek_pin: 'Destek: yönetici şifresi atlandı',
+    destek_pin: 'Destek: yönetici şifresi sorulmadan atlandı',
     cihaz: 'Yönetim cihazı',
     magaza: 'Mağaza',
     diger: 'Diğer',

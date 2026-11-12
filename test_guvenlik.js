@@ -10,6 +10,7 @@
 //   D4  genel hata yakalayici: uretimde 500 yanitinda ic hata metni donmez.
 //   D6  destek satirlarinin ayrintisinda rol (OWNER) degil "MDA Destek" yazar.
 //   D7  govdeyle sorgulanan okuma uclari (musteri bul, lisans teklifi, magaza sepeti) destek gunlugune yazilmaz.
+//   D9  metinler: "yonetici sifresi sorulmadan atlandi", "Lisansiniz suresi doldu".
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -312,6 +313,20 @@ async function temizle() {
     let sonra7 = once7;
     for (let i = 0; i < 20 && sonra7 === once7; i++) { await uyu(100); sonra7 = await destekSayisi(); }
     ok('gercek degisiklik yine yazilir', sonra7 === once7 + 1, [once7, sonra7]);
+
+    console.log('\n=== D9) Metinler ===');
+    const F = await kiraciKur({ ad: 'Metin', bitis: new Date(Date.now() - 10 * GUN).toISOString() });
+    const kasaEposta = `${EPOSTA_ON}kasa-${F.slug}@ornek.test`;
+    await query('INSERT INTO users (id, tenant_id, email, password_hash, name, role, password_set_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [uuid(), F.id, kasaEposta, await bcrypt.hash('kasa1234', 4), 'Kasa', 'CASHIER', new Date().toISOString()]);
+    const kg = await js('/api/auth/login', { body: { email: kasaEposta, businessCode: F.kod, password: 'kasa1234' } });
+    ok('KAPALI girisi: "Lisansınızın süresi doldu."', kg.status === 403 && /^Lisansınızın süresi doldu\./.test(kg.d.message), kg);
+    await query('UPDATE tenants SET manager_pin = ?, license_end_date = ? WHERE id = ?', [await bcrypt.hash('9999', 4), new Date(Date.now() + 100 * GUN).toISOString(), F.id]);
+    const { token: DF } = await destekJetonu(rj, F.id);
+    await js('/api/tenant/me', { token: DF, method: 'PUT', body: {} });
+    let pinSatiri = null;
+    for (let i = 0; i < 20 && !pinSatiri; i++) { pinSatiri = (await query("SELECT ozet FROM yonetim_gunlugu WHERE tenant_id = ? AND islem = 'destek_pin'", [F.id])).rows[0]; if (!pinSatiri) await uyu(100); }
+    ok('yonetim gunlugu: "yönetici şifresi sorulmadan atlandı"', pinSatiri && /yönetici şifresi sorulmadan atlandı/.test(pinSatiri.ozet), pinSatiri);
 
     // --- SONRAKI BOLUMLER ---
 

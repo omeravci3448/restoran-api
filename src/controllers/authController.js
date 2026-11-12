@@ -251,7 +251,7 @@ exports.login = async (req, res) => {
     // Lisans KAPALI: sahip/mudur girip YALNIZ lisansi yenileyebilir; diger hesaplarin yapacagi bir sey yok.
     if (require('../services/lisansDurumu').hesapla(u.license_end_date).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
         return res.status(403).json({ code: 'LICENSE_EXPIRED',
-            message: 'Lisansın süresi doldu. İşletme sahibi ya da müdür Lisans sayfasından yenileyebilir.' });
+            message: 'Lisansınızın süresi doldu. İşletme sahibi ya da müdür Lisans sayfasından yenileyebilir.' });
     }
     // Moduler lisans: mutfak hesabi Adisyon ve Kasa (BASE) ister; garson hesabi BASE ya da GARSON (BASE yoksa
     // garson uygulamasi yalniz cagrilari gosterir). Ikisi de yoksa anlamli bir mesajla girilmez.

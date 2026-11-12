@@ -235,7 +235,7 @@ async function pinAtlandi(req) {
         const o = (await query('SELECT root_id FROM destek_oturumlari WHERE id = ?', [d.oturumId])).rows[0];
         await require('./yonetimGunlugu').kaydet({ root: o && o.root_id ? { id: o.root_id } : null }, {
             islem: 'destek_pin', tenantId: req.user.tenantId, hedefTur: 'destek_oturumu', hedefId: d.oturumId,
-            ozet: `Destek oturumunda yönetici şifresi soruldu yerine atlandı (${yolu(req)})`,
+            ozet: `Destek oturumunda yönetici şifresi sorulmadan atlandı (${yolu(req)})`,
         });
     } catch (e) { console.error('[destek] pin kaydi:', e.message); }
 }
