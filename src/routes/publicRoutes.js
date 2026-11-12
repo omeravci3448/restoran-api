@@ -9,6 +9,7 @@ router.post('/m/:tenantSlug/:qrToken/orders', ctrl.placeOrder);
 router.post('/m/:tenantSlug/:qrToken/waiter', ctrl.callWaiter);
 // Kisa karekod (plakalar ve toplu karekod PDF'i): /q/<KOD> -> menu adresi
 router.get('/q/:kod', ctrl.kisaKodCoz);
+router.get('/deneme-gun', ctrl.denemeGun);   // "N gun ucretsiz" metinleri icin (Sistem Ayarlari > deneme suresi)
 // Plaka onizlemesinin yazi tipi (baski dosyasindaki Inter ile ayni dosya). Yalniz bu klasor.
 router.use('/plaka-yazi', require('express').static(require('../services/plakaCizim').FONT_DIR, {
     maxAge: '30d', immutable: true, index: false,

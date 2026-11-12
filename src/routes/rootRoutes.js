@@ -34,7 +34,8 @@ router.post('/login', ctrl.login);
 router.post('/totp/kurulum', ctrl.totpKur);   // authenticator ilk kurulum (kisa omurlu jetonla)
 
 router.get('/me', protectRoot, ctrl.me);
-router.use('/magaza', protectRoot, require('./magazaRootRoutes'));   // MDA Yazilim magazasi: urunler, siparisler, ayarlar
+// MDA Yazilim magazasi: urunler, siparisler, ayarlar. Yazmalar icin acik yonetim gunlugu satiri (magaza dosyalarina dokunmadan)
+router.use('/magaza', protectRoot, require('../services/magazaYonetimGunlugu').araKatman, require('./magazaRootRoutes'));
 // Yonetim APK'si (parmak izi): cihaz jetonu kaydet / jetonla giris / liste / unut
 router.post('/cihaz/giris', ctrl.cihazGiris);                 // acik uc: jeton + IP sinirlayici
 router.post('/cihaz/kaydet', protectRoot, ctrl.cihazKaydet);

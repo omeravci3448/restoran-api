@@ -160,6 +160,15 @@ exports.callWaiter = waiterCtrl.publicCall;
 // IP basina sinir: 6 haneli kod uzayi kaba kuvvetle taranmasin (services/kisaKod.js).
 // Oran siniri yalniz BOS denemeleri sayar (services/kisaKod.js); suren istek sayaci beklemeden ONCE artar.
 // Kod bulunursa (aktif ya da silinmis masanin plakasi) bos deneme sayilmaz.
+// Deneme suresi (gun): tanitim, kayit ve giris sayfalarindaki "N gun ucretsiz" metinleri root Sistem Ayarlari'ndan
+// okur (karar 2026-11-12). Ayar yoksa 7 (DENEME_GUN).
+exports.denemeGun = async (_req, res) => {
+    let gun = 7;
+    try { gun = await require('../services/yonetimAyar').denemeGunOku(); } catch (_) { gun = Number(process.env.DENEME_GUN || 7); }
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({ gun });
+};
+
 exports.kisaKodCoz = async (req, res) => {
     const K = require('../services/kisaKod');
     const ip = req.ip || (req.socket && req.socket.remoteAddress) || '?';

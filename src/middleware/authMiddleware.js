@@ -43,7 +43,11 @@ async function protect(req, res, next) {
     // POS bir kasa programi; gun ortasinda kapanmasi isletmeyi satistan alikoyar.
     const ld = lisans.hesapla(u.license_end_date);
     // KAPALI: yalniz lisans yenilemesi (bkz lisansDurumu.kapalidaGecerMi). Arayuz bu kodla Lisans sayfasina doner.
-    if (ld.durum === lisans.DURUM.KAPALI && !lisans.kapalidaGecerMi(req)) {
+    // Destek oturumu (karar 2026-11-12): KAPALI isletmede okuma (GET) serbest, Patron kapanmis hesaba bakabilsin;
+    // yazma yalniz isletmenin kendisine acik uclarda (lisans + bekleyen magaza siparisi). Salt-okunurda destek de
+    // salt-okunur (asagidaki kural ayni).
+    const okumaIstegi = ['GET', 'HEAD', 'OPTIONS'].includes(String(req.method || 'GET').toUpperCase());
+    if (ld.durum === lisans.DURUM.KAPALI && !lisans.kapalidaGecerMi(req) && !(u.destek && okumaIstegi)) {
         return res.status(403).json({
             code: 'LICENSE_EXPIRED',
             message: 'Lisansınızın süresi doldu. Yenilemek için Lisans sayfasına gidin.',

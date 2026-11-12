@@ -164,7 +164,9 @@ async function ayarlariGeriYukle() {
     ok('jetonsuz 401', (await js('/api/root/yonetim/genel-bakis')).status === 401);
     const g0 = await js('/api/root/yonetim/genel-bakis', { token: rj });
     ok('root 200 + bolumler', g0.status === 200 && g0.d.sayilar && g0.d.gelir && Array.isArray(g0.d.yaklasan) && g0.d.bekleyen && Array.isArray(g0.d.sonHareketler), g0.d);
-    ok('magaza tablosu yokken magaza geliri gizli (null)', g0.d.gelir.magazaVar === false && g0.d.gelir.buAy.magaza === null);
+    // Birlesik klonda magaza tablolari var: magaza geliri bolumu acik (tutar + adet)
+    ok('magaza tablosu varken magaza geliri gorunur (tutar, adet)', g0.d.gelir.magazaVar === true && g0.d.gelir.buAy.magaza
+        && typeof g0.d.gelir.buAy.magaza.tutar === 'number' && typeof g0.d.gelir.buAy.magaza.adet === 'number', g0.d.gelir);
 
     console.log('\n=== 2) Genel bakis sayilari (fark yontemi) ===');
     const T = {};
@@ -247,7 +249,7 @@ async function ayarlariGeriYukle() {
         && d.lisans.kalanGun > 190 && d.lisans.durum === 'AKTIF' && d.lisans.sinif === 'odemeli' && d.lisans.indirimOrani === 0, d.lisans);
     ok('ayrinti: odeme gecmisi (tur, tutar, durum)', d.odemeler.length === 1 && d.odemeler[0].tutar === 1200 && d.odemeler[0].durum === 'Onaylandı' && d.odemeler[0].tur === 'İlk alım', d.odemeler);
     ok('ayrinti: plaka talepleri (3)', d.plakalar.length === 3 && d.plakalar.some((x) => x.durum_ad));
-    ok('ayrinti: magaza uc/tablo yokken gizli (null)', d.magaza === null);
+    ok('ayrinti: magaza siparisleri listesi (bu isletmede yok: bos)', Array.isArray(d.magaza) && d.magaza.length === 0, d.magaza);
     ok('ayrinti: kullanim (aktif masa 1, kullanici 1, urun 1, son 30 gunde 2 siparis; iptal ve eski sayilmaz)',
         d.kullanim.aktifMasa === 1 && d.kullanim.kullaniciSayisi === 1 && d.kullanim.urunSayisi === 1 && d.kullanim.siparis30 === 2, d.kullanim);
     ok('ayrinti: son giris (girisle yazilir)', !!d.kullanim.sonGiris, d.kullanim.sonGiris);
