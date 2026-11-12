@@ -74,11 +74,12 @@ const urunSayisi = async (orderId) => Number((await query(
 
 // GET /api/paket -> acik siparislerin HEPSI + bugun (Istanbul) kapanan/iptal edilenler (son 300) + bugun platformla
 // celiskisi ortaya cikan (eski gunde kapanmis olsa da: kartta rozet gorunsun)
+// ?acik=1 -> yalniz acik siparisler (Masalar sayfasindaki Paket Servis bolumu 15 sn'de bir ceker; bitenleri tasimaz)
 exports.liste = async (req, res) => {
     const acik = await query(
         `SELECT o.* FROM orders o WHERE o.tenant_id = ? AND ${P.paketKosulu()} AND o.status = 'OPEN'
           ORDER BY o.opened_at`, [req.user.tenantId]);
-    const biten = await query(
+    const biten = req.query.acik === '1' ? { rows: [] } : await query(
         `SELECT o.* FROM orders o
           WHERE o.tenant_id = ? AND ${P.paketKosulu()}
             AND o.status IN ('CLOSED', 'CANCELLED')

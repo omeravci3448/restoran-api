@@ -339,6 +339,13 @@ const smx = http.createServer(async (req, res) => {
     const lb = (await js('/api/paket', { token: sahipB.token })).d;
     const la = (await js('/api/paket', { token: sahip.token })).d;
     ok('listeler birbirine karismaz', lb.siparisler.length === 1 && lb.siparisler[0].id === pB.id && !la.siparisler.some(s => s.id === pB.id), lb.siparisler.map(s => s.etiket));
+    // Masalar sayfasindaki Paket Servis bolumu: ?acik=1 yalniz acik siparisleri getirir (bugun bitenler gelmez)
+    const laAcik = (await js('/api/paket?acik=1', { token: sahip.token })).d;
+    ok('?acik=1: yalniz acik siparisler, aktif sayisi tam liste ile ayni', la.siparisler.some(s => s.durum !== 'OPEN')
+        && laAcik.siparisler.length === la.siparisler.filter(s => s.durum === 'OPEN').length
+        && laAcik.siparisler.every(s => s.durum === 'OPEN') && laAcik.sayac.aktif === la.sayac.aktif && laAcik.sayac.bugun === 0,
+        [laAcik.sayac, la.sayac]);
+    ok('?acik=1: garson yine goremez (403)', (await js('/api/paket?acik=1', { token: garson.token })).status === 403);
     ok('masa siparisi paket ucundan okunmaz (404)', (await js('/api/paket/' + (await js('/api/orders', { token: kasiyer.token, body: { tableId: m1.id } })).d.id, { token: kasiyer.token })).status === 404);
 
     console.log('\n=== 10) SofraMix siparisi Paket Servis ekraninda ===');
