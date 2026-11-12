@@ -288,6 +288,7 @@ async function isletmeAyrinti(id) {
             bitis: t.license_end_date, kalanGun: d.kalanGun, durum: d.durum, lisansDurum: d.lisansDurum, acik: !!Number(t.is_active),
             menuKipi: M.menuKipiMi(moduller), sinif, masaLimiti: t.license_table_limit, indirimOrani: Number(t.discount_rate || 0),
             plakaHediyeHakki: t.plaka_hediye_hakki == null ? null : Number(t.plaka_hediye_hakki), hediye,
+            eskiHak: await require('./gecisHaklari').bilgi(t.id),   // moduler lisansa gecis oncesi haklar (null: kayit yok)
         },
         kullanim, odemeler, plakalar, magaza, notlar, destek,
     };

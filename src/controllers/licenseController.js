@@ -128,7 +128,7 @@ exports.kimlikOpsiyonel = async (req, _res, next) => {
 function teklifCevabi(tier, f) {
     return {
         currency: 'TRY', tier, modules: f.modules, eklenenBagimliliklar: f.eklenenBagimliliklar,
-        korunanModuller: f.korunanModuller || [], tableLimit: f.tableLimit,
+        korunanModuller: f.korunanModuller || [], eskiHakModuller: f.eskiHakModuller || [], tableLimit: f.tableLimit,
         subtotal: f.subtotal, discountRate: f.discountRate, discountAmount: f.discountAmount, total: f.total, breakdown: f.breakdown,
         ...(f.tur ? {
             tur: f.tur, kalanGun: f.kalanGun, krediTutari: f.krediTutari, krediKaynak: f.krediKaynak,

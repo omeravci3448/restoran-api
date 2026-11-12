@@ -77,15 +77,19 @@ function bagimlilikSaglaniyor(m, liste) {
 //    aktif pazaryeri kanali varsa MARKETPLACE korunur (yoksa SofraMix siparisleri gorunmez olur).
 //  - Korunanlar da bagimlilik kuralina uyar: QR_SIPARIS yalniz listede BASE + MENU_DIGITAL varsa, MARKETPLACE
 //    yalniz BASE varsa kalir.
+//  - ESKI MUSTERI HAKKI (karar 2026-11-12, services/gecisHaklari.js): gecis aninda deneme olmayan isletmenin eski
+//    haklari (eskiHak) odeme gecmisinden bagimsiz korunur; satistaki (gorunur) moduller de dahil. Lisansta hala
+//    olan hak korunur, bagimlilik kurali aynen. Korunan modul ucrete girmez.
 // girdi: mevcut (isletmenin bugunku listesi), odenen (alinan secim), satinAlinabilir (Set: satistaki modul
-// kodlari), deneme (bool), aktifKanal (bool). Doner: korunan kodlar (odenende olmayanlar), sirayla.
-function korunacakModuller({ mevcut, odenen, satinAlinabilir, deneme, aktifKanal }) {
+// kodlari), deneme (bool), aktifKanal (bool), eskiHak (dizi). Doner: korunan kodlar (odenende olmayanlar), sirayla.
+function korunacakModuller({ mevcut, odenen, satinAlinabilir, deneme, aktifKanal, eskiHak }) {
     const mev = modulListesi(mevcut);
     const yeni = modulListesi(odenen);
     const satista = satinAlinabilir instanceof Set ? satinAlinabilir : new Set(satinAlinabilir || []);
     let aday = deneme
         ? (aktifKanal && varMi(mev, 'MARKETPLACE') ? ['MARKETPLACE'] : [])
         : mev.filter((m) => !satista.has(m));
+    for (const m of modulListesi(eskiHak)) if (m !== 'ALL' && mev.includes(m)) aday.push(m);
     aday = Array.from(new Set(aday)).filter((m) => !yeni.includes(m));
     const korunan = [];
     let degisti = true;

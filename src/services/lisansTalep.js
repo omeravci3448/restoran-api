@@ -2,6 +2,7 @@ const { query } = require('../config/db');
 const K = require('./lisansKatalog');
 const M = require('./lisansModul');
 const { fiyatla, yuvarla, hata } = require('./lisansFiyat');
+const GH = require('./gecisHaklari');
 
 // --- Lisans talebi: deneme -> paket -> yukseltme (Patron karari 2026-11-11) ---
 //
@@ -81,20 +82,23 @@ async function odemeGecmisiVar(tenantId) {
 }
 
 // Onayda (ve teklif onizlemesinde) korunacak moduller. t: { id, license_tier, license_modules }
-// Odeme gecmisi yoksa koruma yok (aktif pazaryeri kanali istisnasi: MARKETPLACE).
+// Odeme gecmisi yoksa koruma yok (aktif pazaryeri kanali istisnasi: MARKETPLACE). Eski musteri haklari
+// (services/gecisHaklari.js) her durumda korunur.
 async function korunanHesapla(t, odenen, tam) {
     const deneme = !(await odemeGecmisiVar(t.id));
     const aktifKanal = deneme ? await aktifPazaryeriKanali(t.id) : false;
+    const eskiHak = await GH.aktifHak(t.id);
     return M.korunacakModuller({
-        mevcut: t.license_modules, odenen, satinAlinabilir: satistakiModuller(tam), deneme, aktifKanal,
+        mevcut: t.license_modules, odenen, satinAlinabilir: satistakiModuller(tam), deneme, aktifKanal, eskiHak,
     });
 }
 
-// Onayda yazilacak modul listesi: odenen (kayittaki secim) + korunan
+// Onayda yazilacak modul listesi: odenen (kayittaki secim) + korunan. eskiHak: korunanlardan eski hak olanlar.
 async function onayModulleri(o, t, tam) {
     const odenen = M.modulListesi(o.moduller);
     const korunan = await korunanHesapla(t, odenen, tam);
-    return { odenen, korunan, moduller: [...odenen, ...korunan] };
+    const hak = await GH.aktifHak(t.id);
+    return { odenen, korunan, moduller: [...odenen, ...korunan], eskiHak: korunan.filter((m) => hak.includes(m)) };
 }
 
 // Isletmenin bugunku lisansi + katalog bilgisi
@@ -121,6 +125,8 @@ async function kiraciDurumu(tenantId, simdi = new Date()) {
         t, tam, katalogKodlari, satista, sahip, satistaOlmayan, mevcutTier, mevcutLimit: mevcutLimit == null ? null : Number(mevcutLimit),
         deneme: !(await odemeGecmisiVar(t.id)), tierDeneme: t.license_tier === 'TIER_DENEME',
         kalanGun: kalanGunHesapla(t.license_end_date, simdi),
+        // Eski musteri hakki: lisansta hala olan haklar (ucrete girmez, sepette kaldirilamaz)
+        eskiHak: (await GH.aktifHak(t.id)).filter((m) => M.varMi(ham, m)),
     };
 }
 
@@ -145,7 +151,8 @@ async function donemBilgisi(tenantId, simdi = new Date()) {
         bitis: kd.t.license_end_date || null,
         yenilemeAcilis: durum === 'donemIci' ? yenilemeAcilisi(kd) : null,
         mevcut: { tier: kd.t.license_tier || null, masaLimiti: kd.mevcutLimit, moduller: kd.sahip,
-                  korunan: kd.deneme ? [] : kd.satistaOlmayan.filter((m) => m !== 'ALL' && kd.katalogKodlari.has(m)) },
+                  korunan: kd.deneme ? [] : kd.satistaOlmayan.filter((m) => m !== 'ALL' && kd.katalogKodlari.has(m)),
+                  eskiHak: kd.eskiHak },
     };
 }
 
@@ -162,6 +169,7 @@ function mevcutPaketDegeri(kd) {
     const tierFiyat = kademe ? (Number(kademe.fiyat) || 0) : 0;
     let toplam = 0;
     for (const m of sahip) {
+        if ((kd.eskiHak || []).includes(m)) continue;   // eski musteri hakki ucretsiz
         const satir = tam.find((x) => x.tur === 'MODUL' && x.kod === m);
         if (!satir || Number(satir.gorunur) !== 1) continue;
         toplam += m === 'BASE' ? tierFiyat : (Number(satir.fiyat) || 0);
@@ -219,14 +227,19 @@ function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor }) 
 // Teklif: fiyat + tur + kredi + odenecek. Donem icinde azaltma 409 DONEM_ICI_AZALTMA.
 async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const kd = await kiraciDurumu(tenantId, simdi);
-    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: kd.satistaOlmayan });
+    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: [...kd.satistaOlmayan, ...kd.eskiHak] });
     const donem = donemTuru(kd);
     // Onayda korunacaklar (onizleme; onayda o anki lisansa gore yeniden hesaplanir)
     const korunan = await korunanHesapla(kd.t, f.modules, kd.tam);
     const sonListe = [...f.modules, ...korunan];
+    const eskiHakKorunan = korunan.filter((m) => kd.eskiHak.includes(m));
     for (const m of korunan) {
         const satir = kd.tam.find((x) => x.tur === 'MODUL' && x.kod === m);
-        if (satir) f.breakdown.push({ name: m, displayName: satir.ad || M.AD[m] || m, type: 'MODULE', price: 0, korunan: true });
+        const hak = eskiHakKorunan.includes(m);
+        if (satir || (hak && M.AD[m])) {
+            f.breakdown.push({ name: m, displayName: (satir && satir.ad) || M.AD[m] || m, type: 'MODULE', price: 0, korunan: true,
+                ...(hak ? { eskiHak: true } : {}) });
+        }
     }
     // Karsilastirma katalogdaki modullerle (katalogda olmayan eski kodlar zaten korunur)
     const karsilastir = kd.sahip.filter((m) => kd.katalogKodlari.has(m));
@@ -262,7 +275,7 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const odenecek = Math.max(0, yuvarla(yeniToplam - krediTutari));
     const degisiyor = eklenen.length > 0 || cikan.length > 0 || (kd.t.license_tier || null) !== tier;
     return {
-        ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan,
+        ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan, eskiHakModuller: eskiHakKorunan,
         tur, donem, yeniToplam, krediTutari, odenecek,
         kalanGun: tur === 'yukseltme' ? kredi.kalanGun : kd.kalanGun,
         krediKaynak: tur === 'yukseltme' ? kredi.kaynak : null,

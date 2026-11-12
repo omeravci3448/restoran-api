@@ -72,6 +72,21 @@ exports.indirim = sar(async (req, res) => {
     res.json({ ok: true, indirimOrani: oran, message: `${t.business_name}: indirim oranı %${oran}.` });
 });
 
+// Eski musteri hakki (services/gecisHaklari.js): root isletme bazinda kaldirir; bir sonraki onayda korunmaz.
+exports.eskiHakKaldir = sar(async (req, res) => {
+    const t = await isletmeVar(req.params.id);
+    const GH = require('../services/gecisHaklari');
+    const s = await GH.bilgi(t.id);
+    if (!s) throw hata(404, 'Bu işletmenin geçiş öncesi hak kaydı yok.');
+    if (s.kaldirildi) throw hata(409, 'Eski haklar zaten kaldırılmış.');
+    const { degisti } = await GH.kaldir(t.id, req.root && (req.root.email || req.root.id));
+    if (!degisti) throw hata(409, 'Eski haklar zaten kaldırılmış.');
+    await YG.kaydet(req, { islem: 'eski_hak_kaldir', tenantId: t.id, hedefTur: 'isletme', hedefId: t.id,
+        ozet: `${t.business_name}: eski müşteri hakları kaldırıldı (${s.hakAdlari.join(', ') || 'boş'}). Sonraki onaylarda korunmaz.`,
+        ayrinti: { hak: s.hak } });
+    res.json({ ok: true, message: `${t.business_name}: eski müşteri hakları kaldırıldı.` });
+});
+
 // --- C. Sistem Ayarlari ---
 exports.ayarlar = sar(async (_req, res) => res.json(await YA.hepsi()));
 exports.ayarYaz = sar(async (req, res) => {

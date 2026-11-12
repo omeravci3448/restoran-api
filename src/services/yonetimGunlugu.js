@@ -17,6 +17,7 @@ const ISLEM_AD = {
     lisans_uzat: 'Lisans uzatma',
     modul_degisiklik: 'Modül / paket değişikliği',
     indirim: 'İndirim oranı',
+    eski_hak_kaldir: 'Eski müşteri hakkı kaldırıldı',
     hediye_hakki: 'Hediye plaka hakkı',
     odeme_onay: 'Ödeme onayı',
     odeme_red: 'Ödeme reddi',

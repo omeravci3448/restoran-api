@@ -13,6 +13,7 @@ router.get('/isletme/:id', ctrl.isletme);
 router.post('/isletme/:id/notlar', ctrl.notEkle);
 router.delete('/isletme/:id/notlar/:notId', ctrl.notSil);
 router.put('/isletme/:id/indirim', ctrl.indirim);
+router.post('/isletme/:id/eski-haklar/kaldir', ctrl.eskiHakKaldir);
 
 router.get('/ayarlar', ctrl.ayarlar);
 router.put('/ayarlar', ctrl.ayarYaz);

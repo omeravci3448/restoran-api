@@ -119,19 +119,30 @@ const MODUL_GECISI_SQL = [
     `INSERT OR IGNORE INTO sistem_ayarlari (anahtar, deger) VALUES ('${GECIS_ISARETI}', datetime('now'))`,
 ];
 // Gecis: adimlar + isaret tek islemde. Isaret varsa hicbir sey yapmaz, false doner (testler de bunu cagirir).
+// Ayni islemde her isletmenin gecis sonrasi listesi ve eski haklari yazilir (services/gecisHaklari.js): gecis
+// oncesi liste adimlardan ONCE okunur. Biri hata verirse hicbiri yazilmaz.
 async function modulGecisi() {
     return tx(async () => {
         const v = await query('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
         if (v.rows.length) return false;
+        const once = new Map((await query('SELECT id, license_modules FROM tenants')).rows.map((x) => [x.id, x.license_modules]));
         for (const s of MODUL_GECISI_SQL) await query(s);
+        await require('../services/gecisHaklari').yaz({ onceHarita: once, kaynak: 'gecis' });
         return true;
     });
 }
 // initDb kuyrugunun SONUNA konur: geri cagrisi geldiginde onceki CREATE/ALTER/tohum komutlari bitmistir;
 // gecis bundan sonra kendi islemiyle (BEGIN IMMEDIATE ... COMMIT) calisir.
+// Gecis daha once calismis (eski haklar yazilmadan): haklar bir kez doldurulur (gecisHaklari.doldur, idempotent).
 function modulGecisiBaslat(conn) {
     conn.get('SELECT 1 AS v FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI], (e0, r0) => {
-        if (e0 || r0) return;
+        if (e0) return;
+        if (r0) {
+            require('../services/gecisHaklari').doldur()
+                .then((n) => { if (n) console.log('[db] eski musteri haklari yazildi:', n, 'isletme'); })
+                .catch((e) => console.error('[db] eski musteri haklari yazilamadi (sonraki acilista yeniden denenecek):', e.message));
+            return;
+        }
         modulGecisi()
             .then((yapildi) => { if (yapildi) console.log('[db] moduler lisans gecisi tamamlandi'); })
             .catch((e) => console.error('[db] moduler lisans gecisi geri alindi (sonraki acilista yeniden denenecek):', e.message));
@@ -1047,6 +1058,21 @@ const initDb = () => {
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_plaka_talep_no ON plaka_talepleri(talep_no) WHERE talep_no IS NOT NULL", [], () => {});
 
         require('./yonetimDb').yonetimTablolari(db);   // root paneli: yonetim gunlugu, ic notlar, duyurular, destek oturumlari
+
+        // Eski musteri haklari (services/gecisHaklari.js): gecis aninda isletmenin gecis sonrasi modul listesi ve
+        // onayda ucretsiz korunacak eski haklari. Root hakki kaldirabilir (kaldirildi_at).
+        db.run(`CREATE TABLE IF NOT EXISTS gecis_haklari (
+            tenant_id TEXT PRIMARY KEY,
+            moduller_once TEXT,
+            moduller_sonra TEXT NOT NULL,
+            hak TEXT NOT NULL DEFAULT '[]',
+            sinif TEXT,
+            kademe TEXT,
+            kaynak TEXT,
+            yazildi_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            kaldirildi_at TEXT,
+            kaldiran TEXT
+        )`);
 
         // GECIS (bir kez, tek islemde): mevcut isletmeler bugunku davranisini korur. Bkz MODUL_GECISI_SQL.
         // Kuyrugun en sonunda: tablolar ve katalog tohumu hazir olduktan sonra.

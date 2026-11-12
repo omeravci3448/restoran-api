@@ -663,6 +663,7 @@ exports.lisansOdemeleri = async (req, res) => {
             // Onayda yazilacak liste: odenen + korunan (o anki lisansa gore; bkz lisansModul.korunacakModuller)
             const onay = await LT.onayModulleri(x, t, tam);
             ek.korunacak_moduller = onay.korunan;
+            ek.eski_hak_moduller = onay.eskiHak;   // korunacaklardan eski musteri hakki olanlar (onay penceresinde ayri etiket)
             ek.yeni_moduller_onizleme = onay.moduller;
             ek.lisans_degisiklikleri = LT.lisansDegisiklikleri(x, t, tam);
             ek.kalkacak_moduller = mevcut.filter((k) => !M.varMi(onay.moduller, k));
@@ -710,7 +711,7 @@ exports.lisansOdemeOnayla = async (req, res) => {
             // MARKETPLACE). Korunan hesap BU ANKI lisansa gore: deploy oncesi acilmis kayitlar da Masadan Siparis'i
             // kaybetmez (lisansModul.korunacakModuller).
             const tam = await require('../services/lisansKatalog').tamKatalog();
-            const { moduller } = await LT.onayModulleri(o, t, tam);
+            const { moduller, eskiHak } = await LT.onayModulleri(o, t, tam);
             // Masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda yoksa (eski
             // kayit) sinira dokunulmaz.
             const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
@@ -726,14 +727,15 @@ exports.lisansOdemeOnayla = async (req, res) => {
                 `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
                                              islenen_at = CURRENT_TIMESTAMP WHERE id = ? AND durum = 'beklemede'`,
                 [String(req.body?.not || '').slice(0, 300), bitis, gun, o.id]);
-            return { o, t, bitis, etkinTur };
+            return { o, t, bitis, etkinTur, eskiHak };
         });
     } catch (e) {
         if (e.status) return res.status(e.status).json({ message: e.message });
         throw e;
     }
-    const { o, t, bitis, etkinTur } = sonuc;
-    await YG.kaydet(req, { islem: 'odeme_onay', tenantId: t.id, hedefTur: 'lisans_odemesi', hedefId: o.id, ozet: `Ödeme onaylandı (${o.tur || etkinTur || 'eski kayıt'}): ${YG.TL(o.tutar)}; paket ${o.tier || '-'}; lisans ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}`, ayrinti: { tutar: o.tutar, tur: o.tur, tier: o.tier, moduller: o.moduller, gun, oncekiBitis: t.license_end_date, yeniBitis: bitis } });
+    const { o, t, bitis, etkinTur, eskiHak } = sonuc;
+    const hakOzet = eskiHak && eskiHak.length ? `; eski hak korundu: ${eskiHak.map((m) => require('../services/lisansModul').AD[m] || m).join(', ')}` : '';
+    await YG.kaydet(req, { islem: 'odeme_onay', tenantId: t.id, hedefTur: 'lisans_odemesi', hedefId: o.id, ozet: `Ödeme onaylandı (${o.tur || etkinTur || 'eski kayıt'}): ${YG.TL(o.tutar)}; paket ${o.tier || '-'}; lisans ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}${hakOzet}`, ayrinti: { tutar: o.tutar, tur: o.tur, tier: o.tier, moduller: o.moduller, gun, oncekiBitis: t.license_end_date, yeniBitis: bitis, eskiHak } });
     const tarih = LT.TARIH(bitis);
     const message = o.tur === 'yukseltme'
         ? `${t.business_name}: yükseltme onaylandı. Yeni paket bugün başladı, lisans ${tarih} tarihine kadar geçerli.`
