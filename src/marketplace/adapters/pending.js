@@ -40,7 +40,7 @@ const migros = new PendingAdapter({
     code: 'migros',
     displayName: 'Migros Yemek (Alacarte)',
     blocker: 'Migros panelindeki "Pos Firması" açılır listesinde MDA Yazılım görünmüyor. Liste önceden onaylı entegratörlerden oluşuyor; restoran listede olmayan firmaya anahtar üretemez. Resmi API dokümanı da kamuya açık değil.',
-    nextStep: 'Migros Yemek iş geliştirme/entegratör başvurusu yapılmalı (Trendyol fazıyla PARALEL başlat — bekleme süresi öngörülemez). Başvuru kanalı kamuya açık değil, kurumsal iletişim gerekiyor.',
+    nextStep: 'Migros Yemek iş geliştirme/entegratör başvurusu yapılmalı (Trendyol fazıyla PARALEL başlat - bekleme süresi öngörülemez). Başvuru kanalı kamuya açık değil, kurumsal iletişim gerekiyor.',
     docsUrl: null,
 });
 
@@ -51,7 +51,7 @@ const getir = new PendingAdapter({
     code: 'getir',
     displayName: 'Getir Yemek (kapandı)',
     blocker: 'GetirYemek API başvuruları resmen sonlandırıldı; yeni anahtar alınamıyor. Platform Uber Eats / Trendyol GO\'ya taşındı.',
-    nextStep: 'Yeni geliştirme YAPILMAYACAK. Getir hacmi Trendyol GO üzerinden "Galaxy" alt kanalı olarak zaten geliyor — trendyolgo adaptörü bunu kapsıyor.',
+    nextStep: 'Yeni geliştirme YAPILMAYACAK. Getir hacmi Trendyol GO üzerinden "Galaxy" alt kanalı olarak zaten geliyor - trendyolgo adaptörü bunu kapsıyor.',
     docsUrl: 'https://developers.tgoapps.com',
 });
 

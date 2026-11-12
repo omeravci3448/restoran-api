@@ -127,7 +127,7 @@ async function refreshTenantLicense(tenantId, customerEmail) {
         const local = await query('SELECT license_end_date FROM tenants WHERE id = ?', [tenantId]);
         const end = local.rows[0]?.license_end_date;
         if (end && new Date(end) > new Date()) {
-            return { ok: false, reason: 'INACTIVE_HUB_LOCAL_VALID', payload, message: 'Hub pasif diyor ama lokal lisans tarihi hâlâ geçerli — pasifleştirilmedi.' };
+            return { ok: false, reason: 'INACTIVE_HUB_LOCAL_VALID', payload, message: 'Hub pasif diyor ama lokal lisans tarihi hâlâ geçerli - pasifleştirilmedi.' };
         }
         await query('UPDATE tenants SET is_active = 0 WHERE id = ?', [tenantId]);
         return { ok: false, reason: 'INACTIVE', payload };

@@ -15,7 +15,7 @@ async function main() {
     const email = 'demo@mdayazilim.com';
     const exist = await query('SELECT u.id, u.tenant_id FROM users u WHERE u.email = ?', [email]);
     if (exist.rows.length) {
-        console.log('Demo zaten var — tenant_id:', exist.rows[0].tenant_id);
+        console.log('Demo zaten var - tenant_id:', exist.rows[0].tenant_id);
         process.exit(0);
     }
 
@@ -86,7 +86,7 @@ async function main() {
             [uuidv4(), tenantId, catIds[cat], name, price, cost, tracksStock ? 1 : 0, qty, unit, low]);
     }
 
-    console.log('— Demo hazır —');
+    console.log('- Demo hazır -');
     console.log('  Login         : ' + email + ' / demo1234');
     console.log('  İşyeri Kodu   : ' + bizCode);
     console.log('  Referans Kodu : ' + refCode);

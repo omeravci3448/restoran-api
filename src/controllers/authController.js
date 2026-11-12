@@ -17,7 +17,7 @@ async function newBusinessCode() {
         const exists = await query('SELECT 1 FROM tenants WHERE business_code = ?', [code]);
         if (!exists.rows.length) return code;
     }
-    throw new Error('İşyeri kodu üretilemedi (çok fazla çakışma — 5 haneyi 6 haneye çıkarmak gerek).');
+    throw new Error('İşyeri kodu üretilemedi (çok fazla çakışma - 5 haneyi 6 haneye çıkarmak gerek).');
 }
 
 const slugify = (s) => (s || '').toLowerCase()

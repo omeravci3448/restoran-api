@@ -26,7 +26,7 @@ class TrendyolGoAdapter extends BaseAdapter {
     constructor() {
         super({
             code: 'trendyolgo',
-            displayName: 'Uber Eats Trendyol GO — Yemek',
+            displayName: 'Uber Eats Trendyol GO - Yemek',
             requiredCredentialFields: [
                 { key: 'supplierId', label: 'Satıcı ID (supplierId)', type: 'text', required: true },
                 { key: 'apiKey', label: 'API Key', type: 'text', required: true },
@@ -197,7 +197,7 @@ class TrendyolGoAdapter extends BaseAdapter {
                 externalItemId: units.map((u) => u.packageItemId).filter(Boolean).join(','),
                 externalItemIds: units.map((u) => u.packageItemId).filter(Boolean),
                 externalProductId: line.productId != null ? String(line.productId) : null,
-                name: line.name || line.productName || '—',
+                name: line.name || line.productName || '-',
                 quantity: qty,
                 unitPriceKurus: toKurus(line.price ?? line.unitPrice),
                 lineTotalKurus: toKurus(line.totalPrice ?? (Number(line.price || 0) * qty)),
@@ -355,7 +355,7 @@ class TrendyolGoAdapter extends BaseAdapter {
     async updatePrices(ctx, { items, externalStoreId } = {}) {
         const storeId = externalStoreId || ctx.storeLink?.externalStoreId;
         if (!storeId) throw new AdapterError(KIND.VALIDATION,
-            'externalStoreId zorunlu — gönderilmezse tüm şubelerin fiyatı değişir.', { retryable: false });
+            'externalStoreId zorunlu - gönderilmezse tüm şubelerin fiyatı değişir.', { retryable: false });
         if (!Array.isArray(items) || !items.length) throw new AdapterError(KIND.VALIDATION, 'items boş.');
         if (items.length > 1000) throw new AdapterError(KIND.VALIDATION, 'Tek istekte en fazla 1000 ürün.');
 

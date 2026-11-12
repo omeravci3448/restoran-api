@@ -39,22 +39,22 @@ exports.hubStatus = async (_req, res) => {
         const looksHtml = typeof r.data === 'string' && /<html|<!doctype/i.test(r.data);
         let verdict;
         if (r.status === 200 && isJson && Array.isArray(r.data?.tiers) && r.data.tiers.length) {
-            verdict = '✅ SORUN YOK — hub API doğru cevap veriyor, ' + r.data.tiers.length + ' paket geliyor.';
+            verdict = '✅ SORUN YOK - hub API doğru cevap veriyor, ' + r.data.tiers.length + ' paket geliyor.';
         } else if (looksHtml || (r.status === 200 && !isJson)) {
-            verdict = '❌ YANLIŞ ADRES — HUB_URL hub PANELİNE (frontend/nginx) işaret ediyor, API\'ye değil. ' +
+            verdict = '❌ YANLIŞ ADRES - HUB_URL hub PANELİNE (frontend/nginx) işaret ediyor, API\'ye değil. ' +
                 'Coolify\'da restoran-api env\'inde HUB_URL\'i hub API adresine çevirin (büyük ihtimalle https://hub-api.mdayazilim.com) ve restart edin.';
         } else if (r.status === 401) {
-            verdict = '❌ HUB ESKİ KOD — modules-pricing PIN istiyor. Hub\'ı son commit ile yeniden deploy edin.';
+            verdict = '❌ HUB ESKİ KOD - modules-pricing PIN istiyor. Hub\'ı son commit ile yeniden deploy edin.';
         } else if (r.status === 200 && isJson) {
-            verdict = '⚠️ Hub cevap veriyor ama paket listesi BOŞ — hub DB\'sinde dama-restoran tier kayıtları yok (Fiyatlandırma sayfasından kontrol edin).';
+            verdict = '⚠️ Hub cevap veriyor ama paket listesi BOŞ - hub DB\'sinde dama-restoran tier kayıtları yok (Fiyatlandırma sayfasından kontrol edin).';
         } else {
-            verdict = '⚠️ BEKLENMEDİK CEVAP — HTTP ' + r.status + '. Hub loglarına bakın.';
+            verdict = '⚠️ BEKLENMEDİK CEVAP - HTTP ' + r.status + '. Hub loglarına bakın.';
         }
         res.json({ hubUrl: hub.HUB_URL, target, httpStatus: r.status, contentType: ct, verdict });
     } catch (e) {
         res.json({
             hubUrl: hub.HUB_URL, target, error: e.code || e.message,
-            verdict: '❌ ULAŞILAMADI — DNS/ağ hatası veya hub kapalı (' + (e.code || e.message) + '). HUB_URL adresini ve hub\'ın ayakta olduğunu kontrol edin.'
+            verdict: '❌ ULAŞILAMADI - DNS/ağ hatası veya hub kapalı (' + (e.code || e.message) + '). HUB_URL adresini ve hub\'ın ayakta olduğunu kontrol edin.'
         });
     }
 };

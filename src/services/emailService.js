@@ -20,7 +20,7 @@ if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
 
 async function sendOTP(to, otp, businessName) {
     if (!transporter) {
-        console.log(`[email/DEV] OTP for ${to}: ${otp}  (SMTP yok — konsola yazıldı)`);
+        console.log(`[email/DEV] OTP for ${to}: ${otp}  (SMTP yok - konsola yazıldı)`);
         return { sent: false, dev: true };
     }
     const html = `
@@ -39,7 +39,7 @@ async function sendOTP(to, otp, businessName) {
         await transporter.sendMail({
             from: `"${FROM_NAME}" <${SMTP_USER}>`,
             to,
-            subject: 'Doğrulama Kodunuz — MDA Restoran POS',
+            subject: 'Doğrulama Kodunuz - MDA Restoran POS',
             html
         });
         return { sent: true };
@@ -51,7 +51,7 @@ async function sendOTP(to, otp, businessName) {
 
 async function sendMail({ to, subject, html, text }) {
     if (!transporter) {
-        console.log(`[email/DEV] ${to} — ${subject}`);
+        console.log(`[email/DEV] ${to} - ${subject}`);
         return { sent: false, dev: true };
     }
     try {

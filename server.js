@@ -57,7 +57,7 @@ app.get('/health/db', async (_req, res) => {
     try {
         await query('SELECT 1 AS ok');
         const ms = Date.now() - t0;
-        res.json({ ok: true, dbResponseMs: ms, verdict: ms < 200 ? 'hızlı' : (ms < 2000 ? 'yavaş' : 'ÇOK YAVAŞ — kilitlenme olabilir') });
+        res.json({ ok: true, dbResponseMs: ms, verdict: ms < 200 ? 'hızlı' : (ms < 2000 ? 'yavaş' : 'ÇOK YAVAŞ - kilitlenme olabilir') });
     } catch (e) {
         res.status(500).json({ ok: false, error: e.message, dbResponseMs: Date.now() - t0 });
     }
@@ -102,7 +102,7 @@ app.use((err, req, res, _next) => {
 initDb();
 const PORT = process.env.PORT || 5400;
 app.listen(PORT, () => {
-    console.log(`[mda-restoran] backend ${PORT} portunda — ${process.env.NODE_ENV || 'dev'}`);
+    console.log(`[mda-restoran] backend ${PORT} portunda - ${process.env.NODE_ENV || 'dev'}`);
     // Root (ekosistem yöneticisi) kurulumu — ROOT_EMAIL/ROOT_PASSWORD yoksa
     // kullanıcı HİÇ oluşmaz ve panel kapalı kalır (güvenli varsayılan).
     setTimeout(async () => {
