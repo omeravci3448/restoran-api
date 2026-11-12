@@ -4,6 +4,8 @@
 //   O3  oturumu acan root pasif ya da silinmisse destek oturumu calismaz ve kapanir.
 //   O4  destek oturumunda ticari beyan ve yukumluluk yasak (magaza siparisi / odeme bildirimi, ucretli plaka talebi /
 //       plaka odeme bildirimi, lisans "odemeyi yaptim"); teklif, lisans talebi ve hediye plaka serbest.
+//   O5  QR acik uclari lisans durumuna bakar: KAPALI'da siparis / garson / hesap kapali, menu acik;
+//       SALT_OKUNUR'da yalniz siparis kapali.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -98,8 +100,11 @@ async function destekJetonu(rj, tenantId) {
 async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
-        for (const tb of ['destek_oturumlari', 'islem_gunlugu', 'yonetim_gunlugu', 'lisans_odemeleri', 'license_cache', 'categories', 'tables',
-            'push_subscriptions', 'gecis_haklari', 'plaka_talepleri', 'root_olaylar', 'users'])
+        await query('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ?)', [r.id]).catch(() => {});
+        await query('DELETE FROM payments WHERE tenant_id = ?', [r.id]).catch(() => {});
+        await query('DELETE FROM orders WHERE tenant_id = ?', [r.id]).catch(() => {});
+        for (const tb of ['destek_oturumlari', 'islem_gunlugu', 'yonetim_gunlugu', 'lisans_odemeleri', 'license_cache', 'payments', 'waiter_calls',
+            'qr_bekleyen_siparisler', 'products', 'categories', 'tables', 'push_subscriptions', 'gecis_haklari', 'plaka_talepleri', 'root_olaylar', 'users'])
             await query('DELETE FROM ' + tb + ' WHERE tenant_id = ?', [r.id]).catch(() => {});
         fsx.rmSync(pathx.join(UPLOADS_DIR, r.id), { recursive: true, force: true });
         await query('DELETE FROM tenants WHERE id = ?', [r.id]);
@@ -222,6 +227,37 @@ async function temizle() {
     await query('UPDATE tenants SET plaka_hediye_hakki = 1 WHERE id = ?', [C.id]);
     const hediye = await js('/api/plaka/talepler', { token: DC, body: plakaGovde });
     ok('yalniz hediye plakalik talep destekte serbest (201)', hediye.status === 201, hediye);
+
+    console.log('\n=== O5) QR acik uclari lisans durumuna bakar ===');
+    async function qrKur(ad, bitis) {
+        const k = await kiraciKur({ ad, bitis });
+        const masa = uuid(), tok = crypto.randomBytes(16).toString('hex');
+        await query('INSERT INTO tables (id, tenant_id, code, name, qr_token) VALUES (?, ?, ?, ?, ?)', [masa, k.id, 'Q1', 'Masa Q1', tok]);
+        await query('INSERT INTO categories (id, tenant_id, name, sort_order) VALUES (?, ?, ?, 1)', [masa + '-k', k.id, 'Icecek']);
+        await query('INSERT INTO products (id, tenant_id, category_id, name, price, is_available) VALUES (?, ?, ?, ?, 25, 1)', [masa + '-u', k.id, masa + '-k', 'Cay']);
+        const taban = `/api/public/m/${k.slug}/${tok}`;
+        return { ...k, taban, urun: masa + '-u' };
+    }
+    const qrIstekleri = async (q) => ({
+        menu: await js(q.taban + '/menu'),
+        siparis: await js(q.taban + '/orders', { body: { items: [{ productId: q.urun, qty: 1 }] } }),
+        garson: await js(q.taban + '/waiter', { body: { reason: 'GENERIC' } }),
+        hesap: await js(q.taban + '/bill'),
+    });
+    const qa = await qrIstekleri(await qrKur('QR Aktif'));
+    ok('AKTIF: menu 200, uc ozellik acik', qa.menu.status === 200 && qa.menu.d.ozellikler.siparis && qa.menu.d.ozellikler.garson && qa.menu.d.ozellikler.hesap, qa.menu.d && qa.menu.d.ozellikler);
+    ok('AKTIF: siparis 201, garson cagrisi ve hesap acik', qa.siparis.status === 201 && qa.garson.status < 300 && qa.hesap.status === 200, [qa.siparis.status, qa.garson.status, qa.hesap.status]);
+    const qk = await qrIstekleri(await qrKur('QR Kapali', new Date(Date.now() - 10 * GUN).toISOString()));
+    ok('KAPALI: menu gorunur (200), ozellikler kapali (dugmeler gizlenir)', qk.menu.status === 200 && qk.menu.d.products.length === 1
+        && !qk.menu.d.ozellikler.siparis && !qk.menu.d.ozellikler.garson && !qk.menu.d.ozellikler.hesap, qk.menu.d && qk.menu.d.ozellikler);
+    ok('KAPALI: siparis 403 QR_SIPARIS_KAPALI + personele basvurun', qk.siparis.status === 403 && qk.siparis.d.code === 'QR_SIPARIS_KAPALI' && /personele başvurun/.test(qk.siparis.d.message), qk.siparis);
+    ok('KAPALI: garson cagrisi 403', qk.garson.status === 403 && qk.garson.d.code === 'QR_GARSON_KAPALI', qk.garson);
+    ok('KAPALI: hesap 403', qk.hesap.status === 403 && qk.hesap.d.code === 'QR_HESAP_KAPALI', qk.hesap);
+    const qs = await qrIstekleri(await qrKur('QR Salt', new Date(Date.now() - GUN).toISOString()));
+    ok('SALT_OKUNUR: menu 200, siparis kapali, garson ve hesap acik', qs.menu.status === 200 && !qs.menu.d.ozellikler.siparis
+        && qs.menu.d.ozellikler.garson && qs.menu.d.ozellikler.hesap, qs.menu.d && qs.menu.d.ozellikler);
+    ok('SALT_OKUNUR: siparis 403 (kasa hesabi kapatamaz)', qs.siparis.status === 403 && qs.siparis.d.code === 'QR_SIPARIS_KAPALI', qs.siparis);
+    ok('SALT_OKUNUR: garson cagrisi ve hesap acik', qs.garson.status < 300 && qs.hesap.status === 200, [qs.garson, qs.hesap.status]);
 
     // --- SONRAKI BOLUMLER ---
 

@@ -13,8 +13,24 @@ const KAPALI = {
     hesap: { code: 'QR_HESAP_KAPALI', message: 'Bu işletmede hesap QR menüden görüntülenemiyor. Hesabınız için lütfen personele başvurun.' },
     garson: { code: 'QR_GARSON_KAPALI', message: 'Bu işletmede QR menüden garson çağrılamıyor. Lütfen personele başvurun.' },
 };
+// Lisans durumu (guvenlik incelemesi O5): lisansi KAPALI isletmede QR'dan siparis, garson cagrisi ve hesap kapali;
+// menu gorunur kalir (masadaki plaka bozuk gorunmesin). SALT_OKUNUR'da yalniz siparis kapali (kasa hesabi
+// kapatamaz); garson cagrisi ve hesap acik. Misafire ayni kod ve "lutfen personele basvurun" aciklamasi doner;
+// QR menu bu kodla dugmeyi hemen gizler, menu yanitindaki ozellikler de dugmeleri bastan gizler.
+function lisansIzinVerir(ctx, ad) {
+    const d = require('../services/lisansDurumu').hesapla(ctx && ctx.license_end_date).durum;
+    if (d === 'KAPALI') return false;
+    if (d === 'SALT_OKUNUR' && ad === 'siparis') return false;
+    return true;
+}
+// Misafirin kullanabilecegi ozellikler: modul + isletme anahtari + lisans durumu
+function etkinOzellikler(ctx) {
+    const o = qrOzellikleri(ctx);
+    return { siparis: o.siparis && lisansIzinVerir(ctx, 'siparis'), garson: o.garson && lisansIzinVerir(ctx, 'garson'),
+        hesap: o.hesap && lisansIzinVerir(ctx, 'hesap') };
+}
 function ozellikKapali(ctx, ad, res) {
-    if (qrOzellikleri(ctx)[ad]) return false;
+    if (etkinOzellikler(ctx)[ad]) return false;
     res.status(403).json(KAPALI[ad]);
     return true;
 }
@@ -35,7 +51,7 @@ function qrTelefonaBildir(ctx, adet, tutar, bekliyor) {
 // QR'dan gelen müşteri için bu masanın bağlamını döndür
 async function loadTableContext(tenantSlug, qrToken) {
     const r = await query(
-        `SELECT te.id AS tenant_id, te.business_name, te.slug, te.license_modules, te.logo_url, te.qr_onay_gerekli,
+        `SELECT te.id AS tenant_id, te.business_name, te.slug, te.license_modules, te.license_end_date, te.logo_url, te.qr_onay_gerekli,
                 te.qr_siparis_acik, te.qr_garson_acik, te.qr_hesap_acik,
                 tb.id AS table_id, tb.code AS table_code, tb.name AS table_name, tb.section
            FROM tenants te JOIN tables tb ON tb.tenant_id = te.id
@@ -73,7 +89,7 @@ exports.menu = async (req, res) => {
         business: { name: ctx.business_name, slug: ctx.slug, logo_url: ctx.logo_url || null },
         table: { code: ctx.table_code, name: ctx.table_name, section: ctx.section },
         // Misafirin kullanabilecegi ozellikler: kapali olan dugme QR menude hic gosterilmez
-        ozellikler: qrOzellikleri(ctx),
+        ozellikler: etkinOzellikler(ctx),
         categories: cats.rows,
         products: prods.rows
     });
