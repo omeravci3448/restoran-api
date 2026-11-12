@@ -6,6 +6,7 @@
 //       plaka odeme bildirimi, lisans "odemeyi yaptim"); teklif, lisans talebi ve hediye plaka serbest.
 //   O5  QR acik uclari lisans durumuna bakar: KAPALI'da siparis / garson / hesap kapali, menu acik;
 //       SALT_OKUNUR'da yalniz siparis kapali.
+//   D2  gecis: license_modules '"ALL"' (JSON metni) ya da duz ALL ise ["ALL"]; BASE'e dusmez.
 // Sunucuyu KENDI baslatir.  Calistir: node test_guvenlik.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -14,7 +15,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { spawn } = require('child_process');
 const { v4: uuid } = require('uuid');
-const { query, initDb } = require('./src/config/db');
+const { query, initDb, modulGecisi, GECIS_ISARETI } = require('./src/config/db');
 const zlib = require('zlib');
 const fsx = require('fs');
 const pathx = require('path');
@@ -258,6 +259,18 @@ async function temizle() {
         && qs.menu.d.ozellikler.garson && qs.menu.d.ozellikler.hesap, qs.menu.d && qs.menu.d.ozellikler);
     ok('SALT_OKUNUR: siparis 403 (kasa hesabi kapatamaz)', qs.siparis.status === 403 && qs.siparis.d.code === 'QR_SIPARIS_KAPALI', qs.siparis);
     ok('SALT_OKUNUR: garson cagrisi ve hesap acik', qs.garson.status < 300 && qs.hesap.status === 200, [qs.garson, qs.hesap.status]);
+
+    console.log('\n=== D2) Gecis: tek "ALL" metni dizi olur ===');
+    const all1 = await kiraciKur({ ad: 'ALL Metin' }), all2 = await kiraciKur({ ad: 'ALL Duz' }), all3 = await kiraciKur({ ad: 'ALL Dizi' });
+    await query('UPDATE tenants SET license_modules = ? WHERE id = ?', ['"ALL"', all1.id]);
+    await query('UPDATE tenants SET license_modules = ? WHERE id = ?', ['ALL', all2.id]);
+    await query('UPDATE tenants SET license_modules = ? WHERE id = ?', ['["ALL"]', all3.id]);
+    await query('DELETE FROM sistem_ayarlari WHERE anahtar = ?', [GECIS_ISARETI]);
+    ok('gecis calisti', (await modulGecisi()) === true);
+    const lm = async (id) => (await query('SELECT license_modules FROM tenants WHERE id = ?', [id])).rows[0].license_modules;
+    ok('\'"ALL"\' -> ["ALL"] (BASE\'e dusmedi)', (await lm(all1.id)) === '["ALL"]', await lm(all1.id));
+    ok('duz ALL -> ["ALL"]', (await lm(all2.id)) === '["ALL"]', await lm(all2.id));
+    ok('["ALL"] dokunulmadi', (await lm(all3.id)) === '["ALL"]', await lm(all3.id));
 
     // --- SONRAKI BOLUMLER ---
 

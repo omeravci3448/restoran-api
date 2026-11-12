@@ -100,6 +100,13 @@ const GECIS_ISARETI = 'gecis_moduler_lisans_v1';
 const _dizi = (k) => `(CASE WHEN json_valid(${k}) THEN ${k} ELSE '[]' END)`;
 const _isaretYok = `NOT EXISTS (SELECT 1 FROM sistem_ayarlari WHERE anahtar = '${GECIS_ISARETI}')`;
 const MODUL_GECISI_SQL = [
+    // 0) Dizi yerine tek "ALL" yazilmis kayit ('"ALL"' JSON metni ya da duz ALL): butun moduller demek, ["ALL"]
+    //    yapilir; asagidaki adim onu ["BASE"]'e dusurmesin (guvenlik incelemesi, dusuk 2).
+    `UPDATE tenants SET license_modules = '["ALL"]'
+      WHERE ${_isaretYok}
+        AND (UPPER(TRIM(license_modules)) = 'ALL'
+             OR (json_valid(license_modules) AND json_type(license_modules) = 'text'
+                 AND UPPER(TRIM(json_extract(license_modules, '$'))) = 'ALL'))`,
     `UPDATE tenants SET license_modules = '["BASE"]'
       WHERE ${_isaretYok}
         AND (license_modules IS NULL OR TRIM(license_modules) = ''
