@@ -203,6 +203,10 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('3 gun dolunca yazma 403 LICENSE_EXPIRED', yz2.status === 403 && yz2.d.code === 'LICENSE_EXPIRED', yz2);
     const me2 = (await js('/api/auth/me', { token: b.token })).d;
     ok('/me KAPALI, koruma yok', me2.lisansDurum === 'KAPALI' && !me2.odemeKorumasi, me2);
+    ok('tekrar "odemeyi yaptim" 200', (await js(`/api/license/purchases/${sb.d.id}/mark-paid`, { token: b.token, body: { paymentRef: 'Ali Veli 2' } })).status === 200);
+    ok('tekrar bildirmek pencereyi uzatmaz (403)', (await yaz(b)).status === 403);
+    ok('ilk bildirim ani korundu, not guncellendi', (await kayit(sb.d.id)).aciklama === 'Ali Veli 2'
+        && Date.now() - new Date((await kayit(sb.d.id)).odeme_bildirildi_at.replace(' ', 'T') + 'Z').getTime() > 3.9 * GUN);
     await query("UPDATE lisans_odemeleri SET odeme_bildirildi_at = datetime('now', '-1 hours') WHERE id = ?", [sb.d.id]);
     ok('pencere icine donunce yine acik', (await yaz(b)).status === 201);
     // QR menu (senkron yol) da acik sayar: lisans KAPALI'da siparis kapali olurdu
@@ -244,10 +248,18 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('korumada yazma 201', (await yaz(c)).status === 201);
     await js(`/api/license/purchases/${sc.d.id}/cancel`, { token: c.token, method: 'POST' });
     ok('iptal sonrasi yazma 403', (await yaz(c)).status === 403);
-    const ay = await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { odeme_koruma_gun: '0' } });
-    ok('ayar odeme_koruma_gun = 0', ay.status === 200 && ay.d.sayisal.odeme_koruma_gun.etkin === 0, ay.d && ay.d.sayisal);
+    // Iptal edip yeniden bildirmek pencereyi sifirlamaz: baslangic ilk bildirim
+    await query("UPDATE lisans_odemeleri SET odeme_bildirildi_at = datetime('now', '-2 days') WHERE id = ?", [sc.d.id]);
     const sc2 = await js('/api/license/purchase', { token: c.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } });
     await js(`/api/license/purchases/${sc2.d.id}/mark-paid`, { token: c.token, body: {} });
+    const mec = (await js('/api/auth/me', { token: c.token })).d;
+    ok('yeniden bildirimde koruma ilk bildirimden sayilir (~1 gun kaldi)', mec.odemeKorumasi && yakin(mec.odemeKorumasi.bitis, Date.now() + GUN, 10 * 60000), mec);
+    await query("UPDATE lisans_odemeleri SET odeme_bildirildi_at = datetime('now', '-4 days') WHERE id = ?", [sc.d.id]);
+    ok('ilk bildirimin penceresi bitince yeni bildirim de korumaz (403)', (await yaz(c)).status === 403);
+    await query("UPDATE lisans_odemeleri SET odeme_bildirildi_at = datetime('now', '-1 hours') WHERE id = ?", [sc.d.id]);
+    ok('pencere icindeyken yazma 201', (await yaz(c)).status === 201);
+    const ay = await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { odeme_koruma_gun: '0' } });
+    ok('ayar odeme_koruma_gun = 0', ay.status === 200 && ay.d.sayisal.odeme_koruma_gun.etkin === 0, ay.d && ay.d.sayisal);
     ok('ayar 0 iken koruma yok (403)', (await yaz(c)).status === 403);
     const ay2 = await js('/api/root/yonetim/ayarlar', { token: rj, method: 'PUT', body: { odeme_koruma_gun: '' } });
     ok('bos birakilinca varsayilan 3', ay2.d.sayisal.odeme_koruma_gun.etkin === 3 && ay2.d.sayisal.kdv_orani.etkin === 20, ay2.d.sayisal);

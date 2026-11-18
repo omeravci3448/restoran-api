@@ -4,7 +4,8 @@
 // odeme_koruma_gun (varsayilan 3; 0 = koruma kapali).
 // Kosullar:
 //   - kiracinin durum = 'beklemede' ve odeme_bildirildi_at dolu bir kaydi var (ayni anda tek bekleyen kurali)
-//   - simdi < odeme_bildirildi_at + N gun
+//   - simdi < baslangic + N gun (baslangic: ilk bildirim; "odemeyi yaptim"a tekrar basmak ya da iptal edip yeniden
+//     bildirmek pencereyi uzatmaz, bkz BASLANGIC_SQL)
 //   - bu bildirimden onceki 30 gun icinde REDDEDILMIS bir kaydi yok (red edilen musteri ikinci bildirimle
 //     yeniden 3 gun kazanamasin)
 // Musteri bildirimi iptal ederse ya da root reddederse koruma HEMEN biter (kayit artik 'beklemede' degil).
@@ -44,6 +45,19 @@ function bitisHesapla(bildirildi, gun = korumaGun()) {
     return new Date(b.getTime() + gun * GUN_MS);
 }
 
+// Pencerenin BASLANGICI: bekleyen kaydin bildirimi; ama ayni kiracinin son 30 gunde bildirip IPTAL ettigi kayit varsa
+// en eski bildirim (arada onay yoksa). Boylece "bildir -> iptal -> yeniden talep -> bildir" dongusu 3 gunu sifirlamaz;
+// secimini degistiren durust musteri de korumasini kaybetmez (ilk bildirimden sayilir).
+// "o" = bekleyen ve bildirilmis kayit.
+const BASLANGIC_SQL = `(SELECT MIN(x.odeme_bildirildi_at) FROM lisans_odemeleri x
+      WHERE x.tenant_id = o.tenant_id AND x.odeme_bildirildi_at IS NOT NULL AND x.durum IN ('beklemede', 'iptal')
+        AND x.odeme_bildirildi_at >= datetime(o.odeme_bildirildi_at, '-30 days')
+        AND NOT EXISTS (SELECT 1 FROM lisans_odemeleri a WHERE a.tenant_id = o.tenant_id AND a.durum = 'onaylandi'
+                         AND a.islenen_at > x.odeme_bildirildi_at))`;
+// Bu bildirimden onceki 30 gun icinde reddedilmis kayit yok
+const RED_YOK_SQL = `NOT EXISTS (SELECT 1 FROM lisans_odemeleri r WHERE r.tenant_id = o.tenant_id AND r.durum = 'reddedildi'
+        AND r.islenen_at >= datetime(o.odeme_bildirildi_at, '-30 days'))`;
+
 async function yukle() {
     if (yukleniyor) return yukleniyor;
     yukleniyor = (async () => {
@@ -51,16 +65,12 @@ async function yukle() {
         const gun = korumaGun();
         if (gun > 0) {
             const r = await query(
-                `SELECT o.tenant_id, MAX(o.odeme_bildirildi_at) AS bildirildi
+                `SELECT o.tenant_id, ${BASLANGIC_SQL} AS baslangic
                    FROM lisans_odemeleri o
-                  WHERE o.durum = 'beklemede' AND o.odeme_bildirildi_at IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM lisans_odemeleri r
-                                     WHERE r.tenant_id = o.tenant_id AND r.durum = 'reddedildi'
-                                       AND r.islenen_at >= datetime(o.odeme_bildirildi_at, '-30 days'))
-                  GROUP BY o.tenant_id`);
+                  WHERE o.durum = 'beklemede' AND o.odeme_bildirildi_at IS NOT NULL AND ${RED_YOK_SQL}`);
             const simdi = Date.now();
             for (const x of r.rows) {
-                const bitis = bitisHesapla(x.bildirildi, gun);
+                const bitis = bitisHesapla(x.baslangic, gun);
                 if (bitis && bitis.getTime() > simdi) yeni.set(x.tenant_id, bitis);
             }
         }
@@ -110,13 +120,13 @@ function etkinDurumSenkron(tenantId, licenseEndDate, simdi = new Date()) {
 
 // Musteri lisans sayfasi icin: bu bekleyen kaydin koruma bitisi (lisans durumundan bagimsiz). Kosul sorgusu taze.
 async function kayitKorumaBitisi(o) {
-    if (!o || o.durum !== 'beklemede' || !o.odeme_bildirildi_at) return null;
-    const b = bitisHesapla(o.odeme_bildirildi_at);
-    if (!b || b.getTime() <= Date.now()) return null;
-    const r = await query(
-        `SELECT 1 FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'reddedildi'
-            AND islenen_at >= datetime(?, '-30 days') LIMIT 1`, [o.tenant_id, o.odeme_bildirildi_at]);
-    return r.rows.length ? null : b;
+    if (!o || !o.id || o.durum !== 'beklemede' || !o.odeme_bildirildi_at) return null;
+    const r = (await query(
+        `SELECT ${BASLANGIC_SQL} AS baslangic, CASE WHEN ${RED_YOK_SQL} THEN 1 ELSE 0 END AS red_yok
+           FROM lisans_odemeleri o WHERE o.id = ?`, [o.id])).rows[0];
+    if (!r || !Number(r.red_yok)) return null;
+    const b = bitisHesapla(r.baslangic);
+    return b && b.getTime() > Date.now() ? b : null;
 }
 
 module.exports = { etkinDurum, etkinDurumSenkron, tazele, yukle, kayitKorumaBitisi, bitisHesapla, korumaGun };

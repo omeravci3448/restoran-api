@@ -309,13 +309,15 @@ exports.markPaid = async (req, res) => {
         [req.params.id, req.user.tenantId]);
     if (!r.rows.length) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
-    await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = CURRENT_TIMESTAMP WHERE id = ?',
+    // Ilk bildirim ani KORUNUR: tekrar "odemeyi yaptim" demek odeme korumasi penceresini uzatmaz (yalniz not guncellenir)
+    await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = COALESCE(odeme_bildirildi_at, CURRENT_TIMESTAMP) WHERE id = ?',
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
     // Odeme korumasi (onay beklerken program acik): bir sonraki istek hemen gorsun
     await OK.tazele().catch(() => {});
     const o = r.rows[0];
     const k = kayitKdv(o);
-    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Ödeme bildirildi: ' + i.ad + ' - ' + LT.TL(k.genelToplam), [
+    // Root e-postasi yalniz ILK bildirimde (tekrar basildiginda gelen kutusu dolmasin; not root listesinde gorunur)
+    if (!o.odeme_bildirildi_at) isletmeAdi(req.user.tenantId).then(i => rootaBildir('Ödeme bildirildi: ' + i.ad + ' - ' + LT.TL(k.genelToplam), [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['Paket', o.tier],
         ...(o.tur === 'yukseltme' ? [['Tür', 'Yükseltme (yıllık toplam ' + LT.TL(o.yeni_toplam) + ', kredi ' + LT.TL(o.kredi_tutari) + ')']] : []),
         ['Tutar', kdvMetni(o)], ['Havale tutarı', LT.TL(k.genelToplam)], ['Gönderen / dekont notu', String(req.body?.paymentRef || '-')],
