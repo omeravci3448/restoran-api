@@ -59,4 +59,13 @@ function reddedildi(tenantId, { sebep }) {
     ]);
 }
 
-module.exports = { onaylandi, reddedildi, alicilar };
+// Root "Ek süre tanımla" (rakipten gecis): eklenen gun ve yeni bitis
+function ekSure(tenantId, { gun, bitis }) {
+    const tarih = bitis ? new Date(bitis).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric' }) : '-';
+    return gonder(tenantId, 'Ek lisans süreniz tanımlandı - MDA Restoran POS', 'Ek lisans süreniz tanımlandı', [
+        `Ek lisans süreniz tanımlanmıştır: ${gun} gün. Yeni bitiş tarihiniz: ${tarih}.`,
+        'Paketiniz ve modülleriniz değişmeden devam eder. İyi çalışmalar dileriz.',
+    ]);
+}
+
+module.exports = { onaylandi, reddedildi, ekSure, alicilar };

@@ -14,6 +14,7 @@ router.post('/isletme/:id/notlar', ctrl.notEkle);
 router.delete('/isletme/:id/notlar/:notId', ctrl.notSil);
 router.put('/isletme/:id/indirim', ctrl.indirim);
 router.post('/isletme/:id/eski-haklar/kaldir', ctrl.eskiHakKaldir);
+router.post('/isletme/:id/ek-sure', ctrl.ekSure);   // { gun, not }: rakipten geciste kalan lisans gunleri (services/ekSure.js)
 
 router.get('/ayarlar', ctrl.ayarlar);
 router.put('/ayarlar', ctrl.ayarYaz);

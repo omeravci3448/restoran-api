@@ -15,6 +15,7 @@ const ISLEM_AD = {
     isletme_kapat: 'İşletme kapatıldı',
     isletme_ac: 'İşletme açıldı',
     lisans_uzat: 'Lisans uzatma',
+    ek_sure: 'Ek süre (rakipten geçiş)',
     deneme_uzat: 'Deneme süresi uzatma',
     yonetici_sifresi_sifirla: 'Yönetici şifresi sıfırlandı',
     modul_degisiklik: 'Modül / paket değişikliği',

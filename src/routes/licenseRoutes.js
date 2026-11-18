@@ -34,5 +34,8 @@ router.get('/purchases', ...mgr, ctrl.purchases);
 router.get('/fatura', ...mgr, ctrl.faturaOku);
 router.put('/fatura', ...mgr, ctrl.faturaYaz);
 router.get('/purchases/:id', ...mgr, ctrl.purchaseStatus);
+// Ek sure bildirimi (root "Ek süre tanımla"): Lisans sayfasinda bir kez gosterilir; "Tamam" destek oturumunda yazilmaz
+router.get('/ek-sure-bildirimi', protect, require('../services/ekSure').bildirimUcu);
+router.post('/ek-sure-bildirimi/:id/goruldu', protect, require('../services/destekOturumu').destekYasak('Destek oturumunda kapatılamaz.'), require('../services/ekSure').gorulduUcu);
 
 module.exports = router;

@@ -87,6 +87,13 @@ exports.eskiHakKaldir = sar(async (req, res) => {
     res.json({ ok: true, message: `${t.business_name}: eski müşteri hakları kaldırıldı.` });
 });
 
+// Ek sure tanimi (rakipten gecis): yalniz onayli odemesi olan isletmeye (services/ekSure.js; 409 EK_SURE_ODEME_YOK)
+exports.ekSure = sar(async (req, res) => {
+    const b = req.body || {};
+    const s = await require('../services/ekSure').tanimla({ tenantId: String(req.params.id || ''), gun: b.gun, not: b.not, root: req.root, req });
+    res.json({ ok: true, ...s, message: `${s.isletme}: ${s.gun} gün ek süre tanımlandı. Yeni bitiş ${new Date(s.yeniBitis).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul' })}.` });
+});
+
 // --- C. Sistem Ayarlari ---
 exports.ayarlar = sar(async (_req, res) => res.json(await YA.hepsi()));
 exports.ayarYaz = sar(async (req, res) => {
