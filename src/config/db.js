@@ -1065,6 +1065,7 @@ const initDb = () => {
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_plaka_talep_no ON plaka_talepleri(talep_no) WHERE talep_no IS NOT NULL", [], () => {});
 
         require('./yonetimDb').yonetimTablolari(db);   // root paneli: yonetim gunlugu, ic notlar, duyurular, destek oturumlari
+        require('./grupDb').grupTablolari(db);   // sube gruplari + grup yoneticileri (cok subeli isletme ozeti)
 
         // Eski musteri haklari (services/gecisHaklari.js): gecis aninda isletmenin gecis sonrasi modul listesi ve
         // onayda ucretsiz korunacak eski haklari. Root hakki kaldirabilir (kaldirildi_at).
