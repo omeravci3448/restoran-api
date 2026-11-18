@@ -163,11 +163,12 @@ async function yenilemeKanali(tenantId) {
     const t = (await query('SELECT parent_org, license_tier, kvkk_consent_at FROM tenants WHERE id = ?', [tenantId])).rows[0];
     if (!t) return { kanal: 'yerel' };
     if (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX') {
+        // SofraMix isletme oturum cerezi yalniz isletme.soframix.com.tr alan adinda gecerli: varsayilan o adres.
         return {
             kanal: 'soframix',
-            url: (process.env.SOFRAMIX_PANEL_URL || 'https://soframix.com.tr').replace(/\/+$/, '') + '/isletme/pos',
-            mesaj: 'POS paketiniz SofraMix uzerinden saglaniyor. Yenilemeyi SofraMix isletme '
-                 + 'panelinizden yapmaniz gerekiyor.',
+            url: (process.env.SOFRAMIX_PANEL_URL || 'https://isletme.soframix.com.tr').replace(/\/+$/, '') + '/isletme/pos',
+            mesaj: 'POS paketiniz SofraMix üzerinden sağlanıyor. Paket değişikliği ve yenileme SofraMix işletme '
+                 + 'panelinizden yapılır.',
         };
     }
     // Dogrudan (SofraMix disi) deneme hesabi POS icinden paket satin alir: ayni havale/EFT akisi,
@@ -193,6 +194,7 @@ exports.yenilemeKanali = async (req, res) => {
     if (yk.kanal === 'yerel') {
         try { yk.donem = await LT.donemBilgisi(req.user.tenantId); } catch (_) { /* donem bilgisi olmadan da calisir */ }
     }
+    if (yk.kanal === 'soframix') yk.paket = await require('../services/soframixPaket').kiraciPaketBilgisi(req.user.tenantId).catch(() => null);
     res.json(yk);
 };
 
