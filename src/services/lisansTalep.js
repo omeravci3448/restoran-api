@@ -54,7 +54,8 @@ const TARIH = (s) => {
 };
 const sinir = (x) => (x == null ? Infinity : Number(x));   // masa siniri: null = sinirsiz
 const modulAdi = (tam, m) => ((tam.find((x) => x.tur === 'MODUL' && x.kod === m) || {}).ad) || M.AD[m] || m;
-const tierAdi = (tam, k) => (k ? (((tam.find((x) => x.tur === 'TIER' && x.kod === k) || {}).ad) || k) : '-');
+const tierAdi = (tam, k) => (k === M.MENU_TIER ? 'QR Menü paketi'
+    : k ? (((tam.find((x) => x.tur === 'TIER' && x.kod === k) || {}).ad) || k) : '-');
 
 // Satistaki (satin alinabilir) modul kodlari
 const satistakiModuller = (tam) => new Set(tam.filter((x) => x.tur === 'MODUL' && Number(x.gorunur) === 1).map((x) => x.kod));
@@ -141,6 +142,11 @@ async function kiraciDurumu(tenantId, simdi = new Date()) {
     };
 }
 
+// GARSON'a zaten sahip (deneme disi) isletme yenilemede Garson'u Adisyon ve Kasa olmadan da secebilir (eski kural)
+function garsonBasesizIzinli(kd) {
+    return !kd.deneme && kd.sahip.includes('GARSON');
+}
+
 // 'deneme' (odeme gecmisi yok: ilk alim) | 'yenileme' (bitise <= 30 gun, bitmis ya da tarihsiz) | 'donemIci'
 function donemTuru(kd) {
     if (kd.deneme) return 'deneme';
@@ -163,7 +169,7 @@ async function donemBilgisi(tenantId, simdi = new Date()) {
         yenilemeAcilis: durum === 'donemIci' ? yenilemeAcilisi(kd) : null,
         mevcut: { tier: kd.t.license_tier || null, masaLimiti: kd.mevcutLimit, moduller: kd.sahip,
                   korunan: kd.deneme ? [] : kd.satistaOlmayan.filter((m) => m !== 'ALL' && kd.katalogKodlari.has(m)),
-                  eskiHak: kd.eskiHak },
+                  eskiHak: kd.eskiHak, adisyon: M.varMi(kd.sahip, 'BASE'), garsonBasesizIzinli: garsonBasesizIzinli(kd) },
     };
 }
 
@@ -242,7 +248,8 @@ function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor, uz
 // Teklif: fiyat + tur + kredi + odenecek. Donem icinde azaltma 409 DONEM_ICI_AZALTMA.
 async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const kd = await kiraciDurumu(tenantId, simdi);
-    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: [...kd.satistaOlmayan, ...kd.eskiHak] });
+    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: [...kd.satistaOlmayan, ...kd.eskiHak],
+        garsonBasesizIzinli: garsonBasesizIzinli(kd) });
     const donem = donemTuru(kd);
     // Onayda korunacaklar (onizleme; onayda o anki lisansa gore yeniden hesaplanir)
     const korunan = await korunanHesapla(kd.t, f.modules, kd.tam);
@@ -261,8 +268,11 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const cikan = karsilastir.filter((m) => !M.varMi(sonListe, m));
     const eklenen = f.modules.filter((m) => !kd.sahip.includes(m));
     const yeniLimit = f.tableLimit == null ? null : Number(f.tableLimit);
-    const limitKuculur = sinir(yeniLimit) < sinir(kd.mevcutLimit);
-    const limitBuyur = sinir(yeniLimit) > sinir(kd.mevcutLimit);
+    // Masa siniri karsilastirmasi yalniz iki tarafta da Adisyon ve Kasa varsa anlamli: yalniz QR menu paketinde
+    // masa kademesi yok (QR menuden Adisyon ve Kasa'ya gecis yukseltmedir; tersi modul cikarmadir)
+    const ikisindeAdisyon = M.varMi(kd.sahip, 'BASE') && M.varMi(f.modules, 'BASE');
+    const limitKuculur = ikisindeAdisyon && sinir(yeniLimit) < sinir(kd.mevcutLimit);
+    const limitBuyur = ikisindeAdisyon && sinir(yeniLimit) > sinir(kd.mevcutLimit);
 
     let tur;
     let kredi = { krediTutari: 0, kaynak: null, kalanGun: kd.kalanGun };
@@ -295,10 +305,14 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const odenecek = Math.max(0, yuvarla(donemTutari - krediTutari));
     // KDV (katalog fiyatlari KDV haric): araToplam = odenecek, genelToplam = havale tutari (bkz services/lisansKdv.js)
     const kdv = kdvHesapla(odenecek);
-    const degisiyor = eklenen.length > 0 || cikan.length > 0 || (kd.t.license_tier || null) !== tier;
+    // Masa siniri (2026-11-18): aktif masa yeni sinirin uzerindeyse satin almada uyari + onay kutusu, root onayinda
+    // tum masalar pasife alinir (services/masaSiniri.js). Sinir null = sinirsiz.
+    const aktifMasa = await require('./masaSiniri').aktifSayi(tenantId);
+    const masaUyarisi = f.tableLimit != null && aktifMasa > Number(f.tableLimit);
+    const degisiyor = eklenen.length > 0 || cikan.length > 0 || (kd.t.license_tier || null) !== (f.tier || M.MENU_TIER);
     return {
         ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan, eskiHakModuller: eskiHakKorunan,
-        tur, donem, yeniToplam, krediTutari, odenecek, donemTutari, uzunDonem,
+        tur, donem, yeniToplam, krediTutari, odenecek, donemTutari, uzunDonem, aktifMasa, masaUyarisi,
         araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
         kalanGun: tur === 'yukseltme' ? kredi.kalanGun : kd.kalanGun,
         krediKaynak: tur === 'yukseltme' ? kredi.kaynak : null,

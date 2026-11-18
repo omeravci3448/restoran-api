@@ -81,6 +81,7 @@ async function protect(req, res, next) {
         lisansBitis: ld.bitis,
         lisansKalanGun: ld.kalanGun,
         lisansToleransBitis: ld.toleransBitis,
+        lisansAktifBitis: ld.aktifBitis || null,
         odemeKorumasi: ld.odemeKorumasi || null,   // { bitis }: lisans bitti ama odeme onay bekliyor, program acik
     };
     if (u.destek) {

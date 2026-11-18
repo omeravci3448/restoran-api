@@ -140,6 +140,7 @@ function teklifCevabi(tier, f) {
         ...(f.tur ? {
             tur: f.tur, kalanGun: f.kalanGun, krediTutari: f.krediTutari, krediKaynak: f.krediKaynak,
             odenecek: f.odenecek, aciklama: f.aciklama, donemTutari: f.donemTutari, uzunDonem: !!f.uzunDonem,
+            aktifMasa: f.aktifMasa, masaUyarisi: !!f.masaUyarisi,
         } : {}),
         araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
     };
@@ -153,7 +154,7 @@ exports.quote = async (req, res) => {
         const f = tenantId
             ? await LT.teklifHazirla({ tenantId, tier, modules })
             : await fiyatla({ tier, modules, indirimOrani: 0 });
-        res.json(teklifCevabi(tier, f));
+        res.json(teklifCevabi(f.tier, f));   // yalniz QR menu: tier null (masa kademesi yok)
     } catch (e) {
         if (e.status) return hataCevabi(res, e);
         throw e;
@@ -260,6 +261,14 @@ exports.purchase = async (req, res) => {
             message: 'Satın alma için fatura bilgilerinizi tamamlayın.' });
     }
 
+    // Masa siniri (2026-11-18): aktif masa sayisi secilen paketin sinirinin uzerindeyse musteri uyariyi okuyup
+    // onaylamali ("Okudum, anladim"); onayda tum masalar pasife alinir (services/masaSiniri.js). Onay kayda yazilir.
+    if (tk.masaUyarisi && req.body.masaUyarisiOnay !== true) {
+        return res.status(400).json({ code: 'MASA_UYARISI_ONAY_GEREKLI', aktifMasa: tk.aktifMasa, sinir: tk.tableLimit,
+            message: masaUyariMetni(tk.aktifMasa, tk.tableLimit) });
+    }
+    const masaOnayAt = tk.masaUyarisi ? new Date().toISOString() : null;
+
     // Kontrol + kayit tek islemde (es zamanli iki istek ikisi birden gecemesin).
     const id = uuidv4();
     const kayit = await tx(async () => {
@@ -269,12 +278,12 @@ exports.purchase = async (req, res) => {
         await query(
             `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama, tur, yeni_toplam, kredi_tutari,
                                            kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis,
-                                           kdv_orani, kdv_tutari, genel_toplam)
-             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, req.user.tenantId, tier, JSON.stringify(tk.odenenModuller), tk.odenecek, String(customerNote || '').slice(0, 300),
+                                           kdv_orani, kdv_tutari, genel_toplam, masa_uyari_onay_at, masa_uyari_aktif)
+             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, req.user.tenantId, tk.tier, JSON.stringify(tk.odenenModuller), tk.odenecek, String(customerNote || '').slice(0, 300),
                 tk.tur, tk.yeniToplam, tk.krediTutari, tk.kalanGun, tk.krediKaynak,
                 tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis,
-                tk.kdvOrani, tk.kdvTutari, tk.genelToplam]);
+                tk.kdvOrani, tk.kdvTutari, tk.genelToplam, masaOnayAt, tk.masaUyarisi ? tk.aktifMasa : null]);
         return {};
     });
     if (kayit.bekleyenId) return bekleyenCevabi(kayit.bekleyenId);
@@ -285,16 +294,17 @@ exports.purchase = async (req, res) => {
     isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni paket talebi (ödeme henüz bildirilmedi): ' + i.ad, [
         ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['E-posta', i.eposta], ['Telefon', i.tel],
         ['Tür', TUR_AD[tk.tur] || tk.tur],
-        ['Masa paketi', tk.tierRow.displayName + ' (' + tier + ')'], ['Modüller', tk.odenenModuller.map((m) => MODUL_AD[m] || m).join(', ')],
+        ['Masa paketi', tk.tierRow ? tk.tierRow.displayName + ' (' + tk.tier + ')' : 'Yok (yalnız QR Menü)'], ['Modüller', tk.odenenModuller.map((m) => MODUL_AD[m] || m).join(', ')],
         ...(tk.korunanModuller.length ? [['Korunan (ücretsiz)', tk.korunanModuller.map((m) => (m === 'ALL' ? 'Tüm modüller' : MODUL_AD[m] || m)).join(', ')]] : []),
         ['Yıllık toplam (KDV hariç)', LT.TL(tk.yeniToplam)],
         ...(tk.tur === 'yukseltme' ? [['Kalan süre kredisi', tk.kalanGun + ' gün, ' + LT.TL(tk.krediTutari)
             + (tk.krediKaynak === 'katalog' ? ' (bu dönem için onaylı ödeme yok: katalog fiyatından)' : ' (son onaylı ödemeden)')]] : []),
         ['Ödenecek', kdvMetni(kdvSatir)], ['Havale tutarı', LT.TL(tk.genelToplam)],
+        ...(tk.masaUyarisi ? [['Masa sınırı', `Aktif ${tk.aktifMasa} masa, paket sınırı ${tk.tableLimit}. Onayda açık hesabı olmayan masalar pasife alınır (müşteri uyarıyı onayladı).`]] : []),
         ['Durum', 'Müşteri henüz "ödemeyi yaptım" demedi. Ödeme bildirilince ayrıca e-posta gelir.'],
     ])).catch(() => {});
     res.status(201).json({
-        id, tier, modules: tk.modules, odenenModuller: tk.odenenModuller, korunanModuller: tk.korunanModuller,
+        id, tier: tk.tier, modules: tk.modules, odenenModuller: tk.odenenModuller, korunanModuller: tk.korunanModuller,
         total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
         araToplam: tk.araToplam, kdvOrani: tk.kdvOrani, kdvTutari: tk.kdvTutari, genelToplam: tk.genelToplam,
         kalanGun: tk.kalanGun, krediTutari: tk.krediTutari, aciklama: tk.aciklama, status: 'PENDING_PAYMENT',
@@ -302,6 +312,13 @@ exports.purchase = async (req, res) => {
         message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',
     });
 };
+
+// Satin almada aktif masa sayisi paketin sinirinin uzerindeyse gosterilen uyari (arayuzde ayni metin)
+function masaUyariMetni(aktif, sinir) {
+    return `Aktif masa sayınız (${aktif}) seçtiğiniz paketin sınırının (${sinir}) üzerinde. Ödemeniz onaylandığında tüm masalarınız `
+        + 'pasife alınır; lisansınızdaki masa sayısı kadar masayı Masalar sayfasından yeniden aktif edebilirsiniz. '
+        + 'Aktif ettiğiniz masaların karekodları çalışmaya devam eder.';
+}
 
 exports.markPaid = async (req, res) => {
     const r = await query(
@@ -318,7 +335,7 @@ exports.markPaid = async (req, res) => {
     const k = kayitKdv(o);
     // Root e-postasi yalniz ILK bildirimde (tekrar basildiginda gelen kutusu dolmasin; not root listesinde gorunur)
     if (!o.odeme_bildirildi_at) isletmeAdi(req.user.tenantId).then(i => rootaBildir('Ödeme bildirildi: ' + i.ad + ' - ' + LT.TL(k.genelToplam), [
-        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['Paket', o.tier],
+        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['Paket', o.tier || 'Yalnız QR Menü'],
         ...(o.tur === 'yukseltme' ? [['Tür', 'Yükseltme (yıllık toplam ' + LT.TL(o.yeni_toplam) + ', kredi ' + LT.TL(o.kredi_tutari) + ')']] : []),
         ['Tutar', kdvMetni(o)], ['Havale tutarı', LT.TL(k.genelToplam)], ['Gönderen / dekont notu', String(req.body?.paymentRef || '-')],
         ['Yapılacak', 'Hesabı kontrol edip root panelinden onaylayın; lisans otomatik uzar.'],

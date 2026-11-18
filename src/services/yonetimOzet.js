@@ -16,6 +16,7 @@ const M = require('./lisansModul');
 
 const OZEL_TIER_AD = {
     TIER_DENEME: 'Deneme', TIER_KURUM: 'Kurum lisansı', TIER_MUSTERI: 'Müşteri (elle uzatıldı)', TIER_SOFRAMIX: 'SofraMix POS paketi',
+    TIER_MENU: 'QR Menü paketi',
 };
 
 // Isletme satirina eklenen odeme sayaclari (t = tenants takma adi)

@@ -1066,6 +1066,7 @@ const initDb = () => {
 
         require('./yonetimDb').yonetimTablolari(db);   // root paneli: yonetim gunlugu, ic notlar, duyurular, destek oturumlari
         require('./lisansOdemeDb').lisansOdemeKolonlari(db);   // lisans odemesi KDV kolonlari (kdv_orani, kdv_tutari, genel_toplam)
+        require('./lisansMasaDb').lisansMasaKolonlari(db);   // lisans masa siniri: tables.pasif_sebep, satin almada masa uyarisi onayi
 
         // Eski musteri haklari (services/gecisHaklari.js): gecis aninda isletmenin gecis sonrasi modul listesi ve
         // onayda ucretsiz korunacak eski haklari. Root hakki kaldirabilir (kaldirildi_at).

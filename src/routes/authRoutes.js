@@ -25,5 +25,7 @@ router.patch('/staff/:id', protect, destekte, requireRole('OWNER', 'MANAGER'), c
 router.get('/manager-status', protect, ctrl.managerStatus);
 router.post('/manager-set', protect, destekte, requireRole('OWNER', 'MANAGER'), ctrl.managerSet);
 router.post('/manager-verify', protect, requireRole('OWNER', 'MANAGER'), ctrl.managerVerify);
+// Yonetici sifremi unuttum: yalniz isletme sahibi, kendi giris sifresiyle (denetleyici OWNER ve deneme sinirini kontrol eder)
+router.post('/manager-reset', protect, destekte, ctrl.managerReset);
 
 module.exports = router;

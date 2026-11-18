@@ -47,6 +47,7 @@ router.get('/tenants', protectRoot, ctrl.listTenants);
 router.post('/tenants', protectRoot, ctrl.createTenant);
 router.patch('/tenants/:id', protectRoot, ctrl.updateTenant);
 router.post('/tenants/:id/owner-password', protectRoot, ctrl.resetOwnerPassword);
+router.post('/tenants/:id/yonetici-sifresi-sifirla', protectRoot, ctrl.yoneticiSifresiSifirla);
 router.post('/tenants/:id/lisans-uzat', protectRoot, ctrl.lisansUzat);
 
 // SofraMix POS ödemeleri — lisansın nereden uzadığının ve faturanın dayanağı

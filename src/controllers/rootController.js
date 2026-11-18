@@ -337,18 +337,35 @@ exports.lisansUzat = async (req, res) => {
         bitis = yeniBitis(t.license_end_date, gun);
     }
 
-    // Deneme kiracisi para odeyince artik musteridir. Tier'i burada cevirmezsek
-    // hub disi sayilmaya devam eder ama panelde hala "Deneme" gorunur.
+    // Iki kip (2026-11-18, deneme isletmesi icin):
+    //   'deneme' : deneme suresini uzatir; paket TIER_DENEME KALIR (odeme sayilmaz, isletme deneme sinifinda kalir,
+    //              ilk satin alma yine "ilk alim" olur). Root panelindeki pencerede varsayilan budur.
+    //   'lisans' : odeme alindi, lisans verilir: TIER_DENEME -> TIER_MUSTERI (eski davranis; hub disi sayilmaya
+    //              devam eder, panelde "Musteri" gorunur).
+    // Kip gonderilmezse eski davranis ('lisans'; eski arayuz ve betikler). Deneme olmayan isletmede kip yok sayilir
+    // (tarih uzar, paket degismez).
+    const mod = b.mod === 'deneme' || b.mod === 'lisans' ? b.mod : null;
+    if (b.mod != null && !mod) return res.status(400).json({ message: 'Kip "deneme" ya da "lisans" olmalı.' });
+    const denemeMi = t.license_tier === 'TIER_DENEME';
+    const denemeUzat = denemeMi && mod === 'deneme' && !b.tier;
     const tier = b.tier ? String(b.tier).slice(0, 40)
-        : (t.license_tier === 'TIER_DENEME' ? 'TIER_MUSTERI' : t.license_tier);
+        : (denemeMi && !denemeUzat ? 'TIER_MUSTERI' : t.license_tier);
 
     await query(
         'UPDATE tenants SET license_end_date = ?, license_tier = ?, is_active = 1 WHERE id = ?',
         [bitis, tier, t.id]);
-    await YG.kaydet(req, { islem: 'lisans_uzat', tenantId: t.id, ozet: `Lisans bitişi ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}` + (tier !== t.license_tier ? `; paket ${t.license_tier || '-'} -> ${tier}` : ''), ayrinti: { onceki: t.license_end_date, yeni: bitis, gun: b.gun || null, tier } });
+    const ozet = (denemeUzat ? `Deneme süresi uzatıldı: bitiş ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}`
+        : `Lisans bitişi ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}` + (denemeMi ? ' (ödeme alındı: lisans verildi)' : ''))
+        + (tier !== t.license_tier ? `; paket ${t.license_tier || '-'} -> ${tier}` : '');
+    await YG.kaydet(req, { islem: denemeUzat ? 'deneme_uzat' : 'lisans_uzat', tenantId: t.id, ozet,
+        ayrinti: { onceki: t.license_end_date, yeni: bitis, gun: b.gun || null, tier, mod: denemeUzat ? 'deneme' : (denemeMi ? 'lisans' : null) } });
+    // Lisans durumu ya da paketi degisti: odeme korumasi onbellegi tazelensin
+    require('../services/odemeKorumasi').tazele().catch(() => {});
 
-    res.json({ ok: true, id: t.id, license_end_date: bitis, license_tier: tier,
-        message: `${t.business_name} lisansı ${new Date(bitis).toLocaleDateString('tr-TR')} tarihine uzatıldı.` });
+    const tarihMetni = new Date(bitis).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul' });
+    res.json({ ok: true, id: t.id, license_end_date: bitis, license_tier: tier, mod: denemeUzat ? 'deneme' : (denemeMi ? 'lisans' : null),
+        message: denemeUzat ? `${t.business_name} deneme süresi ${tarihMetni} tarihine uzatıldı.`
+            : `${t.business_name} lisansı ${tarihMetni} tarihine uzatıldı.` });
 };
 
 
@@ -471,7 +488,13 @@ exports.updateTenant = async (req, res) => {
             f.isActive == null ? null : (f.isActive ? 1 : 0),
             req.params.id]);
     await YG.isletmeFarki(req, t.id, once);
-    res.json({ ok: true, message: 'Güncellendi.', modules: moduller || undefined });
+    // Masa siniri elle yazildiysa ve aktif masa uzerindeyse: acik hesabi olmayan masalar pasife alinir (masaSiniri)
+    // (yalniz sinir DEGISTIYSE: baska bir alan duzenlenirken ayni sinir yeniden gonderilince masalara dokunulmaz)
+    const sinirDegisti = limitGeldi && String(once && once.license_table_limit != null ? once.license_table_limit : '') !== String(masaLimiti == null ? '' : masaLimiti);
+    const masa = sinirDegisti && masaLimiti != null
+        ? await require('../services/masaSiniri').siniriUygula(t.id, masaLimiti, { kaynak: 'root düzenleme' }).catch(() => null) : null;
+    res.json({ ok: true, message: masa && masa.uygulandi ? `Güncellendi. ${masa.pasifeAlinan} masa pasife alındı (lisans sınırı ${masa.sinir}).` : 'Güncellendi.',
+        modules: moduller || undefined, masaSiniri: masa && masa.uygulandi ? masa : undefined });
 };
 
 // --- Yönetici şifresini sıfırla ---
@@ -489,6 +512,19 @@ exports.resetOwnerPassword = async (req, res) => {
         [await bcrypt.hash(yeni, 10), new Date().toISOString(), u.rows[0].id]);
     await YG.kaydet(req, { islem: 'sifre_ver', tenantId: req.params.id, ozet: 'İşletme sahibine yeni giriş şifresi verildi (şifre kayda yazılmaz)' });
     res.json({ ok: true, message: 'Yönetici şifresi güncellendi.', email: t.rows[0].owner_email });
+};
+
+// --- Yonetici sifresini sifirla (root, 2026-11-18) ---
+// Isletme yonetici sifresini (Rapor / Ayarlar / Lisans kilidi) unuttu ve giris sifresiyle de sifirlayamiyor: root
+// sifreyi kaldirir; isletme Lisans ya da Ayarlar sayfasina girince yeni yonetici sifresi belirler. Giris sifrelerine
+// dokunulmaz. Sifre kayda yazilmaz.
+exports.yoneticiSifresiSifirla = async (req, res) => {
+    const t = (await query('SELECT id, business_name, manager_pin FROM tenants WHERE id = ?', [req.params.id])).rows[0];
+    if (!t) return res.status(404).json({ message: 'İşletme bulunamadı.' });
+    await query('UPDATE tenants SET manager_pin = NULL WHERE id = ?', [t.id]);
+    await YG.kaydet(req, { islem: 'yonetici_sifresi_sifirla', tenantId: t.id,
+        ozet: t.manager_pin ? 'Yönetici şifresi sıfırlandı; işletme yeni şifre belirleyecek' : 'Yönetici şifresi sıfırlandı (zaten belirlenmemişti)' });
+    res.json({ ok: true, message: `${t.business_name}: yönetici şifresi sıfırlandı. İşletme, Lisans ya da Ayarlar sayfasına girdiğinde yeni şifre belirleyecek.` });
 };
 
 module.exports.ensureRootUser = ensureRootUser;
@@ -679,6 +715,11 @@ exports.lisansOdemeleri = async (req, res) => {
             // Odeme korumasi: musteri "odemeyi yaptim" dedi, onay beklerken program acik (bitis)
             const kb = await require('../services/odemeKorumasi').kayitKorumaBitisi(x).catch(() => null);
             ek.koruma_bitis = kb ? kb.toISOString() : null;
+            // Masa siniri: onaylanirsa aktif masalar pasife alinacak mi (services/masaSiniri.js; onay penceresi uyarisi)
+            const ms = await masaSiniriOnizleme(x, onay.moduller);
+            ek.aktif_masa = ms.aktif;
+            ek.yeni_masa_limiti = ms.sinir;
+            ek.masa_pasife_alinacak = ms.sinir != null && ms.aktif > ms.sinir;
         }
         // KDV (2026-11-18): tutar KDV haric; havale tutari genel toplam. Eski kayitta KDV yok (kdv_var false).
         const kdv = require('../services/lisansKdv');
@@ -691,11 +732,24 @@ exports.lisansOdemeleri = async (req, res) => {
         return {
             ...x, moduller: m, mevcut_moduller: mevcut,
             onceki_moduller: x.onceki_moduller == null ? null : M.modulListesi(x.onceki_moduller),
-            tier_ad: LT.tierAdi(tam, x.tier), onceki_tier_ad: x.onceki_tier ? LT.tierAdi(tam, x.onceki_tier) : null,
+            tier_ad: x.tier ? LT.tierAdi(tam, x.tier) : 'Masa paketi yok (yalnız QR Menü)', onceki_tier_ad: x.onceki_tier ? LT.tierAdi(tam, x.onceki_tier) : null,
             mevcut_tier_ad: LT.tierAdi(tam, x.mevcut_tier), ...ek,
         };
     })));
 };
+
+// Onayda yazilacak masa siniri: kademenin siniri (kademe katalogda yoksa mevcut sinir). Adisyon ve Kasa yoksa
+// (yalniz QR menu) masa siniri yok: null. Doner { sinir, kademeVar, aktif }
+async function masaSiniriOnizleme(o, moduller) {
+    const M = require('../services/lisansModul');
+    const aktif = await require('../services/masaSiniri').aktifSayi(o.tenant_id);
+    if (!M.varMi(moduller, 'BASE')) return { sinir: null, kademeVar: false, menu: true, aktif };
+    const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
+    const mevcut = o.mevcut_masa_limiti !== undefined ? o.mevcut_masa_limiti
+        : (await query('SELECT license_table_limit FROM tenants WHERE id = ?', [o.tenant_id])).rows[0]?.license_table_limit;
+    const s = kademe ? kademe.masa_limiti : mevcut;
+    return { sinir: s == null ? null : Number(s), kademeVar: !!kademe, aktif };
+}
 
 // Onay = LISANSIN UZADIGI TEK AN. Bildirimin kendisi lisansa dokunmuyordu.
 // Onayda KILITLI teklif uygulanir (yeniden hesaplanmaz): moduller ve paket kayittaki gibi. Yeni bitis tura gore
@@ -725,16 +779,19 @@ exports.lisansOdemeOnayla = async (req, res) => {
             // kaybetmez (lisansModul.korunacakModuller).
             const tam = await require('../services/lisansKatalog').tamKatalog();
             const { moduller, eskiHak } = await LT.onayModulleri(o, t, tam);
-            // Masa siniri secilen kademeden gelir (Adisyon ve Kasa secilmese de). Kademe katalogda yoksa (eski
-            // kayit) sinira dokunulmaz.
-            const kademe = o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
+            // Masa siniri secilen kademeden gelir. Kademe katalogda yoksa (eski kayit) sinira dokunulmaz.
+            // Yalniz QR menu (2026-11-18: yeni liste Adisyon ve Kasa icermiyor): masa kademesi yok; paket kodu
+            // TIER_MENU, masa siniri NULL (sinirsiz; tek menu, tek karekod). Eski kayitta kademe gelse de ayni.
+            const menuPaketi = !M.varMi(moduller, 'BASE');
+            const kademe = !menuPaketi && o.tier ? await require('../services/lisansKatalog').tierSatiri(o.tier) : null;
+            const tierYaz = menuPaketi ? M.MENU_TIER : (o.tier || null);
             await query(
                 `UPDATE tenants SET license_end_date = ?, is_active = 1,
                                     license_tier = COALESCE(?, license_tier),
                                     license_modules = ?,
                                     license_table_limit = CASE WHEN ? = 1 THEN ? ELSE license_table_limit END
                   WHERE id = ?`,
-                [bitis, o.tier || null, JSON.stringify(moduller), kademe ? 1 : 0, kademe ? kademe.masa_limiti : null, t.id]);
+                [bitis, tierYaz, JSON.stringify(moduller), kademe || menuPaketi ? 1 : 0, kademe ? kademe.masa_limiti : null, t.id]);
             // onay_gun: plaka hediyesinin "yillik odeme" olcutu ve sonraki yukseltmenin kredisi bu sayiya bakar
             await query(
                 `UPDATE lisans_odemeleri SET durum = 'onaylandi', admin_note = ?, donem_bitis = ?, onay_gun = ?,
@@ -747,6 +804,10 @@ exports.lisansOdemeOnayla = async (req, res) => {
         throw e;
     }
     const { o, t, bitis, etkinTur, eskiHak } = sonuc;
+    // Masa siniri (2026-11-18): aktif masa yeni sinirin uzerindeyse acik hesabi olmayan masalar pasife alinir
+    const yeniLimit = (await query('SELECT license_table_limit FROM tenants WHERE id = ?', [t.id])).rows[0]?.license_table_limit;
+    const masa = await require('../services/masaSiniri').siniriUygula(t.id, yeniLimit, { kaynak: 'ödeme onayı' })
+        .catch((e) => { console.error('[masa-siniri] onay:', e.message); return null; });
     const hakOzet = eskiHak && eskiHak.length ? `; eski hak korundu: ${eskiHak.map((m) => require('../services/lisansModul').AD[m] || m).join(', ')}` : '';
     await YG.kaydet(req, { islem: 'odeme_onay', tenantId: t.id, hedefTur: 'lisans_odemesi', hedefId: o.id, ozet: `Ödeme onaylandı (${o.tur || etkinTur || 'eski kayıt'}): ${YG.TL(o.tutar)}; paket ${o.tier || '-'}; lisans ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}${hakOzet}`, ayrinti: { tutar: o.tutar, tur: o.tur, tier: o.tier, moduller: o.moduller, gun, oncekiBitis: t.license_end_date, yeniBitis: bitis, eskiHak } });
     const tarih = LT.TARIH(bitis);
@@ -762,7 +823,9 @@ exports.lisansOdemeOnayla = async (req, res) => {
             M.modulListesi(o.moduller).map((m) => M.AD[m] || m).join(', ')].filter((x) => x && x !== '-').join(' - ') || 'Lisans paketi',
         bitis,
     }).catch(() => {});
-    res.json({ ok: true, license_end_date: bitis, tur: o.tur || etkinTur || null, message });
+    res.json({ ok: true, license_end_date: bitis, tur: o.tur || etkinTur || null,
+        message: masa && masa.uygulandi ? `${message} ${masa.pasifeAlinan} masa pasife alındı (lisans sınırı ${masa.sinir}).` : message,
+        masaSiniri: masa && masa.uygulandi ? masa : null });
 };
 
 // Red: sebep ZORUNLU (en az 5 karakter); musteri Lisans sayfasinda ve e-postada gorur. Red, odeme korumasini HEMEN
