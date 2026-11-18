@@ -18,7 +18,7 @@ async function musteriKatalogu() {
 // Root paneli icin: gizliler DAHIL hepsi.
 async function tamKatalog() {
     const r = await query(
-        `SELECT id, tur, kod, ad, aciklama, fiyat, masa_limiti, gorunur, sira
+        `SELECT id, tur, kod, ad, aciklama, fiyat, masa_limiti, gorunur, sira, smx_fiyat
            FROM lisans_katalog ORDER BY tur DESC, sira, ad`);
     return r.rows;
 }
@@ -58,6 +58,8 @@ async function guncelle(id, alanlar) {
     const a = alanlar || {};
     const mevcut = (await query('SELECT * FROM lisans_katalog WHERE id = ?', [id])).rows[0];
     if (!mevcut) return null;
+    const smxVar = Object.prototype.hasOwnProperty.call(a, 'smxFiyat');
+    const smx = smxVar ? smxFiyatCoz(a.smxFiyat) : null;   // hataliysa HICBIR sey yazilmadan 400
     await query(
         `UPDATE lisans_katalog
             SET ad = COALESCE(?, ad),
@@ -75,7 +77,19 @@ async function guncelle(id, alanlar) {
             a.gorunur == null ? null : (a.gorunur ? 1 : 0),
             a.sira != null ? Number(a.sira) : null,
             id]);
+    // SofraMix uyelerine ozel fiyat (KDV haric). Bos = normal fiyatla ayni (NULL).
+    if (smxVar) await query('UPDATE lisans_katalog SET smx_fiyat = ? WHERE id = ?', [smx, id]);
     return (await query('SELECT * FROM lisans_katalog WHERE id = ?', [id])).rows[0];
+}
+
+// '' / null -> null (normal fiyat). Gecersizse 400.
+function smxFiyatCoz(deger) {
+    if (deger === '' || deger == null) return null;
+    const n = Number(deger);
+    if (!Number.isFinite(n) || n < 0 || n > 10000000) {
+        throw Object.assign(new Error('SofraMix fiyatı 0 ile 10.000.000 arasında bir sayı olmalı.'), { status: 400 });
+    }
+    return Math.round(n * 100) / 100;
 }
 
 module.exports = { musteriKatalogu, tamKatalog, modulGorunurMu, guncelle, tierSatiri };

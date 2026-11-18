@@ -15,6 +15,8 @@ const SAYISAL = {
     deneme_gun: { ad: 'Deneme süresi (gün)', en: 1, cok: 90, varsayilan: () => Number(process.env.DENEME_GUN || 7) },
     lisans_salt_okunur_gun: { ad: 'Lisans bitince salt-okunur gün', en: 0, cok: 30, varsayilan: () => Number(process.env.LISANS_TOLERANS_GUN || 3) },
     destek_oturumu_dk: { ad: 'Destek oturumu süresi (dakika)', en: 5, cok: 720, varsayilan: () => 120 },
+    // SofraMix tam paket fiyati (KDV haric, TL; Paketler ve Fiyatlar sekmesinde). Bos = tam paket sunulmaz.
+    smx_tam_paket_fiyat: { ad: 'SofraMix tam paket fiyatı (KDV hariç)', en: 1, cok: 10000000, varsayilan: () => null },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)
