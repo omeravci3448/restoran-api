@@ -390,8 +390,9 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     ok('bugun biten: AKTIF, kalanGun 0', rBG && rBG.durum === 'AKTIF' && rBG.kalanGun === 0 && rBG.erisimKalanGun === 0, rBG);
     // R1-L4: gecerli istekler "hatali istek" sayacini doldurmaz (300'u gecen gecerli istek 429 almaz)
     let sayi429 = 0;
-    for (let i = 0; i < 16; i++) {
-        const tur = await Promise.all(Array.from({ length: 20 }, () => al(durumAdresi(durumGovde(no7)))));
+    // Az eszamanli (4): Windows libuv anlik coku riskini dusurur
+    for (let i = 0; i < 80; i++) {
+        const tur = await Promise.all(Array.from({ length: 4 }, () => al(durumAdresi(durumGovde(no7)))));
         sayi429 += tur.filter((x) => x.status === 429).length;
     }
     ok('320 gecerli istek: hic 429 yok', sayi429 === 0, sayi429);
