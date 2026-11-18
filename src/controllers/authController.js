@@ -249,7 +249,8 @@ exports.login = async (req, res) => {
     if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
     if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
     // Lisans KAPALI: sahip/mudur girip YALNIZ lisansi yenileyebilir; diger hesaplarin yapacagi bir sey yok.
-    if (require('../services/lisansDurumu').hesapla(u.license_end_date).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
+    // Odeme korumasi: "odemeyi yaptim" sonrasi onay beklerken isletme acik (services/odemeKorumasi.js)
+    if ((await require('../services/odemeKorumasi').etkinDurum(u.tenant_id, u.license_end_date)).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
         return res.status(403).json({ code: 'LICENSE_EXPIRED',
             message: 'Lisansınızın süresi doldu. İşletme sahibi ya da müdür Lisans sayfasından yenileyebilir.' });
     }
@@ -343,6 +344,7 @@ exports.me = async (req, res) => {
         lisansBitis: req.user.lisansBitis,
         lisansKalanGun: req.user.lisansKalanGun,
         lisansToleransBitis: req.user.lisansToleransBitis,
+        odemeKorumasi: req.user.odemeKorumasi || null,   // { bitis }: odeme onay bekliyor, program acik (sakin sari serit)
     });
 };
 

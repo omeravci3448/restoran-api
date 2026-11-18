@@ -18,7 +18,8 @@ const KAPALI = {
 // kapatamaz); garson cagrisi ve hesap acik. Misafire ayni kod ve "lutfen personele basvurun" aciklamasi doner;
 // QR menu bu kodla dugmeyi hemen gizler, menu yanitindaki ozellikler de dugmeleri bastan gizler.
 function lisansIzinVerir(ctx, ad) {
-    const d = require('../services/lisansDurumu').hesapla(ctx && ctx.license_end_date).durum;
+    // Odeme korumasi (onay bekleyen bildirilmis odeme) varsa isletme acik sayilir (services/odemeKorumasi.js)
+    const d = require('../services/odemeKorumasi').etkinDurumSenkron(ctx && ctx.tenant_id, ctx && ctx.license_end_date).durum;
     if (d === 'KAPALI') return false;
     if (d === 'SALT_OKUNUR' && ad === 'siparis') return false;
     return true;

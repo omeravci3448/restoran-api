@@ -5,6 +5,9 @@ const { rootaBildir } = require('../services/rootBildirim');
 const { fiyatla } = require('../services/lisansFiyat');
 const { AD: MODUL_AD } = require('../services/lisansModul');
 const LT = require('../services/lisansTalep');
+const { kdvHesapla, kayitKdv, kdvMetni } = require('../services/lisansKdv');
+const OK = require('../services/odemeKorumasi');
+const FB = require('../services/faturaBilgisi');
 
 // Hub erişilemezse kayıt formu yine çalışsın diye yedek katalog.
 // Kayıt formu fiyat GÖSTERMEZ (sadece ad + masa limiti) — bu yüzden fiyatların
@@ -125,15 +128,20 @@ exports.kimlikOpsiyonel = async (req, _res, next) => {
 // Oturumlu kiracida teklif TURU de hesaplanir (services/lisansTalep.js): ilk / yenileme / yukseltme, kalan sure
 // kredisi ve odenecek tutar. Donem icinde modul cikarma ya da kucuk pakete gecis 409 DONEM_ICI_AZALTMA.
 // Oturumsuz (kayit sayfasi) yalniz fiyat.
+// KDV (2026-11-18): fiyatlar KDV haric; araToplam = odenecek (oturumsuzda total), kdvTutari, genelToplam = havale tutari.
 function teklifCevabi(tier, f) {
+    const kdv = f.genelToplam != null
+        ? { araToplam: f.araToplam, kdvOrani: f.kdvOrani, kdvTutari: f.kdvTutari, genelToplam: f.genelToplam }
+        : kdvHesapla(f.total);
     return {
         currency: 'TRY', tier, modules: f.modules, eklenenBagimliliklar: f.eklenenBagimliliklar,
         korunanModuller: f.korunanModuller || [], eskiHakModuller: f.eskiHakModuller || [], tableLimit: f.tableLimit,
         subtotal: f.subtotal, discountRate: f.discountRate, discountAmount: f.discountAmount, total: f.total, breakdown: f.breakdown,
         ...(f.tur ? {
             tur: f.tur, kalanGun: f.kalanGun, krediTutari: f.krediTutari, krediKaynak: f.krediKaynak,
-            odenecek: f.odenecek, aciklama: f.aciklama,
+            odenecek: f.odenecek, aciklama: f.aciklama, donemTutari: f.donemTutari, uzunDonem: !!f.uzunDonem,
         } : {}),
+        araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
     };
 }
 const hataCevabi = (res, e) => res.status(e.status).json({ code: e.code, message: e.message, ...(e.ek || {}) });
@@ -231,6 +239,27 @@ exports.purchase = async (req, res) => {
     }
 
     // Ayni kiracinin bekleyen bildirimi varsa ikincisi acilmiyor: iki bildirim onaylanirsa lisans iki kez uzar.
+    // Arayuz bu cevapla "bekleyen bildirimi goster / iptal edip bu secimle devam et" sorar (BEKLEYEN_BILDIRIM).
+    const bekleyenCevabi = async (bekleyenId) => {
+        const b = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [bekleyenId])).rows[0] || {};
+        const k = kayitKdv(b);
+        const tam = await require('../services/lisansKatalog').tamKatalog().catch(() => []);
+        return res.status(409).json({
+            code: 'BEKLEYEN_BILDIRIM', message: 'Onay bekleyen bir ödeme bildiriminiz var.', id: bekleyenId,
+            tier: b.tier || null, tierAd: LT.tierAdi(tam, b.tier), tutar: Number(b.tutar) || 0, genelToplam: k.genelToplam,
+            kdvVar: k.kdvVar, odemeBildirildi: !!b.odeme_bildirildi_at,
+        });
+    };
+    const once = await query("SELECT id FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede'", [req.user.tenantId]);
+    if (once.rows.length) return bekleyenCevabi(once.rows[0].id);
+
+    // Fatura bilgisi ilk satin almada BIR KEZ zorunlu (kayitliysa sorulmaz). Eksikse arayuz formu gosterir.
+    const fatura = await FB.oku(req.user.tenantId);
+    if (!fatura.tamam) {
+        return res.status(400).json({ code: 'FATURA_BILGISI_EKSIK', eksik: fatura.eksik,
+            message: 'Satın alma için fatura bilgilerinizi tamamlayın.' });
+    }
+
     // Kontrol + kayit tek islemde (es zamanli iki istek ikisi birden gecemesin).
     const id = uuidv4();
     const kayit = await tx(async () => {
@@ -239,32 +268,35 @@ exports.purchase = async (req, res) => {
         if (bekleyen.rows.length) return { bekleyenId: bekleyen.rows[0].id };
         await query(
             `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama, tur, yeni_toplam, kredi_tutari,
-                                           kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis)
-             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                           kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis,
+                                           kdv_orani, kdv_tutari, genel_toplam)
+             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, req.user.tenantId, tier, JSON.stringify(tk.odenenModuller), tk.odenecek, String(customerNote || '').slice(0, 300),
                 tk.tur, tk.yeniToplam, tk.krediTutari, tk.kalanGun, tk.krediKaynak,
-                tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis]);
+                tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis,
+                tk.kdvOrani, tk.kdvTutari, tk.genelToplam]);
         return {};
     });
-    if (kayit.bekleyenId) {
-        return res.status(409).json({ message: 'Onay bekleyen bir ödeme bildiriminiz var.', id: kayit.bekleyenId });
-    }
+    if (kayit.bekleyenId) return bekleyenCevabi(kayit.bekleyenId);
 
     const A = require('../services/sistemAyar');
     const TUR_AD = { ilk: 'İlk satın alma (deneme sonrası)', yenileme: 'Yenileme', yukseltme: 'Yükseltme (dönem içi)' };
-    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni ödeme bildirimi: ' + i.ad, [
-        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['E-posta', i.eposta], ['Telefon', i.tel],
+    const kdvSatir = { tutar: tk.odenecek, kdv_orani: tk.kdvOrani, kdv_tutari: tk.kdvTutari, genel_toplam: tk.genelToplam };
+    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Yeni paket talebi (ödeme henüz bildirilmedi): ' + i.ad, [
+        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['E-posta', i.eposta], ['Telefon', i.tel],
         ['Tür', TUR_AD[tk.tur] || tk.tur],
         ['Masa paketi', tk.tierRow.displayName + ' (' + tier + ')'], ['Modüller', tk.odenenModuller.map((m) => MODUL_AD[m] || m).join(', ')],
         ...(tk.korunanModuller.length ? [['Korunan (ücretsiz)', tk.korunanModuller.map((m) => (m === 'ALL' ? 'Tüm modüller' : MODUL_AD[m] || m)).join(', ')]] : []),
-        ['Yıllık toplam', LT.TL(tk.yeniToplam)],
+        ['Yıllık toplam (KDV hariç)', LT.TL(tk.yeniToplam)],
         ...(tk.tur === 'yukseltme' ? [['Kalan süre kredisi', tk.kalanGun + ' gün, ' + LT.TL(tk.krediTutari)
             + (tk.krediKaynak === 'katalog' ? ' (bu dönem için onaylı ödeme yok: katalog fiyatından)' : ' (son onaylı ödemeden)')]] : []),
-        ['Ödenecek', LT.TL(tk.odenecek)],
+        ['Ödenecek', kdvMetni(kdvSatir)], ['Havale tutarı', LT.TL(tk.genelToplam)],
+        ['Durum', 'Müşteri henüz "ödemeyi yaptım" demedi. Ödeme bildirilince ayrıca e-posta gelir.'],
     ])).catch(() => {});
     res.status(201).json({
         id, tier, modules: tk.modules, odenenModuller: tk.odenenModuller, korunanModuller: tk.korunanModuller,
         total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
+        araToplam: tk.araToplam, kdvOrani: tk.kdvOrani, kdvTutari: tk.kdvTutari, genelToplam: tk.genelToplam,
         kalanGun: tk.kalanGun, krediTutari: tk.krediTutari, aciklama: tk.aciklama, status: 'PENDING_PAYMENT',
         iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
         message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',
@@ -279,25 +311,54 @@ exports.markPaid = async (req, res) => {
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
     await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = CURRENT_TIMESTAMP WHERE id = ?',
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
-    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Müşteri "ödemeyi yaptım" dedi: ' + i.ad, [
-        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Paket', r.rows[0].tier],
-        ...(r.rows[0].tur === 'yukseltme' ? [['Tür', 'Yükseltme (yıllık toplam ' + LT.TL(r.rows[0].yeni_toplam) + ', kredi ' + LT.TL(r.rows[0].kredi_tutari) + ')']] : []),
-        ['Tutar', Number(r.rows[0].tutar).toLocaleString('tr-TR') + ' TL'], ['Referans', String(req.body?.paymentRef || '-')],
-        ['Yapılacak', 'Hesabı kontrol edip root panelinden onayla; lisans otomatik uzar.'],
+    // Odeme korumasi (onay beklerken program acik): bir sonraki istek hemen gorsun
+    await OK.tazele().catch(() => {});
+    const o = r.rows[0];
+    const k = kayitKdv(o);
+    isletmeAdi(req.user.tenantId).then(i => rootaBildir('Ödeme bildirildi: ' + i.ad + ' - ' + LT.TL(k.genelToplam), [
+        ['İşletme', i.ad + ' (kod ' + i.kod + ')'], ['Havale açıklaması', 'MDA-' + i.kod], ['Paket', o.tier],
+        ...(o.tur === 'yukseltme' ? [['Tür', 'Yükseltme (yıllık toplam ' + LT.TL(o.yeni_toplam) + ', kredi ' + LT.TL(o.kredi_tutari) + ')']] : []),
+        ['Tutar', kdvMetni(o)], ['Havale tutarı', LT.TL(k.genelToplam)], ['Gönderen / dekont notu', String(req.body?.paymentRef || '-')],
+        ['Yapılacak', 'Hesabı kontrol edip root panelinden onaylayın; lisans otomatik uzar.'],
     ])).catch(() => {});
     res.json({ ok: true, status: 'PAID_DECLARED',
         message: 'Bildiriminiz alındı. Onaylandığında lisansınız uzayacak.' });
 };
 
+// --- Fatura bilgisi (services/faturaBilgisi.js) ---
+// /api/license altinda: lisans SALT_OKUNUR ya da KAPALI iken de acik (satin almadan once doldurulabilsin).
+exports.faturaOku = async (req, res) => res.json(await FB.oku(req.user.tenantId));
+exports.faturaYaz = async (req, res) => {
+    try { res.json(await FB.yaz(req.user.tenantId, req.body || {})); }
+    catch (e) {
+        if (e.status) return res.status(e.status).json({ code: e.code, message: e.message, alan: e.alan });
+        throw e;
+    }
+};
+
 // Kayit, arayuzun bekledigi adlarla da doner (status/amount/modules/paid_declared_at); Turkce alanlar korunur.
 // Liste ve tekil uc AYNI bicimi vermeli: eskiden liste 'status' vermiyordu, arayuz bekleyen odemeyi bulamiyordu.
-function kaydiHazirla(x) {
+// KDV (2026-11-18): amount/tutar = KDV haric; havale_tutari = genel_toplam (eski kayitta KDV yok: tutar, kdv_var false).
+// havale_kodu: musterinin havale aciklamasina yazacagi "MDA-{isyeri kodu}". koruma_bitis: bekleyen ve bildirilmis
+// kayitta odeme korumasinin bitisi (bkz services/odemeKorumasi.js), yoksa null.
+function kaydiHazirla(x, ek = {}) {
     const moduller = guvenliJson(x.moduller);
     const status = x.durum === 'onaylandi' ? 'CONFIRMED'
         : x.durum === 'reddedildi' ? 'REJECTED'
         : x.durum === 'iptal' ? 'CANCELLED'
         : (x.odeme_bildirildi_at ? 'PAID_DECLARED' : 'PENDING_PAYMENT');
-    return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null };
+    const k = kayitKdv(x);
+    return { ...x, moduller, modules: moduller, amount: x.tutar, status, paid_declared_at: x.odeme_bildirildi_at || null,
+        kdv_var: k.kdvVar, ara_toplam: k.araToplam, havale_tutari: k.genelToplam, ...ek };
+}
+async function kayitEkleri(tenantId, x) {
+    const t = (await query('SELECT business_code FROM tenants WHERE id = ?', [tenantId])).rows[0] || {};
+    const ek = { havale_kodu: t.business_code ? 'MDA-' + t.business_code : null, koruma_bitis: null };
+    if (x && x.durum === 'beklemede' && x.odeme_bildirildi_at) {
+        const b = await OK.kayitKorumaBitisi({ ...x, tenant_id: tenantId }).catch(() => null);
+        ek.koruma_bitis = b ? b.toISOString() : null;
+    }
+    return ek;
 }
 // Patron'a e-posta: ortak servis services/rootBildirim.js (rootaBildir), degerleri HTML kacislar.
 async function isletmeAdi(tenantId) {
@@ -313,22 +374,27 @@ exports.cancelPurchase = async (req, res) => {
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış; iptal edilemez.' });
     await query("UPDATE lisans_odemeleri SET durum = 'iptal', islenen_at = CURRENT_TIMESTAMP, admin_note = COALESCE(admin_note, 'müşteri iptal etti') WHERE id = ? AND durum = 'beklemede'",
         [req.params.id]);
+    await OK.tazele().catch(() => {});   // iptal: odeme korumasi hemen biter
     res.json({ ok: true, status: 'CANCELLED' });
 };
 
 exports.purchases = async (req, res) => {
     const r = await query(
         `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at,
-                tur, yeni_toplam, kredi_tutari, kalan_gun
-           FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 50`,
+                tur, yeni_toplam, kredi_tutari, kalan_gun, kdv_orani, kdv_tutari, genel_toplam
+           FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50`,
         [req.user.tenantId]);
-    res.json(r.rows.map(kaydiHazirla));
+    const out = [];
+    for (const x of r.rows) {
+        out.push(kaydiHazirla(x, x.durum === 'beklemede' ? await kayitEkleri(req.user.tenantId, x) : {}));
+    }
+    res.json(out);
 };
 exports.purchaseStatus = async (req, res) => {
     const r = await query('SELECT * FROM lisans_odemeleri WHERE id = ? AND tenant_id = ?',
         [req.params.id, req.user.tenantId]);
     if (!r.rows.length) return res.status(404).json({ message: 'Bulunamadı.' });
-    res.json(kaydiHazirla(r.rows[0]));
+    res.json(kaydiHazirla(r.rows[0], await kayitEkleri(req.user.tenantId, r.rows[0])));
 };
 
 function guvenliJson(s) {

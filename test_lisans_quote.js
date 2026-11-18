@@ -79,6 +79,12 @@ async function temizle() {
     ok('deneme hesabi: kanal yerel + deneme:true + mesaj', yk.status === 200 && yk.d.kanal === 'yerel' && yk.d.deneme === true && /1 yıl/.test(yk.d.mesaj), yk.d);
     const q4 = await js('/api/license/quote', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('oturumlu quote: %10 indirim uygulanir', q4.status === 200 && q4.d.discountRate === 10 && q4.d.total === Math.max(0, q4.d.subtotal - q4.d.discountAmount), q4.d);
+    // Fatura bilgisi ilk satin almada zorunlu (2026-11-18): eksikken 400 FATURA_BILGISI_EKSIK, tamamlaninca 201
+    const fEksik = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
+    ok('fatura bilgisi eksik: 400 FATURA_BILGISI_EKSIK', fEksik.status === 400 && fEksik.d.code === 'FATURA_BILGISI_EKSIK', fEksik);
+    const fYaz = await js('/api/license/fatura', { token: sahip.token, method: 'PUT',
+        body: { billingName: 'Quote Test Lokanta Ltd.', billingTaxId: '1234567890', billingTaxOffice: 'Test VD', billingAddress: 'Test Mah. 1, Afyon' } });
+    ok('fatura bilgisi kaydedildi (tamam)', fYaz.status === 200 && fYaz.d.tamam === true, fYaz);
     const satin = await js('/api/license/purchase', { token: sahip.token, body: { tier, modules: ['BASE'] } });
     ok('deneme hesabi satin alma baslatabilir (201)', satin.status === 201 && satin.d.status === 'PENDING_PAYMENT', satin);
     const liste = await js('/api/license/purchases', { token: sahip.token });

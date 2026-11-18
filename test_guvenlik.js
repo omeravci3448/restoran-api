@@ -79,6 +79,8 @@ async function kiraciKur({ ad, tier = 'TIER_6_10', moduller = ['BASE', 'MENU_DIG
          VALUES (?, ?, ?, ?, ?, '05320000000', 'Test Mah. 1', ?, ?, ?, 1, ?)`,
         [id, slug, kod, `${ON} ${ad}`, `${EPOSTA_ON}${slug}@ornek.test`, tier, JSON.stringify(moduller),
             bitis || new Date(Date.now() + 200 * GUN).toISOString(), new Date(Date.now() + kayitGun * GUN).toISOString().replace('T', ' ').slice(0, 19)]);
+    // Fatura bilgisi satin almada zorunlu (2026-11-18)
+    await query("UPDATE tenants SET billing_name = business_name, billing_tax_id = '1234567890', billing_tax_office = 'Test VD', billing_address = 'Test Mah. 1, Afyon' WHERE id = ?", [id]);
     const sahipId = uuid();
     const eposta = `${EPOSTA_ON}sahip-${slug}@ornek.test`;
     await query('INSERT INTO users (id, tenant_id, email, password_hash, name, role, password_set_at) VALUES (?, ?, ?, ?, ?, ?, ?)',

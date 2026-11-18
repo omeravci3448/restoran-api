@@ -30,6 +30,9 @@ router.post('/purchases/:id/mark-paid', protect, require('../services/destekOtur
     requireRole('OWNER', 'MANAGER'), requireManagerPin, ctrl.markPaid);
 router.post('/purchases/:id/cancel', ...mgr, ctrl.cancelPurchase); // bekleyen bildirimi musteri iptal eder (secimi degistirmek icin)
 router.get('/purchases', ...mgr, ctrl.purchases);
+// Fatura bilgisi (ilk satin almada zorunlu): lisans uclari SALT_OKUNUR / KAPALI iken de acik
+router.get('/fatura', ...mgr, ctrl.faturaOku);
+router.put('/fatura', ...mgr, ctrl.faturaYaz);
 router.get('/purchases/:id', ...mgr, ctrl.purchaseStatus);
 
 module.exports = router;

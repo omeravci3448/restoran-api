@@ -648,7 +648,8 @@ exports.lisansOdemeleri = async (req, res) => {
     const durum = req.query.durum;
     const r = await query(
         `SELECT o.*, t.business_name, t.business_code, t.license_end_date, t.license_tier AS mevcut_tier,
-                t.license_modules AS mevcut_moduller, t.license_table_limit AS mevcut_masa_limiti
+                t.license_modules AS mevcut_moduller, t.license_table_limit AS mevcut_masa_limiti,
+                t.billing_name, t.billing_tax_id, t.billing_tax_office, t.billing_address
            FROM lisans_odemeleri o JOIN tenants t ON t.id = o.tenant_id
           ${durum ? 'WHERE o.durum = ?' : ''}
           ORDER BY CASE o.durum WHEN 'beklemede' THEN 0 ELSE 1 END, o.created_at DESC
@@ -675,7 +676,18 @@ exports.lisansOdemeleri = async (req, res) => {
             // kredi yok ve yeni sure onay gununden. Root bilsin (gerekirse reddedip elle cozsun).
             const kalan = LT.kalanGunHesapla(x.license_end_date);
             ek.ilk_alim_kalan_gun = etkinTur === 'ilk' && kalan > 30 ? kalan : null;
+            // Odeme korumasi: musteri "odemeyi yaptim" dedi, onay beklerken program acik (bitis)
+            const kb = await require('../services/odemeKorumasi').kayitKorumaBitisi(x).catch(() => null);
+            ek.koruma_bitis = kb ? kb.toISOString() : null;
         }
+        // KDV (2026-11-18): tutar KDV haric; havale tutari genel toplam. Eski kayitta KDV yok (kdv_var false).
+        const kdv = require('../services/lisansKdv');
+        const kk = kdv.kayitKdv(x);
+        ek.kdv_var = kk.kdvVar;
+        ek.havale_tutari = kk.genelToplam;
+        ek.kdv_metni = kdv.kdvMetni(x);
+        ek.havale_kodu = x.business_code ? 'MDA-' + x.business_code : null;
+        ek.fatura_eksik = require('../services/faturaBilgisi').eksikler(x);
         return {
             ...x, moduller: m, mevcut_moduller: mevcut,
             onceki_moduller: x.onceki_moduller == null ? null : M.modulListesi(x.onceki_moduller),
@@ -743,16 +755,28 @@ exports.lisansOdemeOnayla = async (req, res) => {
         : (etkinTur === 'ilk')
             ? `${t.business_name}: paket onaylandı. Lisans bugün başladı, ${tarih} tarihine kadar geçerli.`
             : `${t.business_name} lisansı ${tarih} tarihine uzatıldı.`;
+    // Isletmeye e-posta (SMTP yoksa sessizce atlanir) + odeme korumasi onbellegi
+    require('../services/odemeKorumasi').tazele().catch(() => {});
+    require('../services/lisansBildirim').onaylandi(t.id, {
+        paket: [LT.tierAdi(await require('../services/lisansKatalog').tamKatalog().catch(() => []), o.tier),
+            M.modulListesi(o.moduller).map((m) => M.AD[m] || m).join(', ')].filter((x) => x && x !== '-').join(' - ') || 'Lisans paketi',
+        bitis,
+    }).catch(() => {});
     res.json({ ok: true, license_end_date: bitis, tur: o.tur || etkinTur || null, message });
 };
 
+// Red: sebep ZORUNLU (en az 5 karakter); musteri Lisans sayfasinda ve e-postada gorur. Red, odeme korumasini HEMEN
+// bitirir ve 30 gun icinde yapilan yeni bildirimlere koruma verilmez (services/odemeKorumasi.js).
 exports.lisansOdemeReddet = async (req, res) => {
     const not = String(req.body?.not || '').trim();
-    if (not.length < 3) return res.status(400).json({ message: 'Red sebebi yazın (müşteri bunu görecek).' });
+    if (not.length < 5) return res.status(400).json({ message: 'Red sebebini en az 5 karakterle yazın (müşteri bunu görecek).' });
+    const o = (await query('SELECT tenant_id FROM lisans_odemeleri WHERE id = ?', [req.params.id])).rows[0];
     const r = await query(
         `UPDATE lisans_odemeleri SET durum = 'reddedildi', admin_note = ?, islenen_at = CURRENT_TIMESTAMP
           WHERE id = ? AND durum = 'beklemede'`, [not.slice(0, 300), req.params.id]);
     if (!r.changes) return res.status(409).json({ message: 'Bekleyen bir ödeme bulunamadı.' });
-    await YG.kaydet(req, { islem: 'odeme_red', hedefTur: 'lisans_odemesi', hedefId: req.params.id, ozet: 'Ödeme bildirimi reddedildi: ' + not.slice(0, 200) });
+    await require('../services/odemeKorumasi').tazele().catch(() => {});
+    await YG.kaydet(req, { islem: 'odeme_red', tenantId: o ? o.tenant_id : null, hedefTur: 'lisans_odemesi', hedefId: req.params.id, ozet: 'Ödeme bildirimi reddedildi: ' + not.slice(0, 200) });
+    if (o) require('../services/lisansBildirim').reddedildi(o.tenant_id, { sebep: not.slice(0, 300) }).catch(() => {});
     res.json({ ok: true });
 };

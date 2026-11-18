@@ -43,6 +43,8 @@ async function kiraciKur({ ad, moduller = TUM, tier = 'TIER_6_10', limit = null,
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         [id, slug, kod, `${ON} ${ad}`, `${EPOSTA_ON}${slug}@ornek.test`, '05320000000', 'Test Mah. 1', tier,
             hamModul !== undefined ? hamModul : JSON.stringify(moduller), GELECEK, limit]);
+    // Fatura bilgisi satin almada zorunlu (2026-11-18)
+    await query("UPDATE tenants SET billing_name = business_name, billing_tax_id = '1234567890', billing_tax_office = 'Test VD', billing_address = 'Test Mah. 1, Afyon' WHERE id = ?", [id]);
     const kul = {};
     for (const [rol, sifre] of [['OWNER', 'sahip1234'], ['CASHIER', 'kasa1234'], ['WAITER', 'garson1234'], ['KITCHEN', 'mutfak1234']]) {
         const uid = uuid();

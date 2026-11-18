@@ -3,6 +3,7 @@ const K = require('./lisansKatalog');
 const M = require('./lisansModul');
 const { fiyatla, yuvarla, hata } = require('./lisansFiyat');
 const GH = require('./gecisHaklari');
+const { kdvHesapla } = require('./lisansKdv');
 
 // --- Lisans talebi: deneme -> paket -> yukseltme (Patron karari 2026-11-11) ---
 //
@@ -215,12 +216,16 @@ async function krediHesapla(kd, simdi = new Date()) {
     return { krediTutari: yuvarla(deger * kalan / YIL_GUN), kaynak: 'katalog', kalanGun: kalan, yillikDeger: deger, donemGun: YIL_GUN };
 }
 
-function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor }) {
+function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor, uzunDonem }) {
     if (tur === 'yukseltme') {
-        let s = `Kalan ${kalanGun} gününüz ${TL(krediTutari)} olarak düşüldü. Yeni 1 yıllık süreniz ödemeniz onaylandığı gün başlar; `
-            + 'o güne kadar mevcut paketiniz aynen çalışır.';
+        let s = uzunDonem
+            ? `Kalan ${kalanGun} gününüz ${TL(krediTutari)} olarak düşüldü. Mevcut bitiş tarihiniz (${TARIH(kd.t.license_end_date)}) `
+                + 'korunur: yeni paketiniz ödemeniz onaylandığı gün başlar ve bu tarihe kadar geçerli olur. Tutar, kalan sürenin '
+                + `tamamı (${kalanGun} gün) için hesaplanmıştır; o güne kadar mevcut paketiniz aynen çalışır.`
+            : `Kalan ${kalanGun} gününüz ${TL(krediTutari)} olarak düşüldü. Yeni 1 yıllık süreniz ödemeniz onaylandığı gün başlar; `
+                + 'o güne kadar mevcut paketiniz aynen çalışır.';
         if (krediTutari > yeniToplam) {
-            s += ' Kalan sürenizin karşılığı yeni paketin yıllık tutarından fazla olduğu için ödenecek tutar 0 TL\'dir; aradaki fark iade edilmez.';
+            s += ' Kalan sürenizin karşılığı yeni paketin tutarından fazla olduğu için ödenecek tutar 0 TL\'dir; aradaki fark iade edilmez.';
         }
         return s;
     }
@@ -282,24 +287,38 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
 
     const yeniToplam = f.total;
     const krediTutari = tur === 'yukseltme' ? kredi.krediTutari : 0;
-    const odenecek = Math.max(0, yuvarla(yeniToplam - krediTutari));
+    // Yukseltmede mevcut bitis 1 yildan ilerideyse (erken yenileme sonrasi) bitis KORUNUR (onayBitisi: en gec olan):
+    // yeni paket o tarihe kadar gecerli olur, bu yuzden tutar da o sureye oranlanir (kredi zaten kalan gunun tamamini
+    // kapsiyor). 1 yil ya da daha az kaldiysa eskisi gibi: yillik toplam - kredi.
+    const uzunDonem = tur === 'yukseltme' && Number(kredi.kalanGun) > YIL_GUN;
+    const donemTutari = uzunDonem ? yuvarla(yeniToplam * Number(kredi.kalanGun) / YIL_GUN) : yeniToplam;
+    const odenecek = Math.max(0, yuvarla(donemTutari - krediTutari));
+    // KDV (katalog fiyatlari KDV haric): araToplam = odenecek, genelToplam = havale tutari (bkz services/lisansKdv.js)
+    const kdv = kdvHesapla(odenecek);
     const degisiyor = eklenen.length > 0 || cikan.length > 0 || (kd.t.license_tier || null) !== tier;
     return {
         ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan, eskiHakModuller: eskiHakKorunan,
-        tur, donem, yeniToplam, krediTutari, odenecek,
+        tur, donem, yeniToplam, krediTutari, odenecek, donemTutari, uzunDonem,
+        araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
         kalanGun: tur === 'yukseltme' ? kredi.kalanGun : kd.kalanGun,
         krediKaynak: tur === 'yukseltme' ? kredi.kaynak : null,
         krediAyrinti: tur === 'yukseltme' ? { yillikDeger: kredi.yillikDeger, donemGun: kredi.donemGun } : null,
         eklenenModuller: eklenen, cikanModuller: cikan,
         onceki: { tier: kd.t.license_tier || null, moduller: M.modulListesi(kd.t.license_modules), bitis: kd.t.license_end_date || null },
-        aciklama: aciklamaYaz({ tur, kd, krediTutari, kalanGun: kredi.kalanGun, yeniToplam, degisiyor }),
+        aciklama: aciklamaYaz({ tur, kd, krediTutari, kalanGun: kredi.kalanGun, yeniToplam: donemTutari, degisiyor, uzunDonem }),
     };
 }
 
 // Onayda yeni bitis: ilk ve yukseltmede onay gunu + gun; yenilemede ve eski kayitta (tur yok) mevcut bitisin
 // uzerine (bitmisse onay gunu + gun).
+// Yukseltmede bitis ASLA geri gitmez (2026-11-18): yeni bitis = en gec(onay gunu + gun, mevcut bitis). Erken yenileme
+// ardindan yapilan yukseltme odenmis sureyi kisaltmasin (teklif de bu sureye gore fiyatlanir: teklifHazirla uzunDonem).
 function onayBitisi({ tur, mevcutBitis, gun = YIL_GUN, simdi = new Date() }) {
-    if (tur === 'yukseltme' || tur === 'ilk') return new Date(simdi.getTime() + gun * GUN_MS).toISOString();
+    if (tur === 'yukseltme') {
+        const b = tarihOku(mevcutBitis);
+        return new Date(Math.max(simdi.getTime() + gun * GUN_MS, b ? b.getTime() : 0)).toISOString();
+    }
+    if (tur === 'ilk') return new Date(simdi.getTime() + gun * GUN_MS).toISOString();
     const { yeniBitis } = require('./posProvizyon');
     return yeniBitis(mevcutBitis, gun);
 }
