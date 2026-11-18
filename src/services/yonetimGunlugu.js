@@ -42,6 +42,7 @@ const ISLEM_AD = {
     destek_pin: 'Destek: yönetici şifresi sorulmadan atlandı',
     cihaz: 'Yönetim cihazı',
     magaza: 'Mağaza',
+    menu_ice_aktar: 'Menü içe aktarma',
     diger: 'Diğer',
 };
 
