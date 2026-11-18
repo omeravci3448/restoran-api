@@ -258,6 +258,7 @@ exports.listTenants = async (_req, res) => {
                 (SELECT COUNT(*) FROM products x WHERE x.tenant_id = t.id AND x.is_available = 1) AS urun_sayisi,
                 (SELECT COUNT(*) FROM users    x WHERE x.tenant_id = t.id AND x.is_active = 1)    AS kullanici_sayisi,
                 (SELECT COUNT(*) FROM orders   x WHERE x.tenant_id = t.id AND x.status = 'OPEN')  AS acik_siparis,
+                (SELECT g.ad FROM sube_grup_uyeleri gu JOIN sube_gruplari g ON g.id = gu.grup_id WHERE gu.tenant_id = t.id) AS grup_adi,
                 -- Deneme kaydi kiraci SILINSE BILE duruyor; "bu isletme denemeden
                 -- mi geldi, ne zaman bitiyor" sorusunun cevabi burada.
                 (SELECT d.bitis  FROM deneme_kayitlari d WHERE d.tenant_id = t.id ORDER BY d.created_at DESC LIMIT 1) AS deneme_bitis,
