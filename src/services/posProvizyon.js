@@ -233,20 +233,22 @@ async function odemeIsle(o, secenek = {}) {
         // Telefon / e-posta eslesmesi YEDEK yoldur; yanlis kiraciya 1 yil yazmamak icin iki kapi:
         //  - Odemenin SofraMix numarasi var ama bulunan kiraci BASKA bir SofraMix isletmesine bagli (ayni sahibin
         //    ikinci subesi): birlestirilmez.
-        //  - Yalniz e-postayla bulunan kiraci SofraMix'le hic iliskisi olmayan yerel bir isletme: sessizce
-        //    SofraMix'e cevrilmez.
+        //  - Yalniz e-postayla ya da yalniz telefonla (deneme kaydi; POS'tan kayit olan her isletmenin telefonu da
+        //    deneme_kayitlari'na yazilir) bulunan kiraci SofraMix'le hic iliskisi olmayan yerel bir isletme:
+        //    sessizce SofraMix'e cevrilmez.
         if (bulunan && (esles === 'deneme_tel' || esles === 'eposta')) {
             const bag = await smxBaglari(bulunan);
             if (smxId && bag.size && !bag.has(smxId)) {
                 return elde('farkli_smx', `Farklı SofraMix işletmesi: telefon/e-posta eşleşen işletme başka bir SofraMix `
                     + `işletmesine bağlı (${Array.from(bag).join(', ')}), ödeme ${smxId} numaralı işletmeden. Birleştirilmedi.`, bulunan);
             }
-            if (esles === 'eposta') {
-                const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [bulunan])).rows[0] || {};
-                if (!(t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX' || bag.size)) {
-                    return elde('yerel_eposta', 'Yalnızca e-postayla eşleşen işletme SofraMix üzerinden gelmemiş (yerel müşteri). '
+            const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [bulunan])).rows[0] || {};
+            if (!(t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX' || bag.size)) {
+                return esles === 'eposta'
+                    ? elde('yerel_eposta', 'Yalnızca e-postayla eşleşen işletme SofraMix üzerinden gelmemiş (yerel müşteri). '
+                        + 'Lisansı SofraMix paketine çevrilmedi; doğru işletmeyi seçin.', bulunan)
+                    : elde('yerel_tel', 'Yalnızca telefonla eşleşen işletme SofraMix üzerinden gelmemiş (yerel müşteri). '
                         + 'Lisansı SofraMix paketine çevrilmedi; doğru işletmeyi seçin.', bulunan);
-                }
             }
         }
 

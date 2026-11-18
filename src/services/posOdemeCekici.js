@@ -130,6 +130,7 @@ function eldeKonusu(sebep) {
     return ({
         farkli_smx: 'Farklı SofraMix işletmesi',
         yerel_eposta: 'E-posta eşleşmesi yerel bir işletmede',
+        yerel_tel: 'Telefon eşleşmesi yerel bir işletmede',
         tutar_uyumsuz: 'SofraMix paket tutarı katalogla uyuşmuyor',
         paket_gecersiz: 'SofraMix paket bilgisi geçersiz',
         belirsiz_eposta: 'Aynı e-postayla birden fazla işletme',

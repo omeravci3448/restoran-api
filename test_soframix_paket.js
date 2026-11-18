@@ -279,6 +279,25 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     const sk = await kiraciKur({ ad: 'SMX Kiraci', tier: 'TIER_SOFRAMIX', parent: 'SofraMix', eposta: smxEposta });
     const sK = await P.odemeIsle(odeme({ isletme_adi: `${ON} SMX Kiraci`, yetkili_email: smxEposta }));
     ok('SofraMix kiracisi e-postayla: islendi (eski davranis)', sK.durum === 'islendi' && sK.tenantId === sk && sK.esles === 'eposta', sK);
+    // R1-L2: POS'tan kayit olan (deneme_kayitlari kaynak 'kayit', telefonlu) YEREL isletme; SofraMix odemesi ayni telefonla
+    const yTel = '0532 ' + String(1000000 + Math.floor(Math.random() * 8999999)).slice(0, 7);
+    const yt = await kiraciKur({ ad: 'Yerel Tel', tier: 'TIER_6_10', limit: 10, moduller: ['BASE', 'MENU_DIGITAL'] });
+    await query(`INSERT INTO deneme_kayitlari (id, tenant_id, telefon_norm, soframix_business_id, isletme_adi, kaynak, bitis)
+                 VALUES (?, ?, ?, NULL, ?, 'kayit', ?)`, [uuid(), yt, P.telefonNorm(yTel), `${ON} Yerel Tel`, gun(5)]);
+    const ytOnce = await kiraci(yt);
+    const oYT = odeme({ business_id: smxNo(), isletme_adi: `${ON} Yerel Tel SMX`, yetkili_tel: yTel, yetkili_email: `${ON.toLowerCase()}yt${uuid().slice(0, 5)}@ornek.test`, pos_paket: tam });
+    const sYT = await P.odemeIsle(oYT);
+    ok('telefonla eslesen yerel isletme -> elde yerel_tel, aday = yerel isletme', sYT.durum === 'elde' && sYT.sebep === 'yerel_tel' && sYT.adayTenantId === yt, sYT);
+    const ytSonra = await kiraci(yt);
+    ok('yerel isletme (telefon) sessizce cevrilmedi', ytSonra.parent_org == null && ytSonra.license_tier === 'TIER_6_10'
+        && ytSonra.license_end_date === ytOnce.license_end_date && ytSonra.license_modules === ytOnce.license_modules, ytSonra);
+    const rYT = await cevap({ odemeId: oYT.odeme_id }, { islem: 'yeni' });
+    ok('root "Yeni işletme olarak aç" -> ayri isletme', rYT.govde && rYT.govde.durum === 'islendi' && rYT.govde.kiraciAcildi && rYT.govde.tenantId !== yt, rYT);
+    // SofraMix kaynakli deneme (telefonla) eskisi gibi uzar
+    const smxTel = '0534 ' + String(1000000 + Math.floor(Math.random() * 8999999)).slice(0, 7);
+    const st = await kiraciKur({ ad: 'SMX Tel', tel: smxTel, parent: 'SofraMix' });
+    const sST = await P.odemeIsle(odeme({ isletme_adi: `${ON} SMX Tel`, yetkili_tel: smxTel, yetkili_email: `${ON.toLowerCase()}st${uuid().slice(0, 5)}@ornek.test` }));
+    ok('SofraMix denemesi telefonla: islendi (deneme_tel)', sST.durum === 'islendi' && sST.tenantId === st && sST.esles === 'deneme_tel', sST);
 
     console.log('\n=== 8) GET /api/public/soframix-durum ===');
     const rd = await al(durumAdresi(durumGovde(no7)));
