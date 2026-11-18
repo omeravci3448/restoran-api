@@ -15,6 +15,10 @@ const SAYISAL = {
     deneme_gun: { ad: 'Deneme süresi (gün)', en: 1, cok: 90, varsayilan: () => Number(process.env.DENEME_GUN || 7) },
     lisans_salt_okunur_gun: { ad: 'Lisans bitince salt-okunur gün', en: 0, cok: 30, varsayilan: () => Number(process.env.LISANS_TOLERANS_GUN || 3) },
     destek_oturumu_dk: { ad: 'Destek oturumu süresi (dakika)', en: 5, cok: 720, varsayilan: () => 120 },
+    // 1 = lisans yenileme hatirlatma e-postalari gider (services/lisansHatirlatma.js), 0 = gitmez
+    lisans_hatirlatma_acik: { ad: 'Lisans yenileme hatırlatması', en: 0, cok: 1, varsayilan: () => 1 },
+    // Yalniz QR menu kullanan isletmede lisans KAPALI olduktan bu kadar gun sonra misafir menusu kapanir (0 = hic)
+    menu_kipi_kapanma_gun: { ad: 'QR menü kapanma süresi (gün)', en: 0, cok: 365, varsayilan: () => 15 },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)
@@ -64,6 +68,8 @@ function sayi(anahtar) {
 const toleransGun = () => sayi('lisans_salt_okunur_gun');
 const denemeGun = () => sayi('deneme_gun');
 const destekSureDk = () => sayi('destek_oturumu_dk');
+const hatirlatmaAcik = () => sayi('lisans_hatirlatma_acik') !== 0;
+const menuKipiKapanmaGun = () => sayi('menu_kipi_kapanma_gun');
 
 // Asenkron: veritabanindan taze okur (deneme acilisi gibi seyrek ama kesin olmasi gereken yerler)
 async function sayiOku(anahtar) {
@@ -155,5 +161,6 @@ const ETIKET = Object.fromEntries([...Object.entries(METIN), ...Object.entries(S
 
 module.exports = {
     yukle, toleransGun, denemeGun, destekSureDk, denemeGunOku, destekSureDkOku, hepsi, yaz, dogrula, ETIKET,
+    hatirlatmaAcik, menuKipiKapanmaGun, sayiOku,
     SAYISAL, METIN,
 };
