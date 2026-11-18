@@ -250,7 +250,14 @@ function aciklamaYaz({ tur, kd, krediTutari, kalanGun, yeniToplam, degisiyor, uz
 // Teklif: fiyat + tur + kredi + odenecek. Donem icinde azaltma 409 DONEM_ICI_AZALTMA.
 async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     const kd = await kiraciDurumu(tenantId, simdi);
-    const f = await fiyatla({ tier, modules, indirimOrani: kd.t.discount_rate, yoksay: [...kd.satistaOlmayan, ...kd.eskiHak],
+    // Lansman kampanyasi yalniz ilk alimda (deneme sinifi) ve birlesmez: indirim = en buyuk(kampanya, kiraci indirimi).
+    // Kiraci indirimi buyuk ya da esitse kampanya uygulanmaz (services/lansmanKampanya.js).
+    let kampanya = null;
+    if (kd.deneme) {
+        const u = await require('./lansmanKampanya').uygunluk(tenantId, simdi).catch(() => null);
+        if (u && u.uygun && Number(u.yuzde) > (Number(kd.t.discount_rate) || 0)) kampanya = { oran: Number(u.yuzde), sonGun: u.sonGun };
+    }
+    const f = await fiyatla({ tier, modules, indirimOrani: kampanya ? kampanya.oran : kd.t.discount_rate, yoksay: [...kd.satistaOlmayan, ...kd.eskiHak],
         garsonBasesizIzinli: garsonBasesizIzinli(kd) });
     const donem = donemTuru(kd);
     // Onayda korunacaklar (onizleme; onayda o anki lisansa gore yeniden hesaplanir)
@@ -315,6 +322,7 @@ async function teklifHazirla({ tenantId, tier, modules, simdi = new Date() }) {
     return {
         ...f, modules: sonListe, odenenModuller: f.modules, korunanModuller: korunan, eskiHakModuller: eskiHakKorunan,
         tur, donem, yeniToplam, krediTutari, odenecek, donemTutari, uzunDonem, aktifMasa, masaUyarisi,
+        kampanyaOrani: kampanya ? kampanya.oran : null, kampanyaSonGun: kampanya ? kampanya.sonGun : null,
         araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
         kalanGun: tur === 'yukseltme' ? kredi.kalanGun : kd.kalanGun,
         krediKaynak: tur === 'yukseltme' ? kredi.kaynak : null,

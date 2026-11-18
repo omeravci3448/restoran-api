@@ -3,6 +3,11 @@
 //   require('./lisansKampanyaDb').lisansKampanyaTablolari(db)
 
 function lisansKampanyaTablolari(db) {
+    // Lansman kampanyasi (services/lansmanKampanya.js): talep aninda kilitlenir. kampanya_orani = uygulanan kampanya
+    // indirimi (yuzde; NULL = kampanya yok), kampanya_son_gun = "Odemeyi yaptim" icin son gun (YYYY-MM-DD, Istanbul).
+    db.run('ALTER TABLE lisans_odemeleri ADD COLUMN kampanya_orani REAL', [], () => {});
+    db.run('ALTER TABLE lisans_odemeleri ADD COLUMN kampanya_son_gun TEXT', [], () => {});
+
     // Garson aciklamasi (e2e bulgusu): eski metin "Adisyon ve Kasa yoksa uygulama yalniz cagrilari gosterir" diyordu,
     // oysa yeni satista Garson Adisyon ve Kasa ister. Yalniz hala ESKI varsayilan metindeyse degisir (root panelden
     // yazilmis metne dokunulmaz).

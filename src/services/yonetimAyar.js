@@ -25,6 +25,10 @@ const SAYISAL = {
     lisans_hatirlatma_acik: { ad: 'Lisans yenileme hatırlatması', en: 0, cok: 1, varsayilan: () => 1 },
     // Yalniz QR menu kullanan isletmede lisans KAPALI olduktan bu kadar gun sonra misafir menusu kapanir (0 = hic)
     menu_kipi_kapanma_gun: { ad: 'QR menü kapanma süresi (gün)', en: 0, cok: 365, varsayilan: () => 15 },
+    // Lansman kampanyasi (services/lansmanKampanya.js; bitis gunu METIN'de lansman_kayit_son)
+    lansman_acik: { ad: 'Lansman kampanyası', en: 0, cok: 1, varsayilan: () => 1 },
+    lansman_yuzde: { ad: 'Lansman indirimi (%)', en: 1, cok: 100, varsayilan: () => 50 },
+    lansman_odeme_gun: { ad: 'Lansman: deneme bitişinden sonra ödeme süresi (gün)', en: 0, cok: 60, varsayilan: () => 1 },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)
@@ -34,6 +38,8 @@ const METIN = {
     banka_adi: { ad: 'Banka', sinir: 500 },
     odeme_aciklama: { ad: 'Açıklama notu', sinir: 500 },
     bildirim_eposta: { ad: 'Bildirim e-postası', sinir: 200 },
+    // YYYY-MM-DD (Istanbul gun sonuna kadar). Bos = varsayilan (lansmanKampanya.VARSAYILAN_KAYIT_SON)
+    lansman_kayit_son: { ad: 'Lansman: son kayıt günü', sinir: 10 },
 };
 const ANAHTARLAR = [...Object.keys(METIN), ...Object.keys(SAYISAL)];
 
@@ -117,6 +123,7 @@ function dogrula(govde) {
             throw hata('IBAN "TR" ile başlamalı ve 26 karakter olmalı (boşluklar sayılmaz).');
         }
         if (a === 'bildirim_eposta' && s && !EPOSTA_RE.test(s)) throw hata('Bildirim e-postası geçerli bir adres olmalı.');
+        if (a === 'lansman_kayit_son' && s && !require('./lansmanKampanya').gecerliGun(s)) throw hata('Lansman son kayıt günü geçerli bir tarih olmalı (YYYY-AA-GG).');
         yazilacak.push([a, s]);     // metin ayarlari bos da olsa yazilir (eski davranis: bos IBAN = odeme ekrani kapali)
     }
     for (const a of Object.keys(SAYISAL)) {

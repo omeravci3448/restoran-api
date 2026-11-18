@@ -87,6 +87,18 @@ async function rootJeton() {
 }
 
 let katalogYedek = null;
+// Lansman kampanyasi (test_lansman.js) bu testin fiyat beklentilerini degistirmesin: test boyunca kapali, sonunda eski hali
+let lansmanYedek;   // undefined: dokunulmadi; null: kayit yoktu; metin: eski deger
+async function lansmanKapat() {
+    lansmanYedek = ((await query("SELECT deger FROM sistem_ayarlari WHERE anahtar = 'lansman_acik'")).rows[0] || { deger: null }).deger;
+    await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('lansman_acik', '0') ON CONFLICT(anahtar) DO UPDATE SET deger = '0'");
+}
+async function lansmanGeriAl() {
+    if (lansmanYedek === undefined) return;
+    if (lansmanYedek === null) await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'lansman_acik'");
+    else await query("UPDATE sistem_ayarlari SET deger = ? WHERE anahtar = 'lansman_acik'", [lansmanYedek]);
+    lansmanYedek = undefined;
+}
 async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
@@ -102,6 +114,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 (async () => {
     initDb(); await uyu(1000);
     await temizle();
+    await lansmanKapat();
     katalogYedek = (await query('SELECT id, fiyat, gorunur FROM lisans_katalog')).rows;
     // Sabit katalog: kademe fiyati = Adisyon ve Kasa fiyati
     await fiyatYaz('TIER-TIER_1_5', 3000); await fiyatYaz('TIER-TIER_6_10', 4000); await fiyatYaz('TIER-TIER_11_20', 6000);
@@ -429,6 +442,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('onaydan sonra program acilir (siparis listesi 200)', (await js('/api/orders', { token: kp.token })).status === 200);
 
     await temizle();
+    await lansmanGeriAl();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);
     process.exit(fail ? 1 : 0);
-})().catch(async (e) => { console.error('COKTU:', e); try { await temizle(); } catch (_) {} process.exit(1); });
+})().catch(async (e) => { console.error('COKTU:', e); try { await temizle(); await lansmanGeriAl(); } catch (_) {} process.exit(1); });
