@@ -500,9 +500,11 @@ module.exports.ensureRootUser = ensureRootUser;
 exports.provizyonListe = async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const r = await query(
-        `SELECT p.*, t.business_name AS kiraci_adi, t.business_code AS isyeri_kodu
+        `SELECT p.*, t.business_name AS kiraci_adi, t.business_code AS isyeri_kodu,
+                a.business_name AS aday_adi, a.business_code AS aday_kodu
            FROM pos_provizyon p
            LEFT JOIN tenants t ON t.id = p.tenant_id
+           LEFT JOIN tenants a ON a.id = p.aday_tenant_id
           ORDER BY p.created_at DESC
           LIMIT ?`, [limit]);
     res.json(r.rows);
