@@ -141,6 +141,7 @@ function teklifCevabi(tier, f) {
             tur: f.tur, kalanGun: f.kalanGun, krediTutari: f.krediTutari, krediKaynak: f.krediKaynak,
             odenecek: f.odenecek, aciklama: f.aciklama, donemTutari: f.donemTutari, uzunDonem: !!f.uzunDonem,
             aktifMasa: f.aktifMasa, masaUyarisi: !!f.masaUyarisi,
+            kampanyaOrani: f.kampanyaOrani || null, kampanyaSonGun: f.kampanyaSonGun || null,
         } : {}),
         araToplam: kdv.araToplam, kdvOrani: kdv.kdvOrani, kdvTutari: kdv.kdvTutari, genelToplam: kdv.genelToplam,
     };
@@ -202,6 +203,23 @@ exports.yenilemeKanali = async (req, res) => {
     const yk = await yenilemeKanali(req.user.tenantId);
     if (yk.kanal === 'yerel') {
         try { yk.donem = await LT.donemBilgisi(req.user.tenantId); } catch (_) { /* donem bilgisi olmadan da calisir */ }
+        // Lansman kampanyasi (deneme seridi ve sepet): uygunsa oran ve son gun. Kiraci indirimi buyukse gosterilmez.
+        if (yk.deneme) {
+            try {
+                const u = await require('../services/lansmanKampanya').uygunluk(req.user.tenantId);
+                const t = (await query('SELECT discount_rate FROM tenants WHERE id = ?', [req.user.tenantId])).rows[0] || {};
+                if (u.uygun && Number(u.yuzde) > (Number(t.discount_rate) || 0)) yk.lansman = { yuzde: u.yuzde, sonGun: u.sonGun };
+            } catch (_) { /* kampanya bilgisi olmadan da calisir */ }
+        }
+        // Bekleyen bildirim (lisans seridi: "odemeniz incelemede"; son 30 gunde red varsa koruma yok, program kapali kalir)
+        try {
+            const b = (await query("SELECT * FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede' LIMIT 1", [req.user.tenantId])).rows[0];
+            if (b) {
+                const kb = b.odeme_bildirildi_at ? await OK.kayitKorumaBitisi(b).catch(() => null) : null;
+                yk.bekleyenOdeme = { id: b.id, bildirildi: !!b.odeme_bildirildi_at, korumaBitis: kb ? kb.toISOString() : null,
+                    redVar: !!(await OK.sonRed(req.user.tenantId, b.odeme_bildirildi_at).catch(() => null)) };
+            }
+        } catch (_) { /* serit bilgisi olmadan da calisir */ }
     }
     if (yk.kanal === 'soframix') yk.paket = await require('../services/soframixPaket').kiraciPaketBilgisi(req.user.tenantId).catch(() => null);
     res.json(yk);
@@ -280,12 +298,14 @@ exports.purchase = async (req, res) => {
         await query(
             `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, aciklama, tur, yeni_toplam, kredi_tutari,
                                            kalan_gun, kredi_kaynak, onceki_tier, onceki_moduller, onceki_bitis,
-                                           kdv_orani, kdv_tutari, genel_toplam, masa_uyari_onay_at, masa_uyari_aktif)
-             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                           kdv_orani, kdv_tutari, genel_toplam, masa_uyari_onay_at, masa_uyari_aktif,
+                                           kampanya_orani, kampanya_son_gun)
+             VALUES (?, ?, ?, ?, ?, 'beklemede', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, req.user.tenantId, tk.tier, JSON.stringify(tk.odenenModuller), tk.odenecek, String(customerNote || '').slice(0, 300),
                 tk.tur, tk.yeniToplam, tk.krediTutari, tk.kalanGun, tk.krediKaynak,
                 tk.onceki.tier, JSON.stringify(tk.onceki.moduller), tk.onceki.bitis,
-                tk.kdvOrani, tk.kdvTutari, tk.genelToplam, masaOnayAt, tk.masaUyarisi ? tk.aktifMasa : null]);
+                tk.kdvOrani, tk.kdvTutari, tk.genelToplam, masaOnayAt, tk.masaUyarisi ? tk.aktifMasa : null,
+                tk.kampanyaOrani || null, tk.kampanyaOrani ? tk.kampanyaSonGun : null]);
         return {};
     });
     if (kayit.bekleyenId) return bekleyenCevabi(kayit.bekleyenId);
@@ -298,6 +318,7 @@ exports.purchase = async (req, res) => {
         ['Tür', TUR_AD[tk.tur] || tk.tur],
         ['Masa paketi', tk.tierRow ? tk.tierRow.displayName + ' (' + tk.tier + ')' : 'Yok (yalnız QR Menü)'], ['Modüller', tk.odenenModuller.map((m) => MODUL_AD[m] || m).join(', ')],
         ...(tk.korunanModuller.length ? [['Korunan (ücretsiz)', tk.korunanModuller.map((m) => (m === 'ALL' ? 'Tüm modüller' : MODUL_AD[m] || m)).join(', ')]] : []),
+        ...(tk.kampanyaOrani ? [['Kampanya', `Lansman indirimi %${tk.kampanyaOrani} (ödeme bildirimi için son gün ${require('../services/lansmanKampanya').gunTR(tk.kampanyaSonGun)})`]] : []),
         ['Yıllık toplam (KDV hariç)', LT.TL(tk.yeniToplam)],
         ...(tk.tur === 'yukseltme' ? [['Kalan süre kredisi', tk.kalanGun + ' gün, ' + LT.TL(tk.krediTutari)
             + (tk.krediKaynak === 'katalog' ? ' (bu dönem için onaylı ödeme yok: katalog fiyatından)' : ' (son onaylı ödemeden)')]] : []),
@@ -310,6 +331,7 @@ exports.purchase = async (req, res) => {
         total: tk.yeniToplam, odenecek: tk.odenecek, tur: tk.tur,
         araToplam: tk.araToplam, kdvOrani: tk.kdvOrani, kdvTutari: tk.kdvTutari, genelToplam: tk.genelToplam,
         kalanGun: tk.kalanGun, krediTutari: tk.krediTutari, aciklama: tk.aciklama, status: 'PENDING_PAYMENT',
+        kampanyaOrani: tk.kampanyaOrani || null, kampanyaSonGun: tk.kampanyaOrani ? tk.kampanyaSonGun : null,
         iban: await A.oku('iban', ''), hesapSahibi: await A.oku('iban_sahibi', ''),
         message: 'Ödeme bildiriminiz oluşturuldu. Havale/EFT sonrası "Ödemeyi yaptım" deyin.',
     });
@@ -317,9 +339,9 @@ exports.purchase = async (req, res) => {
 
 // Satin almada aktif masa sayisi paketin sinirinin uzerindeyse gosterilen uyari (arayuzde ayni metin)
 function masaUyariMetni(aktif, sinir) {
-    return `Aktif masa sayınız (${aktif}) seçtiğiniz paketin sınırının (${sinir}) üzerinde. Ödemeniz onaylandığında tüm masalarınız `
-        + 'pasife alınır; lisansınızdaki masa sayısı kadar masayı Masalar sayfasından yeniden aktif edebilirsiniz. '
-        + 'Aktif ettiğiniz masaların karekodları çalışmaya devam eder.';
+    return `Aktif masa sayınız (${aktif}) seçtiğiniz paketin sınırının (${sinir}) üzerinde. Ödemeniz onaylandığında açık hesabı `
+        + 'olmayan masalarınız pasife alınır (açık hesaplı masalar hesap kapanana kadar aktif kalır); lisansınızdaki masa sayısı kadar '
+        + 'masayı Masalar sayfasından yeniden aktif edebilirsiniz. Aktif ettiğiniz masaların karekodları çalışmaya devam eder.';
 }
 
 exports.markPaid = async (req, res) => {
@@ -328,6 +350,12 @@ exports.markPaid = async (req, res) => {
         [req.params.id, req.user.tenantId]);
     if (!r.rows.length) return res.status(404).json({ message: 'Ödeme kaydı bulunamadı.' });
     if (r.rows[0].durum !== 'beklemede') return res.status(409).json({ message: 'Bu ödeme zaten sonuçlandırılmış.' });
+    // Lansman indirimli kayit: "Odemeyi yaptim" en gec kampanya son gununde (Istanbul gun sonu). Sonra 409; musteri
+    // secimini yeniler (iptal + yeni talep), yeni tutar indirimsiz hesaplanir. Zamaninda bildirilmis kayit etkilenmez.
+    const LK = require('../services/lansmanKampanya');
+    if (!r.rows[0].odeme_bildirildi_at && LK.kayitSuresiDoldu(r.rows[0])) {
+        return res.status(409).json({ code: 'KAMPANYA_SURESI_DOLDU', message: LK.SURESI_DOLDU_MESAJI, kampanyaSonGun: r.rows[0].kampanya_son_gun });
+    }
     // Ilk bildirim ani KORUNUR: tekrar "odemeyi yaptim" demek odeme korumasi penceresini uzatmaz (yalniz not guncellenir)
     await query('UPDATE lisans_odemeleri SET aciklama = ?, odeme_bildirildi_at = COALESCE(odeme_bildirildi_at, CURRENT_TIMESTAMP) WHERE id = ?',
         [String(req.body?.paymentRef || r.rows[0].aciklama || '').slice(0, 300), req.params.id]);
@@ -379,6 +407,8 @@ async function kayitEkleri(tenantId, x) {
         const b = await OK.kayitKorumaBitisi({ ...x, tenant_id: tenantId }).catch(() => null);
         ek.koruma_bitis = b ? b.toISOString() : null;
     }
+    // Son 30 gunde reddedilmis bildirim: bu bildirimde onay beklerken program acik tutulmaz (musteriye soylenir)
+    if (x && x.durum === 'beklemede') ek.koruma_yok_red = !!(await OK.sonRed(tenantId, x.odeme_bildirildi_at).catch(() => null));
     return ek;
 }
 // Patron'a e-posta: ortak servis services/rootBildirim.js (rootaBildir), degerleri HTML kacislar.
@@ -402,7 +432,7 @@ exports.cancelPurchase = async (req, res) => {
 exports.purchases = async (req, res) => {
     const r = await query(
         `SELECT id, tier, moduller, tutar, durum, aciklama, admin_note, donem_bitis, created_at, islenen_at, odeme_bildirildi_at,
-                tur, yeni_toplam, kredi_tutari, kalan_gun, kdv_orani, kdv_tutari, genel_toplam
+                tur, yeni_toplam, kredi_tutari, kalan_gun, kdv_orani, kdv_tutari, genel_toplam, kampanya_orani, kampanya_son_gun
            FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50`,
         [req.user.tenantId]);
     const out = [];

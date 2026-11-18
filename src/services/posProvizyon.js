@@ -176,6 +176,17 @@ const tlMetni = (kurus) => (Number(kurus || 0) / 100).toLocaleString('tr-TR', { 
 // yazar, { tutarKabul } tutar uyusmazligini kabul eder, { paketKabul } gecersiz sayilan paketi oldugu gibi yazar
 // (katalog dogrulamasi ve tutar karsilastirmasi yok; soframixPaket.posPaketZorla).
 async function odemeIsle(o, secenek = {}) {
+    const s = await odemeIsleIc(o, secenek);
+    // Tavsiye odulu (services/tavsiye.js): islemden SONRA ve islem disinda; hata odemeyi durdurmaz (root yeniden dener)
+    if (s && s.durum === 'islendi' && s.tenantId) {
+        const tv = await require('./tavsiye').odemeSonrasi(s.tenantId, { kaynak: 'soframix', ref: String(o.odeme_id || '') })
+            .catch((e) => { console.error('[tavsiye] SofraMix:', e.message); return null; });
+        if (tv && tv.edilen) { s.lisansBitis = tv.edilen.yeniBitis; s.tavsiyeGun = require('./tavsiye').EDILEN_GUN; }
+    }
+    return s;
+}
+
+async function odemeIsleIc(o, secenek = {}) {
     const odemeId = String(o.odeme_id || '').trim();
     if (!odemeId) return { durum: 'atlandi', sebep: 'odeme_id yok' };
     const sec = secenek || {};

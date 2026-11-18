@@ -34,5 +34,12 @@ router.get('/purchases', ...mgr, ctrl.purchases);
 router.get('/fatura', ...mgr, ctrl.faturaOku);
 router.put('/fatura', ...mgr, ctrl.faturaYaz);
 router.get('/purchases/:id', ...mgr, ctrl.purchaseStatus);
+// Ek sure bildirimi (root "Ek süre tanımla"): Lisans sayfasinda bir kez gosterilir; "Tamam" destek oturumunda yazilmaz
+router.get('/ek-sure-bildirimi', protect, require('../services/ekSure').bildirimUcu);
+router.post('/ek-sure-bildirimi/:id/goruldu', protect, require('../services/destekOturumu').destekYasak('Destek oturumunda kapatılamaz.'), require('../services/ekSure').gorulduUcu);
+// Tavsiye sistemi (services/tavsiye.js): Tavsiye Et karti (kod, baglanti, liste) + odul bildirimi (bir kez)
+router.get('/tavsiye', protect, requireRole('OWNER', 'MANAGER'), require('../services/tavsiye').isletmeUcu);
+router.get('/tavsiye-bildirimi', protect, require('../services/tavsiye').bildirimUcu);
+router.post('/tavsiye-bildirimi/:id/goruldu', protect, require('../services/destekOturumu').destekYasak('Destek oturumunda kapatılamaz.'), require('../services/tavsiye').gorulduUcu);
 
 module.exports = router;

@@ -95,6 +95,18 @@ async function rootJeton() {
 }
 
 let katalogYedek = null;
+// Lansman kampanyasi (test_lansman.js) bu testin fiyat beklentilerini degistirmesin: test boyunca kapali, sonunda eski hali
+let lansmanYedek;   // undefined: dokunulmadi; null: kayit yoktu; metin: eski deger
+async function lansmanKapat() {
+    lansmanYedek = ((await query("SELECT deger FROM sistem_ayarlari WHERE anahtar = 'lansman_acik'")).rows[0] || { deger: null }).deger;
+    await query("INSERT INTO sistem_ayarlari (anahtar, deger) VALUES ('lansman_acik', '0') ON CONFLICT(anahtar) DO UPDATE SET deger = '0'");
+}
+async function lansmanGeriAl() {
+    if (lansmanYedek === undefined) return;
+    if (lansmanYedek === null) await query("DELETE FROM sistem_ayarlari WHERE anahtar = 'lansman_acik'");
+    else await query("UPDATE sistem_ayarlari SET deger = ? WHERE anahtar = 'lansman_acik'", [lansmanYedek]);
+    lansmanYedek = undefined;
+}
 async function temizle() {
     const t = await query(`SELECT id FROM tenants WHERE business_name LIKE '${ON}%' OR owner_email LIKE '${EPOSTA_ON}%'`);
     for (const r of t.rows) {
@@ -113,6 +125,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 (async () => {
     initDb(); await uyu(1000);
     await temizle();
+    await lansmanKapat();
     katalogYedek = (await query('SELECT id, fiyat, gorunur FROM lisans_katalog')).rows;
     await fiyatYaz('TIER-TIER_1_5', 3000); await fiyatYaz('TIER-TIER_6_10', 4000); await fiyatYaz('TIER-TIER_11_20', 6000);
     await fiyatYaz('TIER-TIER_20_PLUS', 9000); await fiyatYaz('MODUL-MENU_DIGITAL', 1000); await fiyatYaz('MODUL-GARSON', 500);
@@ -207,7 +220,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('yeterli paket: masaUyarisi false', qb2.d.masaUyarisi === false, qb2.d);
     const pb0 = await js('/api/license/purchase', { token: B.token, body: { tier: 'TIER_1_5', modules: ['BASE', 'MENU_DIGITAL'] } });
     ok('onaysiz satin alma 400 MASA_UYARISI_ONAY_GEREKLI + metin', pb0.status === 400 && pb0.d.code === 'MASA_UYARISI_ONAY_GEREKLI'
-        && pb0.d.message.startsWith('Aktif masa sayınız (8) seçtiğiniz paketin sınırının (5) üzerinde. Ödemeniz onaylandığında tüm masalarınız pasife alınır;'), pb0.d);
+        && pb0.d.message.startsWith('Aktif masa sayınız (8) seçtiğiniz paketin sınırının (5) üzerinde. Ödemeniz onaylandığında açık hesabı olmayan masalarınız pasife alınır'), pb0.d);
     const pb = await js('/api/license/purchase', { token: B.token, body: { tier: 'TIER_1_5', modules: ['BASE', 'MENU_DIGITAL'], masaUyarisiOnay: true } });
     ok('onayli satin alma 201', pb.status === 201, pb.d);
     const kb = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [pb.d.id])).rows[0];
@@ -368,7 +381,8 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('yenileme onayi: Garson lisansta kalir', oni && oni.status === 200 && JSON.parse((await kiraci(I.id)).license_modules).includes('GARSON'), [pi, oni && oni.d]);
 
     await temizle();
+    await lansmanGeriAl();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);
     try { sunucu.kill(); } catch (_) {}
     process.exit(fail ? 1 : 0);
-})().catch(async (e) => { console.error('HATA', e); try { await temizle(); } catch (_) {} process.exit(1); });
+})().catch(async (e) => { console.error('HATA', e); try { await temizle(); await lansmanGeriAl(); } catch (_) {} process.exit(1); });

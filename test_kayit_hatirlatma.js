@@ -115,7 +115,8 @@ async function temizle() {
     ok('bitis yaklasik 7 gun sonra', Math.abs(new Date(t1.license_end_date).getTime() - (Date.now() + 7 * GUN)) < 120000, t1.license_end_date);
     const dk = (await query('SELECT * FROM deneme_kayitlari WHERE tenant_id = ?', [t1.id])).rows[0];
     ok('deneme_kayitlari: normalize telefon + kaynak kayit', dk && dk.telefon_norm === '5324750001' && dk.kaynak === 'kayit', dk);
-    ok('referans kodu uretildi (eski davranis)', /^MDA[0-9A-F]{8}$/.test(v1.d.referralCode || ''), v1.d.referralCode);
+    // Tavsiye sistemi (2026-11-18): kisa tavsiye kodu (6 karakter, I/O/0/1 yok; services/tavsiye.js)
+    ok('tavsiye kodu uretildi', /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/.test(v1.d.referralCode || ''), v1.d.referralCode);
 
     const ayniTel = await js('/api/auth/register/request', { body: govde({ email: `${EPOSTA_ON}k2@ornek.test`, phone: '+90 (532) 475 00 01' }) });
     const ayniEp = await js('/api/auth/register/request', { body: govde({ email: `${EPOSTA_ON.toUpperCase()}K1@ornek.test`, phone: '0532 475 00 02' }) });

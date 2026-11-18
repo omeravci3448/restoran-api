@@ -129,4 +129,14 @@ async function kayitKorumaBitisi(o) {
     return b && b.getTime() > Date.now() ? b : null;
 }
 
-module.exports = { etkinDurum, etkinDurumSenkron, tazele, yukle, kayitKorumaBitisi, bitisHesapla, korumaGun };
+// Bu bildirimden (yoksa simdiden) onceki 30 gun icindeki son red: varsa bildirime koruma verilmez. Musteri lisans
+// sayfasi, lisans seridi ve root karti bunu acikca soyler. Doner { not, tarih } | null
+async function sonRed(tenantId, bildirildi) {
+    const r = (await query(
+        `SELECT admin_note, islenen_at FROM lisans_odemeleri
+          WHERE tenant_id = ? AND durum = 'reddedildi' AND islenen_at >= datetime(COALESCE(?, CURRENT_TIMESTAMP), '-30 days')
+          ORDER BY islenen_at DESC LIMIT 1`, [tenantId, bildirildi || null])).rows[0];
+    return r ? { not: r.admin_note || '', tarih: r.islenen_at } : null;
+}
+
+module.exports = { etkinDurum, etkinDurumSenkron, tazele, yukle, kayitKorumaBitisi, bitisHesapla, korumaGun, sonRed };
