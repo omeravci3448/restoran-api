@@ -141,6 +141,11 @@ function eldeKonusu(sebep) {
 // Islenen odemeden sonra: SofraMix kanalini bagla, sahibine posta gonder, zayif eslesmede root'u uyar.
 // Doner: 'acilan' | 'yenilenen' | null. Root panelinden cozulen odemelerde de kullanilir.
 async function islenenSonrasi(o, s) {
+    // Bilgi uyarisi (lisans acildi, root yalniz haberdar olsun): ornegin yedek fiyatla satilan tam paket
+    if (s.bilgi) {
+        await rootUyari('SofraMix tam paketi yedek fiyatla satıldı', `Ödeme ${o.odeme_id} (${o.isletme_adi || '-'}): ${s.bilgi}`)
+            .catch((e) => console.error('[provizyon] bilgi uyarisi:', e.message));
+    }
     // SofraMix kanalini otomatik bagla + menuyu cek (best-effort, arka planda; anahtar
     // sunucudan sunucuya). Zaten bagliysa dokunmaz.
     if (o.business_id != null && o.business_id !== '') {

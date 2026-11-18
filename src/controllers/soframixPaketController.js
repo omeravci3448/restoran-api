@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { query } = require('../config/db');
 const SP = require('../services/soframixPaket');
+const M = require('../services/lisansModul');
 
 // --- SofraMix paket uclari (POS tarafi) ---
 //
@@ -20,18 +21,28 @@ const YUK_EN_COK = 4096;
 
 function acikMi() { return GIZLI.length >= 16; }
 
-// IP basina sayaclar (bellekte, 15 dk). Imzasi tutmayanlar gevsek (yalniz CPU'yu korur), gecerliler siki.
-function sayacKur(sinir, pencereMs) {
+// IP basina sayaclar (bellekte). sayacKur(ip): sayar ve sinir asildi mi doner. Bellek siniri: 20000 IP'yi gecince
+// (yeni IP eklenirken de) tablo bosaltilir.
+function sayacTablosu(sinir, pencereMs) {
     const h = new Map();
-    return (ip) => {
-        const k = h.get(ip); const simdi = Date.now();
-        if (!k || simdi > k.sifir) { h.set(ip, { sayi: 1, sifir: simdi + pencereMs }); return false; }
-        k.sayi++; if (h.size > 20000) h.clear();
-        return k.sayi > sinir;
+    const canli = (ip) => { const k = h.get(ip); return k && Date.now() <= k.sifir ? k : null; };
+    return {
+        // Yalniz okur: sinir asilmis mi (saymaz)
+        asildiMi: (ip) => { const k = canli(ip); return !!k && k.sayi > sinir; },
+        // Sayar; sinir asildi mi doner
+        artir: (ip) => {
+            const k = canli(ip);
+            if (!k) { if (h.size >= 20000) h.clear(); h.set(ip, { sayi: 1, sifir: Date.now() + pencereMs }); return 1 > sinir; }
+            k.sayi++;
+            return k.sayi > sinir;
+        },
     };
 }
+const sayacKur = (sinir, pencereMs) => sayacTablosu(sinir, pencereMs).artir;
 const paketCokMu = sayacKur(300, 5 * 60000);
-const durumHataliCokMu = sayacKur(300, 15 * 60000);
+// Durum ucu: HATALI istekler (imza, bicim, sure) ayri ve gevsek sayilir (yalniz CPU'yu korur); girista yalniz okunur,
+// ret aninda artirilir. Gecerli istekler yalniz durumCokMu ile sinirlanir (SofraMix sunucusu tek IP'den gelir).
+const durumHatali = sayacTablosu(300, 15 * 60000);
 const durumCokMu = sayacKur(600, 15 * 60000);
 
 function sabitZamanliEsit(a, b) {
@@ -54,6 +65,7 @@ exports.paketler = async (req, res) => {
     res.json(onbellek.govde);
 };
 exports._onbellekSifirla = () => { onbellek = { zaman: 0, govde: null }; };
+exports._sayacTablosu = sayacTablosu;   // test icin
 
 // GET /api/public/soframix-durum?yuk=<base64url>&imza=<hex>
 exports.durum = async (req, res) => {
@@ -63,30 +75,31 @@ exports.durum = async (req, res) => {
         return res.status(503).json({ message: 'Hizmet şu an kullanılamıyor.' });
     }
     const ip = req.ip || 'bilinmiyor';
-    if (durumHataliCokMu(ip)) return res.status(429).json({ message: 'Çok fazla istek.' });
+    if (durumHatali.asildiMi(ip)) return res.status(429).json({ message: 'Çok fazla istek.' });
+    const reddet = (kod, message) => { durumHatali.artir(ip); return res.status(kod).json({ message }); };
 
     const { yuk, imza } = req.query || {};
     if (typeof yuk !== 'string' || !yuk || yuk.length > YUK_EN_COK || !/^[0-9a-f]{64}$/.test(String(imza || ''))) {
-        return res.status(401).json({ message: 'İmza geçersiz.' });
+        return reddet(401, 'İmza geçersiz.');
     }
     // 1) IMZA: cozulen metnin kendisi uzerinden, parse ETMEDEN once
     let metin;
     try { metin = Buffer.from(yuk, 'base64url').toString('utf8'); } catch (_) { metin = ''; }
     const beklenen = crypto.createHmac('sha256', GIZLI).update(metin).digest('hex');
-    if (!sabitZamanliEsit(imza, beklenen)) return res.status(401).json({ message: 'İmza geçersiz.' });
+    if (!sabitZamanliEsit(imza, beklenen)) return reddet(401, 'İmza geçersiz.');
 
     // 2) GOVDE
     let g;
-    try { g = JSON.parse(metin); } catch (_) { return res.status(400).json({ message: 'İstek okunamadı.' }); }
+    try { g = JSON.parse(metin); } catch (_) { return reddet(400, 'İstek okunamadı.'); }
     const no = g && g.isletme_no;
     if (!g || g.kaynak !== 'soframix' || Number(g.surum) !== 1 || g.amac !== 'durum'
         || !Number.isInteger(Number(no)) || Number(no) <= 0 || String(no).trim() === '') {
-        return res.status(400).json({ message: 'İstek beklenen biçimde değil.' });
+        return reddet(400, 'İstek beklenen biçimde değil.');
     }
     // 3) SURE: unix saniye; 300 sn'den eski ya da 60 sn'den ileri RED
     const simdi = Date.now() / 1000; const zaman = Number(g.zaman);
     if (!Number.isFinite(zaman) || zaman > simdi + ILERI_SN || simdi - zaman > GECMIS_SN) {
-        return res.status(410).json({ message: 'İsteğin süresi dolmuş.' });
+        return reddet(410, 'İsteğin süresi dolmuş.');
     }
     if (durumCokMu(ip)) return res.status(429).json({ message: 'Çok fazla istek.' });
 
@@ -104,23 +117,35 @@ exports.durum = async (req, res) => {
         "SELECT 1 FROM pos_provizyon WHERE soframix_business_id = ? AND durum = 'elde' LIMIT 1", [smxId]);
     const bitis = t.license_end_date && !isNaN(new Date(t.license_end_date).getTime())
         ? new Date(t.license_end_date).toISOString() : null;
+    // kalanGun: YALNIZ AKTIF lisansta bitise kalan gun (0 = bugun bitiyor). SALT_OKUNUR/KAPALI'da 0; salt-okunur
+    // donemde erisimin bitisine kalan gun ayri alanda (erisimKalanGun; diger durumlarda 0).
+    const aktif = d.durum === 'AKTIF';
+    const kalanGun = d.kalanGun == null ? null : (aktif ? d.kalanGun : 0);
+    const erisimKalanGun = d.durum === 'SALT_OKUNUR' && d.kalanGun != null ? d.kalanGun : 0;
+    // Okunur adlar (SofraMix ozeti ham kod gostermesin): katalog adi, yoksa POS'taki modul adi
+    const adlar = (await query('SELECT tur, kod, ad FROM lisans_katalog')).rows;
+    const ad = (tur, kod) => { const x = adlar.find((y) => y.tur === tur && y.kod === kod); return x ? x.ad : null; };
+    const modulAdlari = p.moduller.filter((m) => m !== 'ALL').map((m) => ad('MODUL', m) || M.AD[m] || m);
+    const tierAd = p.tier ? ad('TIER', p.tier) : null;
     res.json({
         bulundu: true,
         isletme_no: Number(smxId),
         lisansBitis: bitis,
         durum: d.durum,
-        kalanGun: d.kalanGun == null ? null : d.kalanGun,
-        paket: { tur: p.tur, tier: p.tier, moduller: p.moduller },
+        kalanGun,
+        erisimKalanGun,
+        paket: { tur: p.tur, tier: p.tier, moduller: p.moduller, modulAdlari, tierAd },
         kanal: (t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX') ? 'soframix' : 'yerel',
         bekleyenOdeme: bekleyen.rows.length > 0,
     });
 };
 
-// POST /api/root/provizyon/:odemeId/coz  { islem: 'yeni' | 'aday' | 'isletme' | 'tutar', isyeriKodu? }
+// POST /api/root/provizyon/:odemeId/coz  { islem: 'yeni' | 'aday' | 'isletme' | 'tutar' | 'paket', isyeriKodu? }
 //   yeni     eslesme aramadan YENI isletme ac (ayni sahibin ikinci subesi gibi)
 //   aday     elde birakilirken bulunan aday isletmeye yaz (root kontrol etti)
 //   isletme  isyeri koduyla secilen isletmeye yaz
 //   tutar    paket tutari uyusmazligini kabul et (fiyat bilerek degisti)
+//   paket    gecersiz sayilan paketi (paket_gecersiz) oldugu gibi kabul et: bagimliliklar tamamlanir, tutar bakilmaz
 // Kararlar kayda islenir: iki adimli cozumde (once tutar, sonra yeni isletme) ilk karar kaybolmaz.
 exports.rootCoz = async (req, res) => {
     const YG = require('../services/yonetimGunlugu');
@@ -144,6 +169,8 @@ exports.rootCoz = async (req, res) => {
         ek = { tenantId: t.id }; aciklama = `${t.business_name} (${kod}) işletmesine yazıldı`;
     } else if (islem === 'tutar') {
         ek = { tutarKabul: true }; aciklama = 'tutar farkı kabul edildi';
+    } else if (islem === 'paket') {
+        ek = { paketKabul: true }; aciklama = 'paket olduğu gibi kabul edildi';
     } else {
         return res.status(400).json({ message: 'Geçersiz işlem.' });
     }

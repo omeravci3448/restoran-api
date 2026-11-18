@@ -15,10 +15,14 @@ const M = require('./lisansModul');
 const SURUM = 1;
 const TAM_PAKET_AYARI = 'smx_tam_paket_fiyat';
 const ZORUNLU_MODULLER = ['MARKETPLACE'];   // SofraMix siparisleri POS'a duser (Adisyon ve Kasa varsa)
+// Zorunlu modulun kosulu: MARKETPLACE yalniz Adisyon ve Kasa (BASE) secilince lisansa yazilir (posPaketCoz).
+// SofraMix bu bilgiyle menu paketinde "SofraMix siparisleri" satirini gostermez.
+const ZORUNLU_KOSUL = { MARKETPLACE: ['BASE'] };
 const TUTAR_TOLERANS_KURUS = 100;           // 1 TL
 const NOTLAR = [
     'Fiyatlar yıllıktır ve KDV hariçtir.',
     'Adisyon ve Kasa seçilmezse masa paketi gerekmez; menü tek karekodla çalışır.',
+    'SofraMix siparişleri programa yalnız Adisyon ve Kasa ile düşer.',
 ];
 
 const yuvarla = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -70,8 +74,12 @@ async function gorunurKatalog() {
 
 // Bir modulun gereksinimleri (services/lisansModul.js BAGIMLILIK kurali). "hepsi" aynen; "biri" (en az biri)
 // icin ilk secenek yazilir: SofraMix onu kendiliginden ekler, POS dogrulamasi da bunu gecerli sayar.
+// Yeni satis kurali (lisansModul.SATIS_GEREKIR) varsa o da eklenir: GARSON -> BASE (garson cagirma masa
+// karekoduyla calisir; tek karekodlu menude garson yok). posPaketCoz ayni kurali uygular.
 function gerekir(kod) {
     const b = M.BAGIMLILIK[kod];
+    const satis = M.SATIS_GEREKIR[kod];
+    if (satis) return Array.from(new Set([...((b && b.hepsi) || []), ...satis]));
     if (!b) return [];
     const l = [...(b.hepsi || [])];
     if (b.biri && b.biri.length && !b.biri.some((g) => l.includes(g))) l.push(b.biri[0]);
@@ -116,6 +124,7 @@ async function paketler() {
             };
         }),
         zorunluModuller: ZORUNLU_MODULLER.slice(),
+        zorunluKosul: JSON.parse(JSON.stringify(ZORUNLU_KOSUL)),
         notlar: NOTLAR.slice(),
     };
 }
@@ -146,10 +155,15 @@ async function posPaketCoz(ppHam) {
         const fiyat = await tamPaketFiyati();
         // Tam paket fiyati tanimli degilse karsilastiracak fiyat yok: eski (paket bilgisiz) odemeler gibi kabul.
         const beklenenKurus = fiyat == null ? null : Math.round(fiyat * 100);
+        const fark = beklenenKurus != null && Math.abs(beklenenKurus - gelenKurus) > TUTAR_TOLERANS_KURUS;
+        // kaynak 'yerel': POS'a ulasilamadigi anda SofraMix tam paketi kendi yedek fiyatiyla satti. Musteri o fiyati
+        // odedi; paket acilir, fark varsa root'a yalniz bilgi gider (yerelFiyatFarki).
+        const yerel = pp.kaynak === 'yerel';
         return {
             tur: 'tam', tier: null, moduller: tamPaketModulleri(), masaSiniri: null,
             beklenenKurus, gelenKurus,
-            tutarUyumlu: beklenenKurus == null || Math.abs(beklenenKurus - gelenKurus) <= TUTAR_TOLERANS_KURUS,
+            tutarUyumlu: !fark || yerel,
+            yerelFiyatFarki: yerel && fark,
             ham,
         };
     }
@@ -163,6 +177,9 @@ async function posPaketCoz(ppHam) {
     if (bilinmeyen.length) return red('Satışta olmayan modül: ' + bilinmeyen.join(', '));
     const eksik = istenen.filter((m) => !M.bagimlilikSaglaniyor(m, istenen));
     if (eksik.length) return red('Modül gereksinimi karşılanmıyor: ' + eksik.join(', '));
+    // Yeni satis kurali: GARSON Adisyon ve Kasa ister (lisansModul.SATIS_GEREKIR; katalogdaki "gerekir" ile ayni)
+    const satisEksik = istenen.filter((m) => (M.SATIS_GEREKIR[m] || []).some((g) => !istenen.includes(g)));
+    if (satisEksik.length) return red(M.GARSON_BASE_MESAJI);
 
     const adisyon = istenen.includes('BASE');
     const tierKod = pp.tier == null || pp.tier === '' ? null : String(pp.tier);
@@ -186,6 +203,36 @@ async function posPaketCoz(ppHam) {
         tutarUyumlu: Math.abs(beklenenKurus - gelenKurus) <= TUTAR_TOLERANS_KURUS,
         ham,
     };
+}
+
+// Root karari "paketi oldugu gibi kabul et" (posProvizyon secenek.paketKabul): posPaketCoz reddettiyse (paket
+// sonradan satistan kalkti, surum farki, eksik bagimlilik) SofraMix'in sattigi secim katalog dogrulamasi ve tutar
+// karsilastirmasi OLMADAN yazilir. Bilinen modul kodlari alinir, bagimliliklar tamamlanir (lisansModul), Adisyon ve
+// Kasa varsa MARKETPLACE eklenir; kademe katalogda (gizli de olsa) varsa o, yoksa null. Okunamayan paket kabul edilmez.
+async function posPaketZorla(ppHam) {
+    const pp = hamCoz(ppHam);
+    const ham = pp == null ? null : JSON.stringify(pp).slice(0, 2000);
+    const red = (mesaj) => ({ hata: 'paket_gecersiz', mesaj, ham });
+    if (pp == null || pp._bozuk || typeof pp !== 'object' || Array.isArray(pp)) return red('Paket bilgisi okunamadı; olduğu gibi kabul edilemez.');
+    const gelenKurus = Number.isFinite(Number(pp.smxTutarKurus)) ? Number(pp.smxTutarKurus) : null;
+    if (pp.tur === 'tam') {
+        return { tur: 'tam', tier: null, moduller: tamPaketModulleri(), masaSiniri: null, beklenenKurus: null, gelenKurus,
+            tutarUyumlu: true, zorla: true, ham };
+    }
+    const bilinen = Object.keys(M.AD);
+    const secim = Array.from(new Set((Array.isArray(pp.moduller) ? pp.moduller : []).map(String)))
+        .filter((m) => bilinen.includes(m) && !ZORUNLU_MODULLER.includes(m));
+    if (!secim.length) return red('Paket bilgisinde tanınan modül yok; olduğu gibi kabul edilemez.');
+    const tamam = M.bagimliliklariTamamla(secim).moduller;
+    const adisyon = tamam.includes('BASE');
+    const moduller = adisyon ? [...tamam, ...ZORUNLU_MODULLER.filter((z) => !tamam.includes(z))] : tamam;
+    let tier = null;
+    let masaSiniri = null;
+    if (pp.tier != null && pp.tier !== '') {
+        const t = (await query("SELECT kod, masa_limiti FROM lisans_katalog WHERE tur = 'TIER' AND kod = ?", [String(pp.tier)])).rows[0];
+        if (t && t.kod !== 'TIER_DENEME') { tier = t.kod; masaSiniri = t.masa_limiti == null ? null : Number(t.masa_limiti); }
+    }
+    return { tur: 'ozel', tier, moduller, masaSiniri, beklenenKurus: null, gelenKurus, tutarUyumlu: true, zorla: true, ham };
 }
 
 // --- Isletmenin bugunku SofraMix paketi (durum ucu + lisans sayfasi) ---
@@ -219,6 +266,6 @@ async function kiraciPaketBilgisi(tenantId) {
 }
 
 module.exports = {
-    SURUM, TAM_PAKET_AYARI, ZORUNLU_MODULLER, TUTAR_TOLERANS_KURUS, NOTLAR,
-    kdvOrani, tamPaketFiyati, gorunurKatalog, gerekir, tamNormalFiyat, paketler, posPaketCoz, kiraciPaketi, kiraciPaketBilgisi,
+    SURUM, TAM_PAKET_AYARI, ZORUNLU_MODULLER, ZORUNLU_KOSUL, TUTAR_TOLERANS_KURUS, NOTLAR,
+    kdvOrani, tamPaketFiyati, gorunurKatalog, gerekir, tamNormalFiyat, paketler, posPaketCoz, posPaketZorla, kiraciPaketi, kiraciPaketBilgisi,
 };

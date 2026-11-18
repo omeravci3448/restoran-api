@@ -173,7 +173,8 @@ const tlMetni = (kurus) => (Number(kurus || 0) / 100).toLocaleString('tr-TR', { 
 // smxTutarKurus }. Tutar guncel katalogdan yeniden hesaplanir (services/soframixPaket.js); uyusmazsa lisans
 // acilmaz, odeme elde kalir.
 // secenek (yalniz root cozumu): { yeniIsletme } eslesme aramadan yeni isletme acar, { tenantId } o isletmeye
-// yazar, { tutarKabul } tutar uyusmazligini kabul eder.
+// yazar, { tutarKabul } tutar uyusmazligini kabul eder, { paketKabul } gecersiz sayilan paketi oldugu gibi yazar
+// (katalog dogrulamasi ve tutar karsilastirmasi yok; soframixPaket.posPaketZorla).
 async function odemeIsle(o, secenek = {}) {
     const odemeId = String(o.odeme_id || '').trim();
     if (!odemeId) return { durum: 'atlandi', sebep: 'odeme_id yok' };
@@ -196,7 +197,8 @@ async function odemeIsle(o, secenek = {}) {
         const tel = String(o.yetkili_tel || '').trim() || null;
 
         // Paket secimi (SofraMix'in gonderdigi). Eski odemelerde yok -> tur null.
-        const paket = await require('./soframixPaket').posPaketCoz(o.pos_paket);
+        let paket = await require('./soframixPaket').posPaketCoz(o.pos_paket);
+        if (paket.hata && sec.paketKabul) paket = await require('./soframixPaket').posPaketZorla(o.pos_paket);
         const ortak = { odemeId, smxId, ad, eposta, tel, tekrarDeneme, posPaket: paket.ham || null };
 
         // Elde birakma: parayi kaydet, lisansa DOKUNMA, root panelinden elle cozulsun.
@@ -336,8 +338,13 @@ async function odemeIsle(o, secenek = {}) {
         await provizyonYaz(o, { ...ortak, tenantId, donemBitis: bitis && bitis.license_end_date,
             kiraciAcildi, durum: 'islendi', hata: null, eldeSebep: null, adayTenantId: null });
 
+        // Bilgi (lisans acildi; root yalniz haberdar olur): POS'a ulasilamazken SofraMix'in yedek fiyatiyla satilan tam paket
+        const bilgi = paket.yerelFiyatFarki
+            ? `Tam paket, POS'a ulaşılamadığı sırada SofraMix'in yedek fiyatıyla satıldı: SofraMix ${tlMetni(paket.gelenKurus)}, `
+                + `katalog ${tlMetni(paket.beklenenKurus)} (KDV hariç). Lisans açıldı; fiyatları kontrol edin.`
+            : null;
         return {
-            durum: 'islendi', tenantId, kiraciAcildi: !!kiraciAcildi, esles, paketTur: paket.tur || null,
+            durum: 'islendi', tenantId, kiraciAcildi: !!kiraciAcildi, esles, paketTur: paket.tur || null, bilgi,
             isyeriKodu: bitis && bitis.business_code,
             eposta: (bitis && bitis.owner_email) || eposta,
             lisansBitis: bitis && bitis.license_end_date,
@@ -349,13 +356,14 @@ async function odemeIsle(o, secenek = {}) {
 
 // Kayitli (elde) provizyon satirini yeniden isle. SofraMix'in gonderdigi paket secimi (pos_paket) ve root'un
 // onceki kararlari (root_cozum) korunur; boylece "tutari kabul et" sonra "yeni isletme ac" gibi iki adimli
-// cozumde ilk karar kaybolmaz. ek: bu seferki root karari ({ yeniIsletme } | { tenantId } | { tutarKabul }).
+// cozumde ilk karar kaybolmaz. ek: bu seferki root karari ({ yeniIsletme } | { tenantId } | { tutarKabul } | { paketKabul }).
 async function kayittanTekrarIsle(k, ek = {}) {
     let karar = {};
     try { karar = JSON.parse(k.root_cozum || '{}') || {}; } catch (_) { karar = {}; }
     if (ek.yeniIsletme) { delete karar.tenantId; karar.yeniIsletme = true; }
     if (ek.tenantId) { delete karar.yeniIsletme; karar.tenantId = String(ek.tenantId); }
     if (ek.tutarKabul) karar.tutarKabul = true;
+    if (ek.paketKabul) karar.paketKabul = true;
     if (Object.keys(ek).length) {
         await query('UPDATE pos_provizyon SET root_cozum = ? WHERE odeme_id = ?', [JSON.stringify(karar), k.odeme_id]);
     }

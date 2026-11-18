@@ -119,7 +119,7 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     ok('200', pk.status === 200, pk.status);
     ok('Cache-Control public, max-age=60', /public/.test(pk.cache || '') && /max-age=60/.test(pk.cache || ''), pk.cache);
     ok('surum 1, kdvOrani 20', d.surum === 1 && d.kdvOrani === 20, { surum: d.surum, kdv: d.kdvOrani });
-    const anahtarlar = ['surum', 'kdvOrani', 'tamPaket', 'masaPaketleri', 'moduller', 'zorunluModuller', 'notlar'];
+    const anahtarlar = ['surum', 'kdvOrani', 'tamPaket', 'masaPaketleri', 'moduller', 'zorunluModuller', 'zorunluKosul', 'notlar'];
     ok('ust alanlar tam ve fazlasiz', JSON.stringify(Object.keys(d).sort()) === JSON.stringify(anahtarlar.slice().sort()), Object.keys(d));
     const t15 = (d.masaPaketleri || []).find((x) => x.kod === 'TIER_1_5');
     ok('masa paketi: normal 3000, smx 2500, sinir 5', t15 && t15.normalFiyat === 3000 && t15.smxFiyat === 2500 && t15.masaSiniri === 5 && t15.ad, t15);
@@ -131,11 +131,13 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     ok('QR Menu: normal 1000, smx 800, gerekir []', mod('MENU_DIGITAL') && mod('MENU_DIGITAL').normalFiyat === 1000 && mod('MENU_DIGITAL').smxFiyat === 800
         && Array.isArray(mod('MENU_DIGITAL').gerekir) && mod('MENU_DIGITAL').gerekir.length === 0, mod('MENU_DIGITAL'));
     ok('Stok gerekir BASE (bagimlilik kuralindan)', mod('STOK') && JSON.stringify(mod('STOK').gerekir) === '["BASE"]', mod('STOK'));
-    ok('Garson gerekir bos degil (en az bir on kosul)', mod('GARSON') && mod('GARSON').gerekir.length >= 1 && mod('GARSON').smxFiyat === 500, mod('GARSON'));
+    ok('Garson gerekir BASE (yeni satis kurali SATIS_GEREKIR)', mod('GARSON') && JSON.stringify(mod('GARSON').gerekir) === '["BASE"]' && mod('GARSON').smxFiyat === 500, mod('GARSON'));
     ok('gizli moduller listede yok (QR_SIPARIS, MARKETPLACE)', !mod('QR_SIPARIS') && !mod('MARKETPLACE'));
     ok('modul alanlari', mod('STOK') && JSON.stringify(Object.keys(mod('STOK')).sort()) === JSON.stringify(['ad', 'aciklama', 'fiyatMasaPaketinden', 'gerekir', 'kod', 'normalFiyat', 'smxFiyat'].sort()), mod('STOK') && Object.keys(mod('STOK')));
     ok('zorunluModuller MARKETPLACE', JSON.stringify(d.zorunluModuller) === '["MARKETPLACE"]', d.zorunluModuller);
-    ok('notlar', Array.isArray(d.notlar) && d.notlar[0] === 'Fiyatlar yıllıktır ve KDV hariçtir.' && d.notlar.length === 2, d.notlar);
+    ok('zorunluKosul: MARKETPLACE yalniz BASE ile', JSON.stringify(d.zorunluKosul) === '{"MARKETPLACE":["BASE"]}', d.zorunluKosul);
+    ok('notlar (SofraMix siparisleri notu dahil)', Array.isArray(d.notlar) && d.notlar[0] === 'Fiyatlar yıllıktır ve KDV hariçtir.' && d.notlar.length === 3
+        && d.notlar.includes('SofraMix siparişleri programa yalnız Adisyon ve Kasa ile düşer.'), d.notlar);
     const tp = d.tamPaket || {};
     ok('tam paket: kod/ad/sinirsiz', tp.kod === 'TAM' && tp.ad === 'Tam paket' && tp.masaSiniri === null && tp.aciklama === 'Tüm modüller açık, sınırsız masa', tp);
     ok('tam paket modulleri = provizyonun tam listesi', JSON.stringify(tp.moduller) === JSON.stringify(P.VARSAYILAN_MODULLER), tp.moduller);
@@ -181,6 +183,15 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     // Tolerans 1 TL
     const s3c = await P.odemeIsle(odeme({ business_id: smxNo(), isletme_adi: `${ON} Tam Tolerans`, yetkili_email: `${ON.toLowerCase()}3c@ornek.test`, pos_paket: { ...tam, smxTutarKurus: 900080 } }));
     ok('0,80 TL fark tolerans icinde', s3c.durum === 'islendi', s3c);
+    ok('normal tam pakette bilgi yok', s3c.bilgi === null, s3c.bilgi);
+    // R3-SMX-5: POS'a ulasilamazken SofraMix yedek fiyatiyla satilan tam paket (kaynak 'yerel'): acilir, root'a bilgi
+    const s3d = await P.odemeIsle(odeme({ business_id: smxNo(), isletme_adi: `${ON} Tam Yerel`, yetkili_email: `${ON.toLowerCase()}3d@ornek.test`,
+        pos_paket: { ...tam, kaynak: 'yerel', smxTutarKurus: 750000 } }));
+    ok('yedek fiyatli tam paket (kaynak yerel) -> islendi, elde degil', s3d.durum === 'islendi' && s3d.paketTur === 'tam', s3d);
+    ok('yedek fiyat farki: root bilgi metni', /yedek fiyatıyla/.test(s3d.bilgi || '') && /7\.500,00 TL/.test(s3d.bilgi) && /9\.000,00 TL/.test(s3d.bilgi), s3d.bilgi);
+    const s3e = await P.odemeIsle(odeme({ business_id: smxNo(), isletme_adi: `${ON} Tam Yerel Ayni`, yetkili_email: `${ON.toLowerCase()}3e@ornek.test`,
+        pos_paket: { ...tam, kaynak: 'yerel' } }));
+    ok('yedek kaynakli ama fiyat ayni: bilgi yok', s3e.durum === 'islendi' && s3e.bilgi === null, s3e);
 
     console.log('\n=== 4) Provizyon: ozel paket ===');
     const ozel = { surum: 1, tur: 'ozel', tier: 'TIER_6_10', moduller: ['BASE', 'MENU_DIGITAL'], smxTutarKurus: (4000 + 800) * 100 };
@@ -205,6 +216,11 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     ok('gizli modul -> elde', g2.durum === 'elde' && g2.sebep === 'paket_gecersiz', g2);
     const g3 = await gecersiz({ surum: 1, tur: 'ozel', tier: null, moduller: ['GARSON'], smxTutarKurus: 50000 }, 'Gecersiz3');
     ok('bagimlilik karsilanmiyor (Garson tek basina) -> elde', g3.durum === 'elde' && g3.sebep === 'paket_gecersiz', g3);
+    // R3-SMX-2: QR menu + Garson (Adisyon ve Kasa yok) yeni satista gecersiz: garson cagirma masa karekoduyla calisir
+    const g3b = await gecersiz({ surum: 1, tur: 'ozel', tier: null, moduller: ['MENU_DIGITAL', 'GARSON'], smxTutarKurus: (800 + 500) * 100 }, 'Menu Garson');
+    ok('QR Menu + Garson (BASE yok) -> elde paket_gecersiz', g3b.durum === 'elde' && g3b.sebep === 'paket_gecersiz' && /Adisyon ve Kasa ile birlikte/.test(g3b.uyari || ''), g3b);
+    const sp3 = await SP.posPaketCoz({ surum: 1, tur: 'ozel', tier: 'TIER_1_5', moduller: ['BASE', 'GARSON'], smxTutarKurus: (2500 + 500) * 100 });
+    ok('Adisyon ve Kasa + Garson (QR Menu yok) gecerli', sp3.tur === 'ozel' && sp3.tutarUyumlu && sp3.moduller.includes('GARSON'), sp3);
     const g4 = await gecersiz({ surum: 1, tur: 'ozel', tier: 'TIER_DENEME', moduller: ['BASE'], smxTutarKurus: 0 }, 'Gecersiz4');
     ok('satista olmayan kademe -> elde', g4.durum === 'elde' && g4.sebep === 'paket_gecersiz', g4);
     const g5 = await gecersiz({ surum: 2, tur: 'tam', smxTutarKurus: 900000 }, 'Gecersiz5');
@@ -299,10 +315,36 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     const sST = await P.odemeIsle(odeme({ isletme_adi: `${ON} SMX Tel`, yetkili_tel: smxTel, yetkili_email: `${ON.toLowerCase()}st${uuid().slice(0, 5)}@ornek.test` }));
     ok('SofraMix denemesi telefonla: islendi (deneme_tel)', sST.durum === 'islendi' && sST.tenantId === st && sST.esles === 'deneme_tel', sST);
 
+    console.log('\n=== 7b) Root: gecersiz paketi oldugu gibi kabul et (R3-POS-1) ===');
+    // Satista olmayan (gizli) QR_SIPARIS ile satilmis paket: para alindi, POS paket_gecersiz dedi
+    const oPG = odeme({ business_id: smxNo(), isletme_adi: `${ON} Paket Gecersiz`, yetkili_email: `${ON.toLowerCase()}pg${uuid().slice(0, 5)}@ornek.test`,
+        pos_paket: { surum: 1, tur: 'ozel', tier: 'TIER_1_5', moduller: ['BASE', 'QR_SIPARIS'], smxTutarKurus: 123 } });
+    const sPG = await P.odemeIsle(oPG);
+    ok('once elde paket_gecersiz', sPG.durum === 'elde' && sPG.sebep === 'paket_gecersiz', sPG);
+    const kPG = (await query('SELECT * FROM pos_provizyon WHERE odeme_id = ?', [oPG.odeme_id])).rows[0];
+    ok('tutar kabulu paket hatasini cozmez', (await P.kayittanTekrarIsle(kPG, { tutarKabul: true })).sebep === 'paket_gecersiz');
+    const rPG = await cevap({ odemeId: oPG.odeme_id }, { islem: 'paket' });
+    ok('root "Paketi olduğu gibi kabul et" -> islendi, yeni isletme', rPG.kod === 200 && rPG.govde.durum === 'islendi' && rPG.govde.kiraciAcildi && rPG.govde.paketTur === 'ozel', rPG);
+    const kpg = rPG.govde && await kiraci(rPG.govde.tenantId);
+    ok('bagimliliklar tamamlandi (QR_SIPARIS -> MENU_DIGITAL) + MARKETPLACE, tutar bakilmadi',
+        kpg && JSON.stringify((await modulleri(kpg.id)).sort()) === JSON.stringify(['BASE', 'MARKETPLACE', 'MENU_DIGITAL', 'QR_SIPARIS']), kpg && kpg.license_modules);
+    ok('kademe ham degerden: TIER_1_5, sinir 5', kpg && kpg.license_tier === 'TIER_1_5' && Number(kpg.license_table_limit) === 5, kpg && [kpg.license_tier, kpg.license_table_limit]);
+    ok('karar kayda islendi', JSON.parse((await query('SELECT root_cozum FROM pos_provizyon WHERE odeme_id = ?', [oPG.odeme_id])).rows[0].root_cozum || '{}').paketKabul === true);
+    // Okunamayan paket kabul edilmez
+    const oPB = odeme({ business_id: smxNo(), isletme_adi: `${ON} Paket Bozuk`, yetkili_email: `${ON.toLowerCase()}pb${uuid().slice(0, 5)}@ornek.test`, pos_paket: '{bozuk' });
+    await P.odemeIsle(oPB);
+    const rPB = await cevap({ odemeId: oPB.odeme_id }, { islem: 'paket' });
+    ok('okunamayan paket: kabul edilmez, yine elde', rPB.govde && rPB.govde.durum === 'elde' && rPB.govde.sebep === 'paket_gecersiz', rPB);
+    ok('SP.posPaketZorla: bilinmeyen kodlar atilir, deneme kademesi alinmaz',
+        JSON.stringify((await SP.posPaketZorla({ tur: 'ozel', tier: 'TIER_DENEME', moduller: ['MENU_DIGITAL', 'UYDURMA'] })).moduller) === '["MENU_DIGITAL"]'
+        && (await SP.posPaketZorla({ tur: 'ozel', tier: 'TIER_DENEME', moduller: ['MENU_DIGITAL'] })).tier === null);
+
     console.log('\n=== 8) GET /api/public/soframix-durum ===');
     const rd = await al(durumAdresi(durumGovde(no7)));
     ok('200 bulundu', rd.status === 200 && rd.d && rd.d.bulundu === true, rd);
-    ok('alanlar tam', rd.d && JSON.stringify(Object.keys(rd.d).sort()) === JSON.stringify(['bekleyenOdeme', 'bulundu', 'durum', 'isletme_no', 'kalanGun', 'kanal', 'lisansBitis', 'paket']), rd.d && Object.keys(rd.d));
+    ok('alanlar tam', rd.d && JSON.stringify(Object.keys(rd.d).sort()) === JSON.stringify(['bekleyenOdeme', 'bulundu', 'durum', 'erisimKalanGun', 'isletme_no', 'kalanGun', 'kanal', 'lisansBitis', 'paket']), rd.d && Object.keys(rd.d));
+    ok('paket okunur adlar: modulAdlari + tierAd (R3-SMX-6)', rd.d.paket && rd.d.paket.tierAd === '1-5 Masa' && Array.isArray(rd.d.paket.modulAdlari)
+        && rd.d.paket.modulAdlari.includes('Garson') && rd.d.paket.modulAdlari.length === rd.d.paket.moduller.length && rd.d.erisimKalanGun === 0, rd.d.paket);
     ok('isletme_no sayi, durum AKTIF, kanal soframix', rd.d.isletme_no === Number(no7) && rd.d.durum === 'AKTIF' && rd.d.kanal === 'soframix', rd.d);
     ok('paket ozel TIER_1_5', rd.d.paket && rd.d.paket.tur === 'ozel' && rd.d.paket.tier === 'TIER_1_5' && rd.d.paket.moduller.includes('GARSON'), rd.d.paket);
     ok('lisansBitis ISO, kalanGun > 360', /^\d{4}-\d{2}-\d{2}T/.test(rd.d.lisansBitis) && rd.d.kalanGun > 360, rd.d);
@@ -333,6 +375,28 @@ async function kiraciKur({ ad, tier = 'TIER_DENEME', parent = null, eposta = nul
     ok('60 sn den ileri 410', ileri.status === 410, ileri.status);
     const amac = await al(durumAdresi(durumGovde(no7, { amac: 'deneme' })));
     ok('yanlis amac 400', amac.status === 400, amac.status);
+    // R3-SMX-4: kalanGun yalniz AKTIF'te; salt-okunur donemde 0 + erisimKalanGun; bugun biten AKTIF 0
+    const noSO = smxNo();
+    const tSO = await kiraciKur({ ad: 'Durum Salt Okunur', smx: noSO, parent: 'SofraMix', tier: 'TIER_SOFRAMIX' });
+    await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [new Date(Date.now() - 86400000 - 3600000).toISOString(), tSO]);
+    const rSO = (await al(durumAdresi(durumGovde(noSO)))).d;
+    ok('salt-okunur: durum SALT_OKUNUR, kalanGun 0, erisimKalanGun > 0', rSO && rSO.durum === 'SALT_OKUNUR' && rSO.kalanGun === 0 && rSO.erisimKalanGun > 0, rSO);
+    await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [new Date(Date.now() - 30 * 86400000).toISOString(), tSO]);
+    const rKP = (await al(durumAdresi(durumGovde(noSO)))).d;
+    ok('kapali: kalanGun 0, erisimKalanGun 0', rKP && rKP.durum === 'KAPALI' && rKP.kalanGun === 0 && rKP.erisimKalanGun === 0, rKP);
+    const L = require('./src/services/lisansDurumu');
+    await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [L.gunSonuIstanbul(new Date()).toISOString(), tSO]);
+    const rBG = (await al(durumAdresi(durumGovde(noSO)))).d;
+    ok('bugun biten: AKTIF, kalanGun 0', rBG && rBG.durum === 'AKTIF' && rBG.kalanGun === 0 && rBG.erisimKalanGun === 0, rBG);
+    // R1-L4: gecerli istekler "hatali istek" sayacini doldurmaz (300'u gecen gecerli istek 429 almaz)
+    let sayi429 = 0;
+    for (let i = 0; i < 16; i++) {
+        const tur = await Promise.all(Array.from({ length: 20 }, () => al(durumAdresi(durumGovde(no7)))));
+        sayi429 += tur.filter((x) => x.status === 429).length;
+    }
+    ok('320 gecerli istek: hic 429 yok', sayi429 === 0, sayi429);
+    const ST = require('./src/controllers/soframixPaketController')._sayacTablosu(2, 60000);
+    ok('sayac: asildiMi saymaz, artir sayar', !ST.asildiMi('x') && !ST.artir('x') && !ST.artir('x') && !ST.asildiMi('x') && ST.artir('x') && ST.asildiMi('x'));
     const kapaliR = await al(durumAdresi(durumGovde(no7)), PORT_KAPALI);
     ok('gizli anahtar yoksa 503', kapaliR.status === 503, kapaliR.status);
 
