@@ -307,7 +307,11 @@ async function odemeIsle(o, secenek = {}) {
                   WHERE id = ?`,
                 [yeniBitis(m.license_end_date), JSON.stringify(modul), tier, sinirYaz ? 1 : 0, sinir, smxOrg, tenantId]);
             // Yeni masa siniri yazildiysa (sinirYaz) siniri asan masalar pasife alinir:
-            // BIRLESTIRME: require('./masaSiniri').siniriUygula(tenantId, sinir, { kaynak: 'soframix' })
+            // (odeme onayiyla ayni kural: acik hesabi olan masa aktif kalir, kod ve karekod degismez)
+            if (sinirYaz && sinir != null) {
+                await require('./masaSiniri').siniriUygula(tenantId, sinir, { kaynak: 'SofraMix ödemesi' })
+                    .catch((e) => console.error('[provizyon] masa siniri uygulanamadi:', e.message));
+            }
         } else {
             // 2b) Kiraci YOK -> ac. Sifre burada BELIRLENMEZ; sahibi tek kullanimlik
             //     baglantiyla kendi belirler, boylece duz sifre hicbir yerde durmaz.
