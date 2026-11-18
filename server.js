@@ -129,6 +129,7 @@ app.listen(PORT, () => {
     // Yeni restoran kaydi + SofraMix'ten paket alimi: Patron'a e-posta, yonetim APK'sina olay (60 sn'de bir tarar)
     require('./src/services/yeniKayitIzleyici').baslat();
     require('./src/services/magazaZamanlayici').baslat();   // Magaza: odeme bildirilmemis siparisi N gun sonra iptal eder (saatte bir; 0 = kapali)
+    require('./src/services/lisansHatirlatma').baslat();    // Lisans yenileme hatirlatma e-postasi (saatte bir; yalniz SMTP varken, 10:00-20:00)
 
     // Kisa karekodu olmayan masalara kod ver (/q/<KOD>; plakalar ve toplu karekod PDF'i). Idempotent.
     setTimeout(() => require('./src/services/kisaKod').eksikleriDoldur()

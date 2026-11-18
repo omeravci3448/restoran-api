@@ -20,6 +20,22 @@ async function newBusinessCode() {
     throw new Error('İşyeri kodu üretilemedi (çok fazla çakışma - 5 haneyi 6 haneye çıkarmak gerek).');
 }
 
+// Kayit formundan deneme: tanitim denemesiyle AYNI "isletme basina bir deneme" kurali (services/denemeLisansi.js).
+// Yakalama: normalize telefon (deneme_kayitlari) + e-posta (acik kiraci sahibi ya da kullanici). Ret mesaji bilerek
+// tarafsiz: hangi bilginin eslestigini soylemez (baskasinin numarasini/e-postasini deneyerek bilgi toplanmasin).
+const DENEME_ALINMIS_MESAJ = 'Bu bilgilerle daha önce bir hesap ya da deneme açılmış. '
+    + 'Giriş yapamıyorsanız bize yazın, yardımcı olalım.';
+async function denemeAlinmisMi(telefon, eposta) {
+    const D = require('../services/denemeLisansi');
+    if (await D.oncekiDeneme({ telefon })) return true;
+    const mail = String(eposta || '').trim().toLowerCase();
+    if (!mail) return false;
+    const t = await query('SELECT 1 FROM tenants WHERE lower(owner_email) = ? LIMIT 1', [mail]);
+    if (t.rows.length) return true;
+    const u = await query('SELECT 1 FROM users WHERE lower(email) = ? LIMIT 1', [mail]);
+    return u.rows.length > 0;
+}
+
 const slugify = (s) => (s || '').toLowerCase()
     .replace(/[ığüşöç]/g, m => ({ 'ı': 'i', 'ğ': 'g', 'ü': 'u', 'ş': 's', 'ö': 'o', 'ç': 'c' }[m]))
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
@@ -27,20 +43,24 @@ const slugify = (s) => (s || '').toLowerCase()
 // ——— ADIM 1: Kayıt formu gönder, OTP yolla ———
 exports.requestRegistration = async (req, res) => {
     const f = req.body || {};
-    if (!f.businessName || !f.email || !f.password) {
-        return res.status(400).json({ message: 'İşletme adı, e-posta ve şifre zorunlu.' });
+    if (!f.businessName || !f.email || !f.password || !f.phone) {
+        return res.status(400).json({ message: 'İşletme adı, telefon, e-posta ve şifre zorunludur.' });
+    }
+    if (!require('../services/denemeLisansi').telefonNormalle(f.phone)) {
+        return res.status(400).json({ message: 'Telefon numarası eksik görünüyor.' });
     }
     if (String(f.password).length < 6) {
-        return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
+        return res.status(400).json({ message: 'Şifre en az 6 karakter olmalıdır.' });
     }
     // KVKK açık rıza zorunlu (kayıt için)
     if (!f.kvkkConsent) {
         return res.status(400).json({ message: 'Devam etmek için KVKK Aydınlatma Metni\'ni onaylamanız gerekir.' });
     }
 
-    // Bu e-posta zaten kayıtlıysa engelle
-    const existing = await query('SELECT 1 FROM users WHERE email = ?', [f.email]);
-    if (existing.rows.length) return res.status(409).json({ message: 'Bu e-posta zaten kayıtlı. Giriş yap veya farklı e-posta kullan.' });
+    // Bu e-posta zaten kayitliysa ya da bu isletme denemesini daha once aldiysa engelle (tarafsiz mesaj)
+    if (await denemeAlinmisMi(f.phone, f.email)) {
+        return res.status(409).json({ code: 'DENEME_ALINMIS', message: DENEME_ALINMIS_MESAJ });
+    }
 
     // Aynı e-posta için varsa eski pending kaydı temizle
     await query('DELETE FROM pending_registrations WHERE email = ?', [f.email]);
@@ -105,6 +125,11 @@ exports.verifyRegistration = async (req, res) => {
     }
 
     const form = JSON.parse(p.form_data);
+    // Kod gonderildikten sonra ayni telefon/e-postayla baska yoldan deneme acilmis olabilir: tekrar bak
+    if (await denemeAlinmisMi(form.phone, form.email)) {
+        await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
+        return res.status(409).json({ code: 'DENEME_ALINMIS', message: DENEME_ALINMIS_MESAJ });
+    }
     const tenantId = uuidv4();
     const userId = uuidv4();
     const slug = slugify(form.businessName) + '-' + crypto.randomBytes(2).toString('hex');
@@ -112,33 +137,13 @@ exports.verifyRegistration = async (req, res) => {
     const refCode = 'MDA' + crypto.randomBytes(4).toString('hex').toUpperCase();
     const hash = await bcrypt.hash(form.password, 10);
 
-    // Demo lisans — 7 gün boyunca TÜM modüller açık (müşteri her şeyi denesin).
-    // Demo sonunda satın alırken hangi modülleri tuttuğu lisansla belirlenir.
-    // Tier'ın MASA LİMİTİ yine geçerli (kayıttaki paket seçimi sınırlar).
+    // Deneme lisansi: tanitim denemesiyle AYNI (services/denemeLisansi.denemeBaslat): TIER_DENEME, masa siniri YOK,
+    // ayni modul listesi (posProvizyon.VARSAYILAN_MODULLER). Formdan gelen paket/modul secimi lisansi ETKILEMEZ;
+    // paket ve masa sayisi deneme sonunda Lisans sayfasindan secilir.
     const demoGun = await require('../services/yonetimAyar').denemeGunOku();   // root Sistem Ayarlari; ayar yoksa 7
     const demoEnd = new Date(Date.now() + demoGun * 24 * 60 * 60 * 1000).toISOString();
-    // Hub erişilemezse bile demoda tüm modüller açık olsun diye bilinen liste (fallback)
-    // Deneme her zaman TAM: butun moduller (moduler lisans, QR_SIPARIS dahil). Hub listesi eksik olsa da
-    // bu liste hep eklenir (asagida).
-    const DEMO_FALLBACK_MODULES = ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK', 'MARKETPLACE', 'FINANSAL_RAPORLAMA'];
-    // Hub erişilemezse masa limiti yine uygulansın diye bilinen tier limitleri (fallback).
-    // null = sınırsız (TIER_20_PLUS). Bilinmeyen tier → güvenli küçük default (5).
-    const FALLBACK_TIER_LIMITS = { TIER_1_5: 5, TIER_6_10: 10, TIER_11_20: 20, TIER_20_PLUS: null };
-    let modules = Array.isArray(form.modules) ? form.modules : [];
-    let tableLimit;
-    try {
-        const catalog = await hubService.getModulesAndTiers();
-        const allModuleNames = (catalog.modules || []).map(m => m.name);
-        modules = Array.from(new Set([...modules, ...allModuleNames, ...DEMO_FALLBACK_MODULES]));
-        const tierRow = catalog.tiers.find(t => t.name === form.tier);
-        // Hub tier'ı bulduysa onu kullan; bulamadıysa fallback
-        tableLimit = tierRow ? (tierRow.tableLimit ?? null)
-            : (form.tier in FALLBACK_TIER_LIMITS ? FALLBACK_TIER_LIMITS[form.tier] : 5);
-    } catch (_) {
-        // Hub erişilemedi → tüm modüller + fallback masa limiti (sınırsız masa açığı kapatıldı)
-        modules = Array.from(new Set([...modules, ...DEMO_FALLBACK_MODULES]));
-        tableLimit = form.tier in FALLBACK_TIER_LIMITS ? FALLBACK_TIER_LIMITS[form.tier] : 5;
-    }
+    const modules = [...require('../services/posProvizyon').VARSAYILAN_MODULLER];
+    const DENEME_TIER = 'TIER_DENEME';
 
     await tx(async () => {
         await query(
@@ -152,7 +157,7 @@ exports.verifyRegistration = async (req, res) => {
             [tenantId, slug, bizCode, form.businessName, form.email, form.phone, form.address,
                 form.billingName, form.billingAddress, form.billingTaxId, form.billingTaxOffice,
                 refCode, form.referredBy,
-                form.tier, JSON.stringify(modules), demoEnd, tableLimit,
+                DENEME_TIER, JSON.stringify(modules), demoEnd, null,
                 new Date().toISOString(), form.kvkkConsentVersion || '1.0']
         );
         await query(
@@ -161,6 +166,10 @@ exports.verifyRegistration = async (req, res) => {
             [userId, tenantId, form.email, hash, form.businessName, new Date().toISOString()]
         );
         await query('DELETE FROM pending_registrations WHERE id = ?', [pendingId]);
+        // "Bir isletme bir deneme" kaydi (kiraci silinse de durur)
+        await require('../services/denemeLisansi').denemeKaydet({
+            tenantId, telefon: form.phone, isletmeAdi: form.businessName, kaynak: 'kayit',
+        });
     });
 
     // Hub'a tam senkron — fatura/vergi/modules/referans dahil
@@ -191,10 +200,10 @@ exports.verifyRegistration = async (req, res) => {
         businessName: form.businessName,
         businessCode: bizCode,
         referralCode: refCode,
-        licenseTier: form.tier,
+        licenseTier: DENEME_TIER,
         modules,
         licenseEndDate: demoEnd,
-        message: `${demoGun} günlük demo aktif. İşyeri kodunuzu kaydedin.`
+        message: `${demoGun} günlük denemeniz başladı. İşyeri kodunuzu not edin.`
     });
 };
 

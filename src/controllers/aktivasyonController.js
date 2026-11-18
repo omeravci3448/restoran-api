@@ -59,16 +59,16 @@ async function jetonBul(ham) {
 
 // GET /api/aktivasyon/:jeton  -> baglantinin gecerli olup olmadigini soyler
 exports.kontrol = async (req, res) => {
-    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    if (cokMu(req)) return res.status(429).json({ message: 'Çok fazla deneme. Bağlantınız geçerliyse birkaç dakika sonra tekrar deneyin.' });
     say(req);
     const j = await jetonBul(req.params.jeton);
-    if (!j) return res.status(404).json({ gecerli: false, message: 'Baglanti gecersiz.' });
+    if (!j) return res.status(404).json({ gecerli: false, message: 'Bağlantı geçersiz.' });
     if (j.gecersiz) {
         return res.status(410).json({
             gecerli: false, sebep: j.gecersiz,
             message: j.gecersiz === 'kullanildi'
-                ? 'Bu baglanti daha once kullanilmis. Giris ekranindan sifrenizle girebilirsiniz.'
-                : 'Baglantinin suresi dolmus. Bizimle iletisime gecin, yenisini gonderelim.',
+                ? 'Bu bağlantı daha önce kullanılmış. Giriş ekranından şifrenizle giriş yapabilirsiniz.'
+                : 'Bağlantının süresi dolmuş. Bizimle iletişime geçin, yenisini gönderelim.',
         });
     }
     res.json({ gecerli: true, isletme: j.business_name, isyeriKodu: j.business_code, eposta: j.email });
@@ -76,14 +76,14 @@ exports.kontrol = async (req, res) => {
 
 // POST /api/aktivasyon/:jeton  { sifre }
 exports.belirle = async (req, res) => {
-    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    if (cokMu(req)) return res.status(429).json({ message: 'Çok fazla deneme. Bağlantınız geçerliyse birkaç dakika sonra tekrar deneyin.' });
     say(req);
     const sifre = String((req.body || {}).sifre || '');
-    if (sifre.length < 8) return res.status(400).json({ message: 'Sifre en az 8 karakter olmali.' });
+    if (sifre.length < 8) return res.status(400).json({ message: 'Şifre en az 8 karakter olmalıdır.' });
 
     const j = await jetonBul(req.params.jeton);
-    if (!j) return res.status(404).json({ message: 'Baglanti gecersiz.' });
-    if (j.gecersiz) return res.status(410).json({ message: 'Baglanti artik gecerli degil.' });
+    if (!j) return res.status(404).json({ message: 'Bağlantı geçersiz.' });
+    if (j.gecersiz) return res.status(410).json({ message: 'Bağlantı artık geçerli değil.' });
 
     await query('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?',
         [await bcrypt.hash(sifre, 10), new Date().toISOString(), j.user_id]);
@@ -95,5 +95,5 @@ exports.belirle = async (req, res) => {
         [new Date().toISOString(), j.tenant_id]);
 
     res.json({ ok: true, isyeriKodu: j.business_code, eposta: j.email,
-        message: 'Sifreniz belirlendi. Isyeri kodunuz ve e-postanizla giris yapabilirsiniz.' });
+        message: 'Şifreniz belirlendi. İşyeri kodunuz ve e-postanızla giriş yapabilirsiniz.' });
 };

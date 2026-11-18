@@ -1069,6 +1069,7 @@ const initDb = () => {
         require('./lisansMasaDb').lisansMasaKolonlari(db);   // lisans masa siniri: tables.pasif_sebep, satin almada masa uyarisi onayi
         require('./soframixPaketDb').soframixPaketTablolari(db);   // SofraMix ozel fiyatlari + paket secimli provizyon
         require('./grupDb').grupTablolari(db);   // sube gruplari + grup yoneticileri (cok subeli isletme ozeti)
+        require('./menuHatirlatmaDb').menuHatirlatmaTablolari(db);   // lisans yenileme hatirlatmasi + isletme menu karekodu
 
         // Eski musteri haklari (services/gecisHaklari.js): gecis aninda isletmenin gecis sonrasi modul listesi ve
         // onayda ucretsiz korunacak eski haklari. Root hakki kaldirabilir (kaldirildi_at).

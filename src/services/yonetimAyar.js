@@ -21,6 +21,10 @@ const SAYISAL = {
     odeme_koruma_gun: { ad: 'Ödeme bildirimi sonrası açık kalma (gün)', en: 0, cok: 14, varsayilan: () => 3 },
     // SofraMix tam paket fiyati (KDV haric, TL; Paketler ve Fiyatlar sekmesinde). Bos = tam paket sunulmaz.
     smx_tam_paket_fiyat: { ad: 'SofraMix tam paket fiyatı (KDV hariç)', en: 1, cok: 10000000, varsayilan: () => null },
+    // 1 = lisans yenileme hatirlatma e-postalari gider (services/lisansHatirlatma.js), 0 = gitmez
+    lisans_hatirlatma_acik: { ad: 'Lisans yenileme hatırlatması', en: 0, cok: 1, varsayilan: () => 1 },
+    // Yalniz QR menu kullanan isletmede lisans KAPALI olduktan bu kadar gun sonra misafir menusu kapanir (0 = hic)
+    menu_kipi_kapanma_gun: { ad: 'QR menü kapanma süresi (gün)', en: 0, cok: 365, varsayilan: () => 15 },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)
@@ -72,6 +76,8 @@ const denemeGun = () => sayi('deneme_gun');
 const destekSureDk = () => sayi('destek_oturumu_dk');
 const kdvOrani = () => sayi('kdv_orani');
 const odemeKorumaGun = () => sayi('odeme_koruma_gun');
+const hatirlatmaAcik = () => sayi('lisans_hatirlatma_acik') !== 0;
+const menuKipiKapanmaGun = () => sayi('menu_kipi_kapanma_gun');
 
 // Asenkron: veritabanindan taze okur (deneme acilisi gibi seyrek ama kesin olmasi gereken yerler)
 async function sayiOku(anahtar) {
@@ -163,5 +169,6 @@ const ETIKET = Object.fromEntries([...Object.entries(METIN), ...Object.entries(S
 
 module.exports = {
     yukle, toleransGun, denemeGun, destekSureDk, kdvOrani, odemeKorumaGun, denemeGunOku, destekSureDkOku, hepsi, yaz, dogrula, ETIKET,
+    hatirlatmaAcik, menuKipiKapanmaGun, sayiOku,
     SAYISAL, METIN,
 };
