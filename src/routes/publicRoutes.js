@@ -12,6 +12,7 @@ router.get('/q/:kod', ctrl.kisaKodCoz);
 router.use('/menu', require('./menuKarekoduRoutes').kamu);   // isletme menu karekodu: yalniz goruntuleme menusu
 router.get('/deneme-gun', ctrl.denemeGun);   // "N gun ucretsiz" metinleri icin (Sistem Ayarlari > deneme suresi)
 router.get('/lansman', (_req, res, next) => require('../services/lansmanKampanya').herkeseAcik().then((d) => res.json(d)).catch(next));   // tanitim sayfasi kampanya bandi
+router.get('/tavsiye/:kod', require('../services/tavsiye').kodUcu);   // tavsiye kodu gecerli mi (isletme adi donmez)
 // Plaka onizlemesinin yazi tipi (baski dosyasindaki Inter ile ayni dosya). Yalniz bu klasor.
 router.use('/plaka-yazi', require('express').static(require('../services/plakaCizim').FONT_DIR, {
     maxAge: '30d', immutable: true, index: false,

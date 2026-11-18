@@ -61,6 +61,12 @@ exports.requestRegistration = async (req, res) => {
     if (await denemeAlinmisMi(f.phone, f.email)) {
         return res.status(409).json({ code: 'DENEME_ALINMIS', message: DENEME_ALINMIS_MESAJ });
     }
+    // Tavsiye kodu (services/tavsiye.js): bos olabilir; yazildiysa var olmali (yanlis yazilan kod sessizce kaybolmasin)
+    let tavsiyeKodu = null;
+    try { tavsiyeKodu = await require('../services/tavsiye').kodDogrula(f.tavsiyeKodu || f.referredBy); } catch (e) {
+        if (e.status === 400) return res.status(400).json({ code: e.code, message: e.message });
+        throw e;
+    }
 
     // Aynı e-posta için varsa eski pending kaydı temizle
     await query('DELETE FROM pending_registrations WHERE email = ?', [f.email]);
@@ -82,7 +88,7 @@ exports.requestRegistration = async (req, res) => {
         billingTaxOffice: f.billingTaxOffice || null,
         tier: f.tier || 'TIER_1_5',
         modules: Array.isArray(f.modules) ? f.modules : ['BASE'],
-        referredBy: f.referredBy ? String(f.referredBy).toUpperCase().trim() : null,
+        referredBy: tavsiyeKodu,
         kvkkConsent: true,
         kvkkConsentVersion: f.kvkkConsentVersion || '1.0'
     };
@@ -134,7 +140,7 @@ exports.verifyRegistration = async (req, res) => {
     const userId = uuidv4();
     const slug = slugify(form.businessName) + '-' + crypto.randomBytes(2).toString('hex');
     const bizCode = await newBusinessCode();
-    const refCode = 'MDA' + crypto.randomBytes(4).toString('hex').toUpperCase();
+    const refCode = await require('../services/tavsiye').yeniKod();   // kisa tavsiye kodu (karisan karakter yok)
     const hash = await bcrypt.hash(form.password, 10);
 
     // Deneme lisansi: tanitim denemesiyle AYNI (services/denemeLisansi.denemeBaslat): TIER_DENEME, masa siniri YOK,
@@ -172,6 +178,10 @@ exports.verifyRegistration = async (req, res) => {
         });
     });
 
+    // Tavsiye kaydi (services/tavsiye.js): ayni isletme ise tarafsiz metinle uygulanmaz; kayit yine acilir
+    const tavsiye = await require('../services/tavsiye').kayitBagla({ tenantId, kod: form.referredBy, kaynak: 'kayit' })
+        .catch((e) => { console.error('[tavsiye] kayit:', e.message); return { durum: 'yok' }; });
+
     // Hub'a tam senkron — fatura/vergi/modules/referans dahil
     // Başarısız olsa bile kayıt devam etmiş olur — arka planda
     hubService.syncWithHub({
@@ -186,13 +196,7 @@ exports.verifyRegistration = async (req, res) => {
         referralCode: refCode,
         referredBy: form.referredBy,
         modules
-    }).then(async (hubResp) => {
-        // Hub indirim oranı döndürürse tenant'a yaz
-        if (hubResp && hubResp.discountRate != null) {
-            await query('UPDATE tenants SET discount_rate = ? WHERE id = ?',
-                [hubResp.discountRate, tenantId]);
-        }
-    }).catch(() => {});
+    }).catch(() => {});   // Tavsiye indirimi artik Hub'dan gelmez (tavsiye odulu sure olarak verilir: services/tavsiye.js)
 
     const token = signToken(userId);
     res.status(201).json({
@@ -203,6 +207,7 @@ exports.verifyRegistration = async (req, res) => {
         licenseTier: DENEME_TIER,
         modules,
         licenseEndDate: demoEnd,
+        tavsiye: tavsiye.durum === 'yok' ? undefined : { durum: tavsiye.durum, mesaj: tavsiye.mesaj || 'Tavsiye kodunuz kaydedildi; ilk paketiniz 12 yerine 13 ay tanımlanacak.' },
         message: `${demoGun} günlük denemeniz başladı. İşyeri kodunuzu not edin.`
     });
 };

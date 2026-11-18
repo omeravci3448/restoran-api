@@ -27,7 +27,8 @@ exports.talep = async (req, res) => {
     const adSoyad = al('adSoyad', 120);
     const telefon = al('telefon', 30);
     const eposta = al('eposta', 160);
-    const notMetni = al('not', 600);
+    // Tavsiye kodu (varsa) nota eklenir: root isletmeyi elle acarken tavsiyeyi kaybetmesin
+    const notMetni = [al('not', 600), al('tavsiyeKodu', 40) ? 'Tavsiye kodu: ' + al('tavsiyeKodu', 40) : ''].filter(Boolean).join(' - ');
 
     if (!isletme || !adSoyad || !telefon) {
         return res.status(400).json({ message: 'İşletme adı, ad soyad ve telefon zorunlu.' });
@@ -81,6 +82,14 @@ exports.denemeBaslat = async (req, res) => {
         return res.status(400).json({ message: 'İşletme adı, ad soyad, telefon ve e-posta zorunlu.' });
     }
 
+    // Tavsiye kodu (baglantidan dolar ya da elle yazilir; services/tavsiye.js): yazildiysa var olmali
+    const TV = require('../services/tavsiye');
+    let tavsiyeKodu = null;
+    try { tavsiyeKodu = await TV.kodDogrula(al('tavsiyeKodu', 40) || al('ref', 40)); } catch (e) {
+        if (e.status === 400) return res.status(400).json({ code: e.code, message: e.message });
+        throw e;
+    }
+
     const D = require('../services/denemeLisansi');
     const s = await D.denemeBaslat({
         isletmeAdi: isletme, yetkiliAd: adSoyad, eposta, telefon,
@@ -103,6 +112,12 @@ exports.denemeBaslat = async (req, res) => {
                    + 'Giriş yapamıyorsanız bize yazın, yardımcı olalım.',
         });
     }
+
+    // Tavsiye kaydi: ayni isletme ise tarafsiz metinle uygulanmaz, deneme yine acilir
+    const tavsiye = tavsiyeKodu
+        ? await TV.kayitBagla({ tenantId: s.tenantId, kod: tavsiyeKodu, kaynak: 'tanitim' })
+            .catch((e) => { console.error('[tavsiye] deneme:', e.message); return { durum: 'yok' }; })
+        : { durum: 'yok' };
 
     (son.get(ip) || []).push(Date.now());
     son.set(ip, [...(son.get(ip) || []), Date.now()]);
@@ -141,6 +156,7 @@ exports.denemeBaslat = async (req, res) => {
         bitis: s.bitis,
         // SMTP yoksa baglanti yanitta doner ki kullanici ekranda gorup devam edebilsin.
         baglanti: gonderildi ? undefined : baglanti,
+        tavsiye: tavsiye.durum === 'yok' ? undefined : { durum: tavsiye.durum, mesaj: tavsiye.mesaj || 'Tavsiye kodunuz kaydedildi; ilk paketiniz 12 yerine 13 ay tanımlanacak.' },
         message: gonderildi
             ? `Denemeniz başladı. Şifre belirleme bağlantısı ${eposta} adresine gönderildi.`
             : 'Denemeniz başladı. Aşağıdaki bağlantıdan şifrenizi belirleyin.',

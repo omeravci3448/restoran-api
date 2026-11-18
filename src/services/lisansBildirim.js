@@ -68,4 +68,21 @@ function ekSure(tenantId, { gun, bitis }) {
     ]);
 }
 
-module.exports = { onaylandi, reddedildi, ekSure, alicilar };
+// Tavsiye sistemi (services/tavsiye.js): tavsiye edilen +30 gun, tavsiye eden +60 gun
+function tavsiyeEdilen(tenantId, { bitis }) {
+    const tarih = bitis ? new Date(bitis).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric' }) : '-';
+    return gonder(tenantId, 'İlk paketiniz 13 ay tanımlandı - MDA Restoran POS', 'İlk paketiniz 13 ay tanımlandı', [
+        'Tavsiye koduyla geldiğiniz için ilk paketiniz 13 ay tanımlandı.',
+        `Lisansınız ${tarih} tarihine kadar geçerlidir. İyi çalışmalar dileriz.`,
+    ]);
+}
+
+function tavsiyeEden(tenantId, { isletme, bitis }) {
+    const tarih = bitis ? new Date(bitis).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric' }) : '-';
+    return gonder(tenantId, 'Tavsiyeniz için teşekkür ederiz - MDA Restoran POS', 'Lisansınıza 2 ay eklendi', [
+        `Tavsiye ettiğiniz ${isletme || 'işletme'} paket aldı; lisansınıza 2 ay eklendi. Yeni bitiş: ${tarih}.`,
+        'Tavsiyeniz için teşekkür ederiz.',
+    ]);
+}
+
+module.exports = { onaylandi, reddedildi, ekSure, tavsiyeEdilen, tavsiyeEden, alicilar };

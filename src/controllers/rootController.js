@@ -810,23 +810,28 @@ exports.lisansOdemeOnayla = async (req, res) => {
     const yeniLimit = (await query('SELECT license_table_limit FROM tenants WHERE id = ?', [t.id])).rows[0]?.license_table_limit;
     const masa = await require('../services/masaSiniri').siniriUygula(t.id, yeniLimit, { kaynak: 'ödeme onayı' })
         .catch((e) => { console.error('[masa-siniri] onay:', e.message); return null; });
+    // Tavsiye odulu (services/tavsiye.js): ilk odemede tavsiye edilene +30 gun, tavsiye edene +60 gun. Hata onayi durdurmaz.
+    const tvs = await require('../services/tavsiye').odemeSonrasi(t.id, { kaynak: 'havale', ref: o.id })
+        .catch((e) => { console.error('[tavsiye] onay:', e.message); return null; });
+    const sonBitis = (tvs && tvs.edilen && tvs.edilen.yeniBitis) || bitis;
     const hakOzet = eskiHak && eskiHak.length ? `; eski hak korundu: ${eskiHak.map((m) => require('../services/lisansModul').AD[m] || m).join(', ')}` : '';
     await YG.kaydet(req, { islem: 'odeme_onay', tenantId: t.id, hedefTur: 'lisans_odemesi', hedefId: o.id, ozet: `Ödeme onaylandı (${o.tur || etkinTur || 'eski kayıt'}): ${YG.TL(o.tutar)}; paket ${o.tier || '-'}; lisans ${YG.trTarih(t.license_end_date)} -> ${YG.trTarih(bitis)}${hakOzet}`, ayrinti: { tutar: o.tutar, tur: o.tur, tier: o.tier, moduller: o.moduller, gun, oncekiBitis: t.license_end_date, yeniBitis: bitis, eskiHak } });
-    const tarih = LT.TARIH(bitis);
+    const tarih = LT.TARIH(sonBitis);
     const message = o.tur === 'yukseltme'
         ? `${t.business_name}: yükseltme onaylandı. Yeni paket bugün başladı, lisans ${tarih} tarihine kadar geçerli.`
         : (etkinTur === 'ilk')
             ? `${t.business_name}: paket onaylandı. Lisans bugün başladı, ${tarih} tarihine kadar geçerli.`
             : `${t.business_name} lisansı ${tarih} tarihine uzatıldı.`;
+    const tavsiyeNotu = tvs && tvs.edilen ? ' Tavsiye koduyla geldiği için 30 gün eklendi (ilk paket 13 ay).' : '';
     // Isletmeye e-posta (SMTP yoksa sessizce atlanir) + odeme korumasi onbellegi
     require('../services/odemeKorumasi').tazele().catch(() => {});
     require('../services/lisansBildirim').onaylandi(t.id, {
         paket: [LT.tierAdi(await require('../services/lisansKatalog').tamKatalog().catch(() => []), o.tier),
             M.modulListesi(o.moduller).map((m) => M.AD[m] || m).join(', ')].filter((x) => x && x !== '-').join(' - ') || 'Lisans paketi',
-        bitis,
+        bitis: sonBitis,
     }).catch(() => {});
-    res.json({ ok: true, license_end_date: bitis, tur: o.tur || etkinTur || null,
-        message: masa && masa.uygulandi ? `${message} ${masa.pasifeAlinan} masa pasife alındı (lisans sınırı ${masa.sinir}).` : message,
+    res.json({ ok: true, license_end_date: sonBitis, tur: o.tur || etkinTur || null,
+        message: (masa && masa.uygulandi ? `${message} ${masa.pasifeAlinan} masa pasife alındı (lisans sınırı ${masa.sinir}).` : message) + tavsiyeNotu,
         masaSiniri: masa && masa.uygulandi ? masa : null });
 };
 
