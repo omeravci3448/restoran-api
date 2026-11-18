@@ -34,6 +34,7 @@ const ISLEM_AD = {
     kisa_kod: 'Masa kısa kodu',
     duyuru: 'Duyuru',
     isletme_notu: 'İç not',
+    sube_grubu: 'Şube grubu',
     destek_ac: 'Destek oturumu açıldı',
     destek_kapat: 'Destek oturumu kapatıldı',
     destek_pin: 'Destek: yönetici şifresi sorulmadan atlandı',

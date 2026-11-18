@@ -85,5 +85,6 @@ router.post('/masalar/:id/kisa-kod-yenile', protectRoot, plaka.masaKisaKodYenile
 
 // Yonetim: genel bakis, isletme ayrintisi + ic notlar, sistem ayarlari, duyurular, yonetim gunlugu, destek oturumlari
 router.use('/yonetim', protectRoot, require('./yonetimRootRoutes'));
+router.use('/gruplar', protectRoot, require('./grupRootRoutes'));   // sube gruplari (cok subeli isletme + grup yoneticileri)
 
 module.exports = router;
