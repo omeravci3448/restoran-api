@@ -59,7 +59,7 @@ async function jetonBul(ham) {
 
 // GET /api/aktivasyon/:jeton  -> baglantinin gecerli olup olmadigini soyler
 exports.kontrol = async (req, res) => {
-    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    if (cokMu(req)) return res.status(429).json({ message: 'Çok fazla deneme. Bağlantınız geçerliyse birkaç dakika sonra tekrar deneyin.' });
     say(req);
     const j = await jetonBul(req.params.jeton);
     if (!j) return res.status(404).json({ gecerli: false, message: 'Bağlantı geçersiz.' });
@@ -76,7 +76,7 @@ exports.kontrol = async (req, res) => {
 
 // POST /api/aktivasyon/:jeton  { sifre }
 exports.belirle = async (req, res) => {
-    if (cokMu(req)) return res.status(429).json({ message: 'Cok fazla deneme. Baglantiniz gecerliyse birkac dakika sonra tekrar deneyin.' });
+    if (cokMu(req)) return res.status(429).json({ message: 'Çok fazla deneme. Bağlantınız geçerliyse birkaç dakika sonra tekrar deneyin.' });
     say(req);
     const sifre = String((req.body || {}).sifre || '');
     if (sifre.length < 8) return res.status(400).json({ message: 'Şifre en az 8 karakter olmalıdır.' });

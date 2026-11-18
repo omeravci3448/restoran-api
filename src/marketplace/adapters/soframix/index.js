@@ -23,13 +23,13 @@ class SofraMixAdapter extends BaseAdapter {
                 // Adres ISTENMIYOR: restoran sahibi 'soframix.com.tr' diye https'siz yazinca
                 // new URL() 'Invalid URL' atiyordu. Varsayilan sunucudan (SOFRAMIX_PLATFORM_URL)
                 // ya da canli adresten geliyor; yalniz test sunucusu icin doldurulur.
-                { key: 'apiBase', label: 'SofraMix adresi (bos birakin)', type: 'text', required: false,
-                  hint: 'Bos birakin - otomatik. Yalniz test sunucusu icin doldurun.' },
-                { key: 'apiKey', label: 'Isletme API anahtari', type: 'password', required: true,
-                  hint: 'SofraMix isletme panelinden uretilir (X-Smx-Anahtar).' },
+                { key: 'apiBase', label: 'SofraMix adresi (boş bırakın)', type: 'text', required: false,
+                  hint: 'Boş bırakın - otomatik doldurulur. Yalnız test sunucusu için doldurun.' },
+                { key: 'apiKey', label: 'İşletme API anahtarı', type: 'password', required: true,
+                  hint: 'SofraMix işletme panelinden üretilir (X-Smx-Anahtar).' },
             ],
             requiredStoreLinkFields: [
-                { key: 'externalStoreId', label: 'SofraMix isletme no (business_id)', type: 'text', required: true },
+                { key: 'externalStoreId', label: 'SofraMix işletme no (business_id)', type: 'text', required: true },
             ],
             // SIPARIS YONU ACIK - ama ISLETMENIN ANAHTARINA BAGLI.
             // SofraMix'te siparis uclari ayri izinler istiyor (siparis_oku /
@@ -80,7 +80,7 @@ class SofraMixAdapter extends BaseAdapter {
 
     _headers(ctx) {
         const k = ctx.credentials && ctx.credentials.apiKey;
-        if (!k) throw new AdapterError(KIND.AUTH, 'SofraMix API anahtari tanimli degil.');
+        if (!k) throw new AdapterError(KIND.AUTH, 'SofraMix API anahtarı tanımlı değil.');
         return { 'X-Smx-Anahtar': k, 'Content-Type': 'application/json' };
     }
 
@@ -264,12 +264,12 @@ class SofraMixAdapter extends BaseAdapter {
     async cancelOrder(ctx, p) {
         if (p.platformStatus && !M.iptalEdilebilir(p.platformStatus)) {
             throw new AdapterError(KIND.CONFLICT,
-                'Bu asamada SofraMix siparisi iptal edilemez. "Teslim edilemedi" bildirimini kullanin.',
+                'Bu aşamada SofraMix siparişi iptal edilemez. "Teslim edilemedi" bildirimini kullanın.',
                 { retryable: false });
         }
         const sebep = String(p.note || '').trim();
         if (sebep.length < 3) {
-            throw new AdapterError(KIND.VALIDATION, 'Iptal sebebi en az 3 karakter olmali.', { retryable: false });
+            throw new AdapterError(KIND.VALIDATION, 'İptal sebebi en az 3 karakter olmalıdır.', { retryable: false });
         }
         return this._durumYaz(ctx, p.externalOrderId, 'iptal', sebep.slice(0, 300));
     }
@@ -281,7 +281,7 @@ class SofraMixAdapter extends BaseAdapter {
         const sebep = String(p.note || '').trim();
         if (sebep.length < 10) {
             throw new AdapterError(KIND.VALIDATION,
-                'Teslim edilemedi sebebi en az 10 karakter olmali.', { retryable: false });
+                'Teslim edilememe sebebi en az 10 karakter olmalıdır.', { retryable: false });
         }
         const yol = '/api/business/orders/' + encodeURIComponent(p.externalOrderId) + '/teslim-edilemedi';
         return this._req(ctx, 'POST', yol, { body: { sebep: sebep } });

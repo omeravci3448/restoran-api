@@ -112,7 +112,7 @@ async function hubDisiMi(tenantId) {
 
 async function refreshTenantLicense(tenantId, customerEmail) {
     if (await hubDisiMi(tenantId)) {
-        return { ok: false, reason: 'HUB_DISI', message: 'SofraMix kiracisi - lisansi hub yonetmiyor, dokunulmadi.' };
+        return { ok: false, reason: 'HUB_DISI', message: 'Bu işletmenin lisansı SofraMix ya da deneme üzerinden yönetilir; değişiklik yapılmadı.' };
     }
     let payload;
     try {

@@ -51,8 +51,8 @@ const DELIVERY_TO_MODE = {
 
 // — Odeme (001_init.sql:95) —
 const PAYMENT = {
-    kapida_nakit: { settlement: 'ON_DELIVERY', posMethod: 'NAKIT', label: 'Kapida nakit' },
-    kapida_kart: { settlement: 'ON_DELIVERY', posMethod: 'KREDI_KARTI', label: 'Kapida kart' },
+    kapida_nakit: { settlement: 'ON_DELIVERY', posMethod: 'NAKIT', label: 'Kapıda nakit' },
+    kapida_kart: { settlement: 'ON_DELIVERY', posMethod: 'KREDI_KARTI', label: 'Kapıda kart' },
     online_iyzico: { settlement: 'ONLINE', posMethod: 'DIGER', label: 'Online (iyzico)' },
 };
 
