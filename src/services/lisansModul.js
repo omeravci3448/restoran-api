@@ -103,6 +103,19 @@ function korunacakModuller({ mevcut, odenen, satinAlinabilir, deneme, aktifKanal
     return korunan;
 }
 
+// --- Yeni satista ek kural (2026-11-18) ---
+// GARSON yeni satin almada Adisyon ve Kasa (BASE) ister: tek karekodlu QR menude garsonun gidecegi bir masa yok
+// ("Garson cagirma masa karekoduyla calisir"). Yukaridaki BAGIMLILIK (GARSON: QR Menu ya da BASE) eski haklar,
+// korunan moduller ve root'un elle yazdigi listeler icin AYNEN kalir: GARSON'u olan isletmeden hicbir zaman alinmaz.
+// Isletme GARSON'a zaten sahipse (deneme disi) yenilemede BASE'siz secebilir (lisansFiyat: garsonBasesizIzinli).
+const SATIS_GEREKIR = { GARSON: ['BASE'] };
+const GARSON_BASE_MESAJI = 'Garson çağırma masa karekoduyla çalışır; Adisyon ve Kasa ile birlikte alınır.';
+
+// Adisyon ve Kasa olmadan (yalniz QR menu) alinan lisansin paket kodu: masa kademesi yok, masa siniri yok (NULL).
+// Katalogda yoktur; panelde "QR Menü paketi" gorunur. (SofraMix menu paketleri paket kodu bos gelebilir: ikisi de
+// gecerli, lisans kodu kademe kodu aramaz.)
+const MENU_TIER = 'TIER_MENU';
+
 // 0/'0'/false kapali; 1/NULL/undefined acik
 function acikMi(v) {
     return !(v === 0 || v === '0' || v === false);
@@ -139,4 +152,4 @@ function menuKipiMi(moduller) {
     return !varMi(moduller, 'BASE');
 }
 
-module.exports = { AD, BAGIMLILIK, modulListesi, varMi, bagimliliklariTamamla, bagimlilikSaglaniyor, korunacakModuller, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };
+module.exports = { AD, BAGIMLILIK, SATIS_GEREKIR, GARSON_BASE_MESAJI, MENU_TIER, modulListesi, varMi, bagimliliklariTamamla, bagimlilikSaglaniyor, korunacakModuller, acikMi, qrOzellikleri, anahtarModulleri, okutunMetni, menuKipiMi };

@@ -39,7 +39,8 @@ const gun = (n) => new Date(Date.now() + n * 86400000);
     const istek = (m, u) => ({ method: m, originalUrl: u });
     ok('GET gecer', L.saltOkunurdaGecerMi(istek('GET', '/api/orders')) === true);
     ok('POST siparis GECMEZ', L.saltOkunurdaGecerMi(istek('POST', '/api/orders')) === false);
-    ok('POST odeme GECMEZ', L.saltOkunurdaGecerMi(istek('POST', '/api/payments')) === false);
+    // 2026-11-18: salt-okunurda acik hesap tahsil edilip kapatilabilir (yeni siparis yine yok); bkz test_lisans_masa_sure.js
+    ok('POST odeme gecer (acik hesabi tahsil)', L.saltOkunurdaGecerMi(istek('POST', '/api/payments')) === true);
     ok('LISANS ucu gecer (odeme yapabilsin)', L.saltOkunurdaGecerMi(istek('POST', '/api/license/purchase')) === true);
     ok('AUTH gecer (giris yapabilsin)', L.saltOkunurdaGecerMi(istek('POST', '/api/auth/login')) === true);
 

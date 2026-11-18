@@ -249,7 +249,8 @@ exports.login = async (req, res) => {
     if (!ok) return res.status(401).json({ message: 'Hatalı kullanıcı veya şifre.' });
     if (!u.tenant_active) return res.status(403).json({ message: 'İşletme pasif. Lisans yöneticisiyle iletişime geçin.' });
     // Lisans KAPALI: sahip/mudur girip YALNIZ lisansi yenileyebilir; diger hesaplarin yapacagi bir sey yok.
-    if (require('../services/lisansDurumu').hesapla(u.license_end_date).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
+    // Odeme korumasi: "odemeyi yaptim" sonrasi onay beklerken isletme acik (services/odemeKorumasi.js)
+    if ((await require('../services/odemeKorumasi').etkinDurum(u.tenant_id, u.license_end_date)).durum === 'KAPALI' && !['OWNER', 'MANAGER'].includes(u.role)) {
         return res.status(403).json({ code: 'LICENSE_EXPIRED',
             message: 'Lisansınızın süresi doldu. İşletme sahibi ya da müdür Lisans sayfasından yenileyebilir.' });
     }
@@ -343,6 +344,8 @@ exports.me = async (req, res) => {
         lisansBitis: req.user.lisansBitis,
         lisansKalanGun: req.user.lisansKalanGun,
         lisansToleransBitis: req.user.lisansToleransBitis,
+        lisansAktifBitis: req.user.lisansAktifBitis || null,   // bitis gununun sonu (Istanbul): bu ana kadar AKTIF
+        odemeKorumasi: req.user.odemeKorumasi || null,   // { bitis }: odeme onay bekliyor, program acik (sakin sari serit)
     });
 };
 
@@ -502,5 +505,50 @@ exports.managerVerify = async (req, res) => {
     try { ok = !!pin && await bcrypt.compare(String(pin), hash); }
     finally { bitir(ok); }
     if (!ok) return res.status(403).json({ ok: false, message: 'Yönetici şifresi hatalı.' });
+    res.json({ ok: true });
+};
+
+// --- Yonetici sifremi unuttum (2026-11-18) ---
+// POST /api/auth/manager-reset { password, newPin }: YALNIZ isletme sahibi (OWNER), kendi GIRIS sifresiyle yeni yonetici
+// sifresi belirler. Kasiyer/mudur kullanamaz (sahibin hesabini bilmeden kilidi ele geciremesin). Destek oturumunda
+// yasak (rota). Lisans salt-okunur ya da KAPALI iken de acik (Lisans sayfasi yonetici sifresinin arkasinda).
+// Deneme siniri: kullanici basina 15 dakikada 5 istek (dogru ya da yanlis). Sifreler gunluge YAZILMAZ.
+const SIFIRLAMA_SINIRI = 5;
+const SIFIRLAMA_PENCERE_MS = 15 * 60 * 1000;
+const sifirlamaDenemeleri = new Map();   // userId -> [zaman damgalari]
+function sifirlamaCokMu(userId) {
+    const simdi = Date.now();
+    const l = (sifirlamaDenemeleri.get(userId) || []).filter((z) => simdi - z < SIFIRLAMA_PENCERE_MS);
+    if (l.length >= SIFIRLAMA_SINIRI) { sifirlamaDenemeleri.set(userId, l); return true; }
+    l.push(simdi);
+    sifirlamaDenemeleri.set(userId, l);
+    if (sifirlamaDenemeleri.size > 5000) {   // bellek siniri: suresi gecmis kayitlari at
+        for (const [k, v] of sifirlamaDenemeleri) if (!v.some((z) => simdi - z < SIFIRLAMA_PENCERE_MS)) sifirlamaDenemeleri.delete(k);
+    }
+    return false;
+}
+exports.managerReset = async (req, res) => {
+    if (req.user.role !== 'OWNER') {
+        return res.status(403).json({ message: 'Yönetici şifresini yalnızca işletme sahibi sıfırlayabilir.' });
+    }
+    if (sifirlamaCokMu(req.user.id)) {
+        return res.status(429).json({ code: 'SIFIRLAMA_SINIRI', message: 'Çok fazla deneme yapıldı. Lütfen 15 dakika sonra tekrar deneyin.' });
+    }
+    const { password, newPin } = req.body || {};
+    const pin = String(newPin == null ? '' : newPin);
+    if (pin.length < 6) return res.status(400).json({ message: 'Yeni yönetici şifresi en az 6 haneli olmalı.' });
+    if (pin.length > 64) return res.status(400).json({ message: 'Yönetici şifresi çok uzun.' });
+    const u = (await query('SELECT password_hash, password_set_at FROM users WHERE id = ? AND tenant_id = ?',
+        [req.user.id, req.user.tenantId])).rows[0];
+    if (!u) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+    if (!u.password_set_at) {
+        return res.status(400).json({ code: 'GIRIS_SIFRESI_YOK',
+            message: 'Hesabınız için henüz bir giriş şifresi belirlenmedi. Önce Ayarlar > Giriş Bilgileri bölümünden giriş şifrenizi belirleyin.' });
+    }
+    const dogru = !!password && await bcrypt.compare(String(password), u.password_hash || '');
+    if (!dogru) return res.status(403).json({ code: 'GIRIS_SIFRESI_HATALI', message: 'Giriş şifreniz hatalı.' });
+    await query('UPDATE tenants SET manager_pin = ? WHERE id = ?', [await bcrypt.hash(pin, 10), req.user.tenantId]);
+    require('../services/islemGunlugu').kaydet({ tenantId: req.user.tenantId, user: req.user, islem: 'yonetici_sifresi_sifirla',
+        hedefTur: 'tenant', hedefId: req.user.tenantId, detay: 'Yönetici şifresi, işletme sahibinin giriş şifresiyle yeniden belirlendi' });
     res.json({ ok: true });
 };

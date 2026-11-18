@@ -22,7 +22,8 @@ async function activeTableCount(tenantId) {
 // Masalar sayfası her açılışta çağırdığı için ağ çağrısı yapılırsa ekran kilitlenir.
 function prettyTierLabel(tierName) {
     if (!tierName) return '';
-    const m = String(tierName).match(/^TIER_(\d+)_(\d+)$/);
+    if (tierName === 'TIER_MENU') return 'QR Menü';   // yalniz QR menu paketi (masa kademesi yok)
+    const m =String(tierName).match(/^TIER_(\d+)_(\d+)$/);
     if (m) return `${m[1]}-${m[2]} Masa`;
     if (/^TIER_(\d+)_PLUS$/.test(tierName)) return `${tierName.match(/\d+/)[0]}+ Masa`;
     return String(tierName).replace(/^TIER_/, '').replace(/_/g, ' ');
@@ -137,10 +138,11 @@ const kacis = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // kesmesin. Gecmis raporlar masa ADINI gosterdigi icin pasif kaydin kodu degisse de bir sey bozulmaz.
 // Doner: 'bos' (kimse kullanmiyor) | 'dolu' (aktif bir masada) | 'bosaltildi'
 async function pasifKoduBosalt(tenantId, code, haricId) {
-    const r = await query('SELECT id, is_active FROM tables WHERE tenant_id = ? AND code = ? AND id <> ?',
+    const r = await query('SELECT id, is_active, pasif_sebep FROM tables WHERE tenant_id = ? AND code = ? AND id <> ?',
         [tenantId, code, haricId || '']);
     if (!r.rows.length) return 'bos';
-    if (r.rows[0].is_active) return 'dolu';
+    // Lisans siniri yuzunden pasif masa (services/masaSiniri.js) yeniden aktif edilebilir: kodu korunur
+    if (r.rows[0].is_active || r.rows[0].pasif_sebep === 'lisans') return 'dolu';
     await query('UPDATE tables SET code = ? WHERE id = ? AND tenant_id = ?',
         [code + '~' + String(r.rows[0].id).slice(0, 8), r.rows[0].id, tenantId]);
     return 'bosaltildi';
@@ -240,6 +242,7 @@ exports.update = async (req, res) => {
             if (engel) return res.status(409).json({ code: engel.kod, message: engel.mesaj });
         }
         set.push('is_active = ?'); p.push(aktif ? 1 : 0);
+        if (aktif) set.push('pasif_sebep = NULL');   // lisans pasifi de kalkar (services/masaSiniri.js)
     }
     if (!set.length) return res.json({ message: 'Değişiklik yok.' });
     try {
@@ -306,4 +309,34 @@ exports.regenerateToken = async (req, res) => {
     await query('UPDATE tables SET qr_token = ? WHERE id = ? AND tenant_id = ?',
         [token, req.params.id, req.user.tenantId]);
     res.json({ qrToken: token });
+};
+
+// --- Lisans siniri yuzunden pasif masalar (services/masaSiniri.js) ---
+// GET /api/tables/lisans-pasif: Masalar sayfasindaki bilgi kutusu (fe LisansPasifMasalar)
+exports.lisansPasifListe = async (req, res) => {
+    const MS = require('../services/masaSiniri');
+    const limit = req.user.licenseTableLimit == null ? null : Number(req.user.licenseTableLimit);
+    res.json({ limit, used: await activeTableCount(req.user.tenantId), masalar: await MS.pasifListe(req.user.tenantId) });
+};
+
+// POST /api/tables/:id/lisans-aktif: lisans pasifindeki masayi yeniden aktif eder (sinira tabi). Kod ve kisa kod
+// degismedigi icin masanin karekodu yeniden calisir.
+exports.lisansAktifEt = async (req, res) => {
+    const tenantId = req.user.tenantId;
+    const r = await query('SELECT id, code, name, is_active, pasif_sebep FROM tables WHERE id = ? AND tenant_id = ?', [req.params.id, tenantId]);
+    const masa = r.rows[0];
+    if (!masa) return res.status(404).json({ message: 'Masa bulunamadı.' });
+    if (masa.is_active) return res.json({ ok: true, message: 'Masa zaten aktif.' });
+    if (masa.pasif_sebep !== 'lisans') return res.status(409).json({ message: 'Bu masa lisans sınırı nedeniyle pasif değil.' });
+    const limit = req.user.licenseTableLimit == null ? null : Number(req.user.licenseTableLimit);
+    if (limit != null && (await activeTableCount(tenantId)) + 1 > limit) {
+        return res.status(403).json({ code: 'TABLE_LIMIT_REACHED', limit,
+            message: `Lisansınız ${limit} masa ile sınırlı. Başka bir masayı aktif etmek için önce bir masayı pasife alın ya da paketinizi büyütün.` });
+    }
+    // Ayni kodla aktif bir masa varsa (eski veri) kod degistirilmeden durulur
+    const cakisma = await query('SELECT 1 FROM tables WHERE tenant_id = ? AND code = ? AND id <> ? AND is_active = 1', [tenantId, masa.code, masa.id]);
+    if (cakisma.rows.length) return res.status(409).json({ message: '"' + masa.code + '" kodu başka bir masada kullanılıyor.' });
+    await query("UPDATE tables SET is_active = 1, pasif_sebep = NULL, status = 'EMPTY' WHERE id = ? AND tenant_id = ? AND is_active = 0", [masa.id, tenantId]);
+    G.kaydet({ tenantId, user: req.user, islem: 'masa_lisans_aktif', hedefTur: 'table', hedefId: masa.id, detay: masa.name + ' (' + masa.code + ') yeniden aktif edildi' });
+    res.json({ ok: true, message: masa.name + ' aktif edildi.' });
 };

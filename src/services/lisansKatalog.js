@@ -30,9 +30,12 @@ function sekillendir(rows) {
             name: x.kod, displayName: x.ad, description: x.aciklama || '',
             price: Number(x.fiyat) || 0, tableLimit: x.masa_limiti,
         })),
+        // satisIcinGerekli: yeni satin almada birlikte alinmasi gereken moduller (orn. Garson -> Adisyon ve Kasa;
+        // services/lisansModul.js SATIS_GEREKIR). Sepet bu bilgiyle secenegi kapatir; sunucu teklifte ayni kurali uygular.
         modules: rows.filter((x) => x.tur === 'MODUL').map((x) => ({
             name: x.kod, displayName: x.ad, description: x.aciklama || '',
             price: Number(x.fiyat) || 0,
+            ...(require('./lisansModul').SATIS_GEREKIR[x.kod] ? { satisIcinGerekli: require('./lisansModul').SATIS_GEREKIR[x.kod] } : {}),
         })),
         categories: [],
     };

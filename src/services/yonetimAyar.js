@@ -15,6 +15,10 @@ const SAYISAL = {
     deneme_gun: { ad: 'Deneme süresi (gün)', en: 1, cok: 90, varsayilan: () => Number(process.env.DENEME_GUN || 7) },
     lisans_salt_okunur_gun: { ad: 'Lisans bitince salt-okunur gün', en: 0, cok: 30, varsayilan: () => Number(process.env.LISANS_TOLERANS_GUN || 3) },
     destek_oturumu_dk: { ad: 'Destek oturumu süresi (dakika)', en: 5, cok: 720, varsayilan: () => 120 },
+    // Lisans satisi (2026-11-18): KDV orani (katalog fiyatlari KDV haric) ve odeme korumasi ("odemeyi yaptim"
+    // sonrasi onay beklerken programin acik kaldigi gun; 0 = kapali). Bkz services/lisansKdv.js, odemeKorumasi.js
+    kdv_orani: { ad: 'KDV oranı (%)', en: 0, cok: 50, varsayilan: () => 20 },
+    odeme_koruma_gun: { ad: 'Ödeme bildirimi sonrası açık kalma (gün)', en: 0, cok: 14, varsayilan: () => 3 },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)
@@ -64,6 +68,8 @@ function sayi(anahtar) {
 const toleransGun = () => sayi('lisans_salt_okunur_gun');
 const denemeGun = () => sayi('deneme_gun');
 const destekSureDk = () => sayi('destek_oturumu_dk');
+const kdvOrani = () => sayi('kdv_orani');
+const odemeKorumaGun = () => sayi('odeme_koruma_gun');
 
 // Asenkron: veritabanindan taze okur (deneme acilisi gibi seyrek ama kesin olmasi gereken yerler)
 async function sayiOku(anahtar) {
@@ -154,6 +160,6 @@ async function yaz(govde) {
 const ETIKET = Object.fromEntries([...Object.entries(METIN), ...Object.entries(SAYISAL)].map(([a, t]) => [a, t.ad]));
 
 module.exports = {
-    yukle, toleransGun, denemeGun, destekSureDk, denemeGunOku, destekSureDkOku, hepsi, yaz, dogrula, ETIKET,
+    yukle, toleransGun, denemeGun, destekSureDk, kdvOrani, odemeKorumaGun, denemeGunOku, destekSureDkOku, hepsi, yaz, dogrula, ETIKET,
     SAYISAL, METIN,
 };

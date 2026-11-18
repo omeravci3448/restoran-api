@@ -43,6 +43,8 @@ async function kiraciKur({ ad, moduller = TUM, tier = 'TIER_6_10', limit = null,
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         [id, slug, kod, `${ON} ${ad}`, `${EPOSTA_ON}${slug}@ornek.test`, '05320000000', 'Test Mah. 1', tier,
             hamModul !== undefined ? hamModul : JSON.stringify(moduller), GELECEK, limit]);
+    // Fatura bilgisi satin almada zorunlu (2026-11-18)
+    await query("UPDATE tenants SET billing_name = business_name, billing_tax_id = '1234567890', billing_tax_office = 'Test VD', billing_address = 'Test Mah. 1, Afyon' WHERE id = ?", [id]);
     const kul = {};
     for (const [rol, sifre] of [['OWNER', 'sahip1234'], ['CASHIER', 'kasa1234'], ['WAITER', 'garson1234'], ['KITCHEN', 'mutfak1234']]) {
         const uid = uuid();
@@ -248,9 +250,10 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
         && q1.eklenenBagimliliklar.includes('BASE') && q1.eklenenBagimliliklar.includes('MENU_DIGITAL'), q1);
     ok('tutar: BASE = kademe fiyati (4000, katalogdaki BASE fiyati yok sayilir) + 1000 + 300 = 5300', q1.total === 5300 && q1.tableLimit === 10, q1.total);
     const q2 = (await q(['MENU_DIGITAL'])).d;
-    ok('yalniz QR Menu: kademe fiyati alinmaz (1000), masa siniri yine kademeden (10)', q2.total === 1000 && q2.tableLimit === 10 && JSON.stringify(q2.modules) === '["MENU_DIGITAL"]', q2);
-    const q3 = (await q(['GARSON'])).d;
-    ok('Garson tek basina: QR Menu eklenir (1000 + 500)', q3.total === 1500 && q3.modules.includes('MENU_DIGITAL') && !q3.modules.includes('BASE'), q3);
+    // 2026-11-18: yalniz QR menude masa kademesi yok (tier null, masa siniri null); Garson yeni satista Adisyon ve Kasa ister
+    ok('yalniz QR Menu: kademe fiyati alinmaz (1000), masa kademesi yok (tier ve sinir null)', q2.total === 1000 && q2.tableLimit === null && q2.tier === null && JSON.stringify(q2.modules) === '["MENU_DIGITAL"]', q2);
+    const q3 = await q(['GARSON']);
+    ok('Garson tek basina: 400 GARSON_ADISYON_GEREKLI (yeni satista Adisyon ve Kasa ister)', q3.status === 400 && q3.d.code === 'GARSON_ADISYON_GEREKLI', q3);
     const q4 = (await q(['BASE', 'GARSON'])).d;
     ok('Garson + Adisyon ve Kasa: QR Menu eklenmez (4000 + 500)', q4.total === 4500 && !q4.modules.includes('MENU_DIGITAL'), q4);
     const q5 = (await q(['BASE'])).d;

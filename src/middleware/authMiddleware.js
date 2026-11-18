@@ -41,7 +41,8 @@ async function protect(req, res, next) {
     // Lisans kapisi — ani kapatma YOK, kademeli (bkz services/lisansDurumu.js):
     //   AKTIF -> (bitis) -> SALT_OKUNUR 3 gun -> (3. gunun sonunda 00:00) -> KAPALI
     // POS bir kasa programi; gun ortasinda kapanmasi isletmeyi satistan alikoyar.
-    const ld = lisans.hesapla(u.license_end_date);
+    // Odeme korumasi (services/odemeKorumasi.js): "odemeyi yaptim" sonrasi onay beklerken N gun AKTIF sayilir.
+    const ld = await require('../services/odemeKorumasi').etkinDurum(u.tenant_id, u.license_end_date);
     // KAPALI: yalniz lisans yenilemesi (bkz lisansDurumu.kapalidaGecerMi). Arayuz bu kodla Lisans sayfasina doner.
     // Destek oturumu (karar 2026-11-12): KAPALI isletmede okuma (GET) serbest, Patron kapanmis hesaba bakabilsin;
     // yazma yalniz isletmenin kendisine acik uclarda (lisans + bekleyen magaza siparisi). Salt-okunurda destek de
@@ -80,6 +81,8 @@ async function protect(req, res, next) {
         lisansBitis: ld.bitis,
         lisansKalanGun: ld.kalanGun,
         lisansToleransBitis: ld.toleransBitis,
+        lisansAktifBitis: ld.aktifBitis || null,
+        odemeKorumasi: ld.odemeKorumasi || null,   // { bitis }: lisans bitti ama odeme onay bekliyor, program acik
     };
     if (u.destek) {
         // Destek oturumu: giris bilgisi / personel / hesap kapatma 403; her basarili yazma Islem Gunlugu'ne "MDA Destek"
