@@ -233,6 +233,15 @@ const bul = (liste, ad) => liste.find((u) => u.name === ad);
     r = await js(YOL, { token: rj, body: { bicim: 'json', veri: JSON.stringify({ urunler: [{ kategori: 'Çorbalar', ad: 'Tarhana', fiyat: 70 }] }), mod: 'ekle', onizleme: false } });
     ok('hatadan sonra yazma calisiyor (kilit takilmadi)', r.status === 200 && bul(await urunler(tid), 'Tarhana'), r);
 
+    console.log('\n=== 9) Rehberdeki ornek dosyalar hatasiz onizlenir ===');
+    const doc = require('fs').readFileSync(require('path').join(__dirname, 'docs', 'menu_ice_aktar.md'), 'utf8').replace(/\r\n/g, '\n');
+    const ornekJson = (doc.match(/```json\n([\s\S]*?)```/) || [])[1];
+    const ornekCsv = (doc.match(/```\n(kategori;urun;fiyat[\s\S]*?)```/) || [])[1];
+    r = await js(YOL, { token: rj, body: { bicim: 'json', veri: ornekJson || '', mod: 'ekle', onizleme: true } });
+    ok('ornek JSON: hata yok, 4 urun', r.status === 200 && r.d.hatalar.length === 0 && r.d.sayilar.urunYeni + r.d.sayilar.urunAtlanan === 4, r.d);
+    r = await js(YOL, { token: rj, body: { bicim: 'csv', veri: ornekCsv || '', mod: 'ekle', onizleme: true } });
+    ok('ornek CSV: hata yok, 4 urun', r.status === 200 && r.d.hatalar.length === 0 && r.d.sayilar.urunYeni + r.d.sayilar.urunAtlanan === 4, r.d);
+
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi ===`);
     process.exit(fail ? 1 : 0);
