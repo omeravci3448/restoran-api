@@ -18,10 +18,14 @@ async function kaydet({ tenantId, user, islem, hedefTur, hedefId, detay }) {
     } catch (e) { console.error('[islem-gunlugu] yazilamadi:', e.message); }
 }
 
-async function listele(tenantId, { gun, sinir = 200 } = {}) {
+// gun: isletmenin is gunu (YYYY-MM-DD); saat: kapanis saati (services/isGunu.js, 0 = Istanbul 00:00)
+async function listele(tenantId, { gun, saat = 0, sinir = 200 } = {}) {
     const p = [tenantId];
     let w = 'tenant_id = ?';
-    if (gun) { w += " AND substr(created_at, 1, 10) = ?"; p.push(gun); }
+    if (gun) {
+        const a = require('./isGunu').aralikUtc(gun, gun, saat);
+        w += ' AND created_at >= ? AND created_at < ?'; p.push(a.basUtc, a.bitUtc);
+    }
     p.push(Math.min(Number(sinir) || 200, 500));
     const r = await query(`SELECT id, user_name, islem, hedef_tur, hedef_id, detay, created_at
                             FROM islem_gunlugu WHERE ${w} ORDER BY created_at DESC LIMIT ?`, p);

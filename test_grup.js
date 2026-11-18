@@ -1,7 +1,7 @@
 // Sube grubu + grup yoneticisi ekrani: root grup kurar (uye, yonetici, gunluk, liste rozeti), yoneticinin /api/grup/ozet
 // toplamlari her subenin KENDI rapor rakamlarinin toplamina esit (gun + ay), grup disi isletme hic gorunmez, yonetici
 // olmayan / kasiyer 403, yonetici sifresi gerekli, destek oturumu reddedilir, Istanbul gun siniri (23:30 ayni gun,
-// 00:30 ertesi gun), donem dogrulamasi, isletme gruptan cikinca yoneticilik de duser.
+// 00:30 ertesi gun; gun raporu da ayni gun sinirini kullanir), donem dogrulamasi, isletme gruptan cikinca yoneticilik de duser.
 // Sunucuyu KENDI baslatir (port 47201).  Calistir: node test_grup.js
 process.env.MARKETPLACE_KEK = process.env.MARKETPLACE_KEK || require('crypto').randomBytes(32).toString('base64');
 const crypto = require('crypto');
@@ -283,7 +283,7 @@ const yontemTutari = (rapor, y) => Number((rapor.byPayment.find((p) => p.method 
     const g21 = await js('/api/grup/ozet?bas=2026-10-21', { token: jA, headers: PH });
     ok('00:30 (Istanbul) siparisi ertesi gunde', esit(g21.d.toplam.ciro, 22) && g21.d.toplam.adisyon === 1, g21.d && g21.d.toplam);
     const r20 = (await gunRaporu(jB, S)).d;
-    ok('(bilgi) mevcut gun raporu UTC gunu kullanir: 20 Ekim raporu ikisini de sayar', esit(r20.totals.revenue, 33), r20.totals);
+    ok('gun raporu da is gunu kullanir (K2): 20 Ekim raporu yalniz 23:30 satisini sayar', esit(r20.totals.revenue, 11) && r20.totals.order_count === 1, r20.totals);
 
     console.log('\n=== 7) Donem dogrulamasi ===');
     ok('bitis < baslangic 400', (await js('/api/grup/ozet?bas=2026-10-10&bit=2026-10-01', { token: jA, headers: PH })).status === 400);

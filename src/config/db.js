@@ -1072,6 +1072,7 @@ const initDb = () => {
         require('./menuHatirlatmaDb').menuHatirlatmaTablolari(db);   // lisans yenileme hatirlatmasi + isletme menu karekodu
         require('./lisansKampanyaDb').lisansKampanyaTablolari(db);   // lansman kampanyasi, ek sure tanimi, katalog metinleri
         require('./tavsiyeDb').tavsiyeTablolari(db);   // tavsiye sistemi: tavsiyeler tablosu, isletme tavsiye kodlari
+        require('./gunDonumuDb').gunDonumuKolonlari(db);   // is gunu donumu: isletmenin kapanis saati (0-6)
 
         // Eski musteri haklari (services/gecisHaklari.js): gecis aninda isletmenin gecis sonrasi modul listesi ve
         // onayda ucretsiz korunacak eski haklari. Root hakki kaldirabilir (kaldirildi_at).

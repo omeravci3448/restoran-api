@@ -14,7 +14,7 @@ exports.getProfile = async (req, res) => {
                 currency, tax_rate,
                 license_tier, license_modules, license_end_date, show_cost_analytics, qr_onay_gerekli, mutfak_ekrani,
                 bildirim_roller, is_active, created_at,
-                qr_siparis_acik, qr_garson_acik, qr_hesap_acik
+                qr_siparis_acik, qr_garson_acik, qr_hesap_acik, gun_donumu_saat
            FROM tenants WHERE id = ?`,
         [req.user.tenantId]
     );
@@ -91,6 +91,15 @@ exports.updateProfile = async (req, res) => {
         gorsel = await gorselHazirla(req.user.tenantId, f.musteriEkraniGorsel, 'Müşteri ekranı görseli');
     } catch (e) { return res.status(e.status || 500).json({ message: e.message || 'Görsel kaydedilemedi.' }); }
     const mesaj = mesajHazirla(f.musteriEkraniMesaj);
+    // Kapanis saati (is gunu donumu, services/isGunu.js): gelmezse dokunulmaz; 0-6 disi reddedilir
+    let gunDonumu = null;
+    if (f.gunDonumuSaat !== undefined) {
+        const n = Number(f.gunDonumuSaat);
+        if (f.gunDonumuSaat === null || f.gunDonumuSaat === '' || !Number.isInteger(n) || n < 0 || n > 6) {
+            return res.status(400).json({ message: 'Kapanış saati 00:00 ile 06:00 arasında olmalıdır.' });
+        }
+        gunDonumu = n;
+    }
     // Telefon bildirimi rolleri: gelmezse dokunulmaz; bilinmeyen olay/rol sessizce atilir
     let bildirimRoller = null;
     if (f.bildirimRoller !== undefined) {
@@ -149,6 +158,7 @@ exports.updateProfile = async (req, res) => {
             mesaj.degis, mesaj.deger,
             req.user.tenantId]
     );
+    if (gunDonumu !== null) await query('UPDATE tenants SET gun_donumu_saat = ? WHERE id = ?', [gunDonumu, req.user.tenantId]);
     if (logo.degis) eskiLogoyuSil(req.user.tenantId, eskiLogo, logo.yol);
     if (gorsel.degis) eskiLogoyuSil(req.user.tenantId, eskiGorsel, gorsel.yol);
     res.json({ message: 'Güncellendi.', logoUrl: logo.degis ? logo.yol : undefined,

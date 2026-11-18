@@ -5,6 +5,7 @@ const aksiyonServisi = require('../services/pazaryeriAksiyon');
 const { hesabiKapatIc } = require('../services/hesapKapat');
 const gunluk = require('../services/islemGunlugu');
 const bus = require('../services/eventBus');
+const { isletmeSaati } = require('../services/isGunu');
 
 // --- PAKET SERVIS ekrani ---
 // Telefon siparisi (channel 'PAKET_SERVIS') + pazaryeri siparisleri (marketplace/paketEsleme.js'te satiri olan
@@ -72,10 +73,11 @@ async function teslimatUcretiYazIc(orderId, ucret) {
 const urunSayisi = async (orderId) => Number((await query(
     'SELECT COUNT(*) AS c FROM order_items WHERE order_id = ? AND COALESCE(source, \'\') != ?', [orderId, P.TESLIMAT_KAYNAK])).rows[0].c);
 
-// GET /api/paket -> acik siparislerin HEPSI + bugun (Istanbul) kapanan/iptal edilenler (son 300) + bugun platformla
-// celiskisi ortaya cikan (eski gunde kapanmis olsa da: kartta rozet gorunsun)
+// GET /api/paket -> acik siparislerin HEPSI + bugun (isletmenin is gunu: Istanbul, kapanis saatinde doner) kapanan/iptal
+// edilenler (son 300) + bugun platformla celiskisi ortaya cikan (eski gunde kapanmis olsa da: kartta rozet gorunsun)
 // ?acik=1 -> yalniz acik siparisler (Masalar sayfasindaki Paket Servis bolumu 15 sn'de bir ceker; bitenleri tasimaz)
 exports.liste = async (req, res) => {
+    const gunBasi = req.query.acik === '1' ? null : P.istanbulGunBasiUtc(new Date(), await isletmeSaati(req.user.tenantId));
     const acik = await query(
         `SELECT o.* FROM orders o WHERE o.tenant_id = ? AND ${P.paketKosulu()} AND o.status = 'OPEN'
           ORDER BY o.opened_at`, [req.user.tenantId]);
@@ -86,7 +88,7 @@ exports.liste = async (req, res) => {
             AND (COALESCE(o.closed_at, o.opened_at) >= ? OR o.platform_celiski_at >= ?)
           ORDER BY COALESCE(o.closed_at, o.opened_at) DESC
           LIMIT 300`,
-        [req.user.tenantId, P.istanbulGunBasiUtc(), P.istanbulGunBasiUtc()]);
+        [req.user.tenantId, gunBasi, gunBasi]);
     const siparisler = await P.gorunumler([...acik.rows, ...biten.rows]);
     // Sira: acik olanlar once (yeni gelen pazaryeri siparisi en ustte, sonra en eski acilan), bitenler en son kapanan ustte
     siparisler.sort((a, b) => {
@@ -119,7 +121,7 @@ exports.olustur = async (req, res) => {
     if (f.hata) return res.status(400).json({ message: f.hata });
     const tenantId = req.user.tenantId;
     const id = uuidv4();
-    const gun = P.istanbulGunu();
+    const gun = P.istanbulGunu(new Date(), await isletmeSaati(tenantId));   // paket_no is gunu icinde artar
     await tx(async () => {
         // Gunluk artan no: yazma kilidi altinda (tx) MAX+1, UNIQUE indeks ikinci savunma
         const n = Number((await query(

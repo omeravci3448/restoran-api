@@ -1,6 +1,7 @@
 const { query } = require('../config/db');
-const { PAKET, istanbulGunu } = require('./paketServis');
+const { PAKET } = require('./paketServis');
 const L = require('./lisansDurumu');
+const IG = require('./isGunu');
 
 // --- Sube grubu ozeti (grup yoneticisi ana ekrani) ---
 // Her sube icin ve toplamda: ciro, kasaya giren (tahsilat, odeme yontemine gore), adisyon sayisi, ortalama adisyon,
@@ -12,39 +13,57 @@ const L = require('./lisansDurumu');
 //    (raporun dine_in_revenue / paket_revenue / marketplace_revenue ayrimi). Paket servis = telefon + pazaryeri.
 //  - Tahsilat: donemde KAPANAN siparislerin payments kayitlari, yontemine gore (raporun byPayment'i).
 //    nakit = NAKIT, kart = KREDI_KARTI, diger = geri kalan her yontem (yemek karti, havale, online...).
-// TEK FARK: gun siniri. Raporlar UTC takvim gunu kullanir (substr(closed_at, 1, 10)); grup ozeti Istanbul takvim
-// gunu kullanir (00:00-24:00 Turkiye saati). Gun ortasindaki satislar iki ekranda ayni; 00:00-03:00 (Turkiye)
-// arasinda kapanan siparis raporda bir onceki gune, burada kendi gunune yazilir.
+// GUN SINIRI Raporlarla AYNI (services/isGunu.js): her sube KENDI is gununu kullanir (Istanbul saati, subenin
+// kapanis saatinde doner; varsayilan 00:00). Tarihler is gunudur: 02:00'de kapanan subede 21 Ekim 01:30'daki satis
+// 20 Ekim'e yazilir, 00:00'da kapanan subede 21 Ekim'e.
+// Donem: ?donem=bugun|dun|hafta|ay|gecenAy (her subenin KENDI bugunune gore; gece 01:30'da 02:00'de kapanan sube
+// icin "bugun" hala onceki is gunudur) ya da ?bas=YYYY-MM-DD&bit=YYYY-MM-DD (ayni is gunleri, her sube kendi saatiyle).
 // Yalniz TOPLAM rakamlar: musteri adi / telefon / adres hic okunmaz.
 
 const EN_COK_GUN = 93;
-const GUN_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DONEM_KODLARI = ['bugun', 'dun', 'hafta', 'ay', 'gecenAy'];
 
 function hata(status, message, code) { const e = new Error(message); e.status = status; if (code) e.code = code; return e; }
 
-// Istanbul gununun basi (dahil), SQLite CURRENT_TIMESTAMP biciminde UTC metin. Turkiye 2016'dan beri sabit UTC+3.
-function gunBasiUtc(gun) {
-    return new Date(Date.parse(`${gun}T00:00:00+03:00`)).toISOString().slice(0, 19).replace('T', ' ');
-}
-function gunEkle(gun, n) {
-    return new Date(Date.parse(`${gun}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
-}
-function gecerliGun(g) {
-    if (!GUN_RE.test(g)) return false;
-    const d = new Date(`${g}T00:00:00Z`);
-    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === g;
+// Is gununun basi (dahil), SQLite CURRENT_TIMESTAMP biciminde UTC metin. saat: kapanis saati (0-6)
+const gunBasiUtc = (gun, saat = 0) => IG.gunBasiUtc(gun, saat);
+const gunEkle = IG.gunEkle;
+const gunSayisiOf = (bas, bit) => Math.round((Date.parse(`${bit}T00:00:00Z`) - Date.parse(`${bas}T00:00:00Z`)) / 86400000) + 1;
+
+// Goreli donem -> is gunu araligi (bugun: subenin icinde bulunulan is gunu). Hafta pazartesi baslar.
+function goreliAralik(kod, bugun) {
+    if (kod === 'dun') { const d = gunEkle(bugun, -1); return { bas: d, bit: d }; }
+    if (kod === 'hafta') {
+        const g = new Date(`${bugun}T00:00:00Z`).getUTCDay();
+        return { bas: gunEkle(bugun, -((g + 6) % 7)), bit: bugun };
+    }
+    if (kod === 'ay') return { bas: bugun.slice(0, 8) + '01', bit: bugun };
+    if (kod === 'gecenAy') {
+        const gecenSon = gunEkle(bugun.slice(0, 8) + '01', -1);
+        return { bas: gecenSon.slice(0, 8) + '01', bit: gecenSon };
+    }
+    return { bas: bugun, bit: bugun };
 }
 
-// ?bas=YYYY-MM-DD&bit=YYYY-MM-DD (Istanbul gunleri, ikisi de dahil). Bos: bugun.
-function donemCoz(basHam, bitHam, simdi = new Date()) {
-    const bugun = istanbulGunu(simdi);
-    const bas = String(basHam || '').trim() || bugun;
-    const bit = String(bitHam || '').trim() || bas;
-    if (!gecerliGun(bas) || !gecerliGun(bit)) throw hata(400, 'Tarih biçimi geçersiz (YYYY-AA-GG).');
-    if (bit < bas) throw hata(400, 'Bitiş tarihi başlangıçtan önce olamaz.');
-    const gunSayisi = Math.round((Date.parse(`${bit}T00:00:00Z`) - Date.parse(`${bas}T00:00:00Z`)) / 86400000) + 1;
+// ?bas&bit (is gunleri, ikisi de dahil) ya da ?donem=kod. Ikisi de bos: bugun. saat: subenin kapanis saati.
+function donemCoz(basHam, bitHam, simdi = new Date(), { kod: kodHam, saat = 0 } = {}) {
+    let bas = String(basHam || '').trim();
+    let bit = String(bitHam || '').trim();
+    let kod = 'ozel';
+    if (!bas && !bit) {
+        kod = String(kodHam || '').trim() || 'bugun';
+        if (!DONEM_KODLARI.includes(kod)) throw hata(400, 'Dönem geçersiz.');
+        ({ bas, bit } = goreliAralik(kod, IG.isGunu(simdi, saat)));
+    } else {
+        if (!bas) bas = bit;
+        if (!bit) bit = bas;
+        if (!IG.gecerliGun(bas) || !IG.gecerliGun(bit)) throw hata(400, 'Tarih biçimi geçersiz (YYYY-AA-GG).');
+        if (bit < bas) throw hata(400, 'Bitiş tarihi başlangıçtan önce olamaz.');
+    }
+    const gunSayisi = gunSayisiOf(bas, bit);
     if (gunSayisi > EN_COK_GUN) throw hata(400, `En fazla ${EN_COK_GUN} günlük bir aralık seçebilirsiniz.`);
-    return { bas, bit, gunSayisi, basUtc: gunBasiUtc(bas), bitUtc: gunBasiUtc(gunEkle(bit, 1)), saatDilimi: 'Europe/Istanbul' };
+    const a = IG.aralikUtc(bas, bit, saat);
+    return { kod, bas, bit, gunSayisi, basUtc: a.basUtc, bitUtc: a.bitUtc, saatDilimi: 'Europe/Istanbul' };
 }
 
 const yuvarla = (n) => Math.round(Number(n || 0) * 100) / 100;
@@ -108,19 +127,27 @@ async function kullanicininGrubu(userId, tenantId) {
 
 async function subeler(grupId) {
     const r = await query(
-        `SELECT t.id, t.business_name, t.business_code, t.is_active, t.license_end_date
+        `SELECT t.id, t.business_name, t.business_code, t.is_active, t.license_end_date, t.gun_donumu_saat
            FROM sube_grup_uyeleri u JOIN tenants t ON t.id = u.tenant_id
           WHERE u.grup_id = ?
           ORDER BY t.business_name COLLATE NOCASE`, [String(grupId)]);
     return r.rows;
 }
 
-async function ozet(grup, { bas, bit } = {}, simdi = new Date()) {
-    const donem = donemCoz(bas, bit, simdi);
+async function ozet(grup, { bas, bit, donem: kod } = {}, simdi = new Date()) {
+    const genel = donemCoz(bas, bit, simdi, { kod });   // dogrulama (hatali istek subelere bakmadan 400)
     const sb = await subeler(grup.id);
     const ids = sb.map((x) => x.id);
     const harita = new Map(sb.map((x) => [x.id, bosMetrik()]));
     const son = new Map();
+    // Her subenin donemi kendi kapanis saatiyle (is gunu araligi)
+    const subeDonem = new Map(sb.map((x) => {
+        const saat = IG.saatNorm(x.gun_donumu_saat);
+        return [x.id, { saat, ...donemCoz(bas, bit, simdi, { kod, saat }) }];
+    }));
+    // (tenant_id = ? AND kapanis araligi) OR ... : tek sorguda her sube kendi araligiyla
+    const aralikKosulu = (k) => '(' + ids.map(() => `(${k}tenant_id = ? AND ${k}closed_at >= ? AND ${k}closed_at < ?)`).join(' OR ') + ')';
+    const aralikParam = () => ids.flatMap((id) => { const d = subeDonem.get(id); return [id, d.basUtc, d.bitUtc]; });
     if (ids.length) {
         const yer = ids.map(() => '?').join(', ');
         const sip = await query(
@@ -134,8 +161,8 @@ async function ozet(grup, { bas, bit } = {}, simdi = new Date()) {
                     COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', '${PAKET}') THEN 1 ELSE 0 END), 0) AS pz_adet,
                     COALESCE(SUM(CASE WHEN channel NOT IN ('DINE_IN', '${PAKET}') THEN total ELSE 0 END), 0) AS pz_tutar
                FROM orders
-              WHERE tenant_id IN (${yer}) AND status = 'CLOSED' AND closed_at >= ? AND closed_at < ?
-              GROUP BY tenant_id`, [...ids, donem.basUtc, donem.bitUtc]);
+              WHERE status = 'CLOSED' AND ${aralikKosulu('')}
+              GROUP BY tenant_id`, aralikParam());
         for (const s of sip.rows) {
             const m = harita.get(s.tenant_id); if (!m) continue;
             m.ciro = Number(s.ciro || 0); m.adisyon = Number(s.adisyon || 0);
@@ -149,8 +176,8 @@ async function ozet(grup, { bas, bit } = {}, simdi = new Date()) {
             `SELECT p.tenant_id, p.method, COUNT(*) AS adet, COALESCE(SUM(p.amount), 0) AS tutar
                FROM payments p JOIN orders o ON o.id = p.order_id
               WHERE p.tenant_id IN (${yer}) AND o.tenant_id = p.tenant_id
-                AND o.status = 'CLOSED' AND o.closed_at >= ? AND o.closed_at < ?
-              GROUP BY p.tenant_id, p.method`, [...ids, donem.basUtc, donem.bitUtc]);
+                AND o.status = 'CLOSED' AND ${aralikKosulu('o.')}
+              GROUP BY p.tenant_id, p.method`, [...ids, ...aralikParam()]);
         for (const p of odm.rows) {
             const m = harita.get(p.tenant_id); if (m) yontemEkle(m.tahsilat, p.method || 'DIGER', p.adet, p.tutar);
         }
@@ -177,21 +204,32 @@ async function ozet(grup, { bas, bit } = {}, simdi = new Date()) {
         const m = harita.get(t.id);
         topla(toplam, m);
         const d = durumlar.get(t.id) || L.hesapla(t.license_end_date, simdi);
+        const sd = subeDonem.get(t.id);
         return {
             tenantId: t.id, ad: t.business_name, isyeriKodu: t.business_code, aktif: !!Number(t.is_active),
+            gunDonumuSaat: sd.saat, donem: { bas: sd.bas, bit: sd.bit },
             lisans: { durum: d.durum, bitis: d.bitis ? d.bitis.toISOString() : null, kalanGun: d.kalanGun,
                 odemeKorumasi: d.odemeKorumasi ? d.odemeKorumasi.bitis : null },
             sonIslem: son.get(t.id) || null,
             ...bitir(m),
         };
     });
+    // Grubun donemi: subelerin is gunu araliklarini kapsar (gun icinde hepsi ayni; yalniz gece 00:00-06:00 arasinda,
+    // farkli kapanis saatli subelerde "bugun" bir gun kayabilir)
+    let gBas = genel.bas, gBit = genel.bit;
+    if (sb.length) {
+        const ds = [...subeDonem.values()];
+        gBas = ds.reduce((m, d) => (d.bas < m ? d.bas : m), ds[0].bas);
+        gBit = ds.reduce((m, d) => (d.bit > m ? d.bit : m), ds[0].bit);
+    }
     return {
         grup: { id: grup.id, ad: grup.ad },
-        donem: { bas: donem.bas, bit: donem.bit, gunSayisi: donem.gunSayisi, saatDilimi: donem.saatDilimi },
+        donem: { kod: genel.kod, bas: gBas, bit: gBit, gunSayisi: gunSayisiOf(gBas, gBit), saatDilimi: genel.saatDilimi,
+            gunDonumu: 'sube' },
         olusturma: simdi.toISOString(),
         toplam: { ...bitir(toplam), subeSayisi: liste.length },
         subeler: liste,
     };
 }
 
-module.exports = { ozet, donemCoz, kullanicininGrubu, subeler, gunBasiUtc, EN_COK_GUN };
+module.exports = { ozet, donemCoz, kullanicininGrubu, subeler, gunBasiUtc, EN_COK_GUN, DONEM_KODLARI };
