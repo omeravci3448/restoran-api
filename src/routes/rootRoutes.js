@@ -55,6 +55,7 @@ router.get('/provizyon', protectRoot, ctrl.provizyonListe);
 router.get('/provizyon/ozet', protectRoot, ctrl.provizyonOzet);
 router.post('/provizyon/cek', protectRoot, ctrl.provizyonCek);
 router.post('/provizyon/:odemeId/tekrar', protectRoot, ctrl.provizyonTekrarDene);
+router.post('/provizyon/:odemeId/coz', protectRoot, require('../controllers/soframixPaketController').rootCoz);   // elde odeme: yeni isletme / aday / tutar
 router.post('/provizyon/tenant/:tenantId/posta', protectRoot, ctrl.provizyonPostaYenile);
 router.post('/tenants/:tenantId/soframix-bagla', protectRoot, ctrl.soframixBagla);
 

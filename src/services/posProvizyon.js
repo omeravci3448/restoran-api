@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { query, tx } = require('../config/db');
+const M = require('./lisansModul');
 
 // ——— POS paketi provizyonu ———
 // SofraMix'te POS paketi satin alinip ONAYLANINCA, POS o odemeyi kendisi SORAR
@@ -149,12 +150,34 @@ function tarihNormalle(ham) {
     return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
+// Bu kiraci hangi SofraMix isletme numaralarina bagli? (provizyon, deneme kaydi, SofraMix kanal baglantisi)
+// Bos kume = hicbir SofraMix isletmesine bagli degil.
+async function smxBaglari(tenantId) {
+    const r = await query(
+        `SELECT soframix_business_id AS no FROM pos_provizyon WHERE tenant_id = ? AND soframix_business_id IS NOT NULL
+          UNION SELECT soframix_business_id FROM deneme_kayitlari WHERE tenant_id = ? AND soframix_business_id IS NOT NULL
+          UNION SELECT l.external_store_id FROM marketplace_store_links l
+                  JOIN marketplace_channels c ON c.id = l.channel_id
+                 WHERE l.tenant_id = ? AND c.adapter_code = 'soframix' AND l.external_store_id IS NOT NULL`,
+        [tenantId, tenantId, tenantId]);
+    return new Set(r.rows.map((x) => String(x.no || '')).filter(Boolean));
+}
+
+const tlMetni = (kurus) => (Number(kurus || 0) / 100).toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' TL';
+
 // Tek bir odemeyi isle. IDEMPOTENT: ayni odeme_id ikinci kez gelirse hicbir sey yapmaz.
 // Tamami TEK transaction: yarida kalirsa ne kiraci ne provizyon kaydi kalir,
 // bir sonraki cekimde bastan denenir.
-async function odemeIsle(o) {
+//
+// o.pos_paket (SofraMix, surum 1): null = eski odeme (tam paket davranisi); { tur: 'tam' | 'ozel', tier, moduller,
+// smxTutarKurus }. Tutar guncel katalogdan yeniden hesaplanir (services/soframixPaket.js); uyusmazsa lisans
+// acilmaz, odeme elde kalir.
+// secenek (yalniz root cozumu): { yeniIsletme } eslesme aramadan yeni isletme acar, { tenantId } o isletmeye
+// yazar, { tutarKabul } tutar uyusmazligini kabul eder.
+async function odemeIsle(o, secenek = {}) {
     const odemeId = String(o.odeme_id || '').trim();
     if (!odemeId) return { durum: 'atlandi', sebep: 'odeme_id yok' };
+    const sec = secenek || {};
 
     return tx(async () => {
         // 1) Daha once BASARIYLA islendi mi? (idempotency - en onemli kapi)
@@ -171,15 +194,60 @@ async function odemeIsle(o) {
         const ad = String(o.isletme_adi || '').trim() || 'İşletme';
         const eposta = String(o.yetkili_email || '').trim().toLowerCase() || null;
         const tel = String(o.yetkili_tel || '').trim() || null;
-        const ortak = { odemeId, smxId, ad, eposta, tel, tekrarDeneme };
 
-        const { tenantId: bulunan, esles } = await kiraciBul({ smxId, tel, eposta });
+        // Paket secimi (SofraMix'in gonderdigi). Eski odemelerde yok -> tur null.
+        const paket = await require('./soframixPaket').posPaketCoz(o.pos_paket);
+        const ortak = { odemeId, smxId, ad, eposta, tel, tekrarDeneme, posPaket: paket.ham || null };
 
-        // Belirsiz eslesme: parayi kaydet, lisansa DOKUNMA, elle cozulsun.
-        if (esles === 'belirsiz_eposta') {
+        // Elde birakma: parayi kaydet, lisansa DOKUNMA, root panelinden elle cozulsun.
+        const elde = async (sebep, hata, aday = null) => {
             await provizyonYaz(o, { ...ortak, tenantId: null, donemBitis: null, kiraciAcildi: 0,
-                durum: 'elde', hata: 'Ayni e-postayla birden fazla isletme var - hangisine yazilacagi belirsiz.' });
-            return { durum: 'elde', tenantId: null, sebep: 'belirsiz_eposta' };
+                durum: 'elde', hata, eldeSebep: sebep, adayTenantId: aday });
+            return { durum: 'elde', tenantId: null, sebep, adayTenantId: aday, uyari: hata, ilkKez: !tekrarDeneme };
+        };
+
+        if (paket.hata) {
+            return elde('paket_gecersiz', `SofraMix paket bilgisi geçersiz: ${paket.mesaj} Lisans açılmadı; SofraMix ile kontrol edin.`);
+        }
+        if (paket.tur && !paket.tutarUyumlu && !sec.tutarKabul) {
+            return elde('tutar_uyumsuz', `Paket tutarı katalogla uyuşmuyor: SofraMix ${tlMetni(paket.gelenKurus)}, `
+                + `katalog ${tlMetni(paket.beklenenKurus)} (KDV hariç). Lisans açılmadı; fiyatları kontrol edin.`);
+        }
+
+        let bulunan = null;
+        let esles = 'yok';
+        if (sec.tenantId) {
+            const t = await query('SELECT id FROM tenants WHERE id = ?', [String(sec.tenantId)]);
+            if (!t.rows.length) return { durum: 'hata', sebep: 'kiraci_kayip', tenantId: String(sec.tenantId) };
+            bulunan = t.rows[0].id; esles = 'root';
+        } else if (sec.yeniIsletme) {
+            esles = 'root_yeni';
+        } else {
+            ({ tenantId: bulunan, esles } = await kiraciBul({ smxId, tel, eposta }));
+        }
+
+        if (esles === 'belirsiz_eposta') {
+            return elde('belirsiz_eposta', 'Aynı e-postayla birden fazla işletme var; hangisine yazılacağı belirsiz.');
+        }
+
+        // Telefon / e-posta eslesmesi YEDEK yoldur; yanlis kiraciya 1 yil yazmamak icin iki kapi:
+        //  - Odemenin SofraMix numarasi var ama bulunan kiraci BASKA bir SofraMix isletmesine bagli (ayni sahibin
+        //    ikinci subesi): birlestirilmez.
+        //  - Yalniz e-postayla bulunan kiraci SofraMix'le hic iliskisi olmayan yerel bir isletme: sessizce
+        //    SofraMix'e cevrilmez.
+        if (bulunan && (esles === 'deneme_tel' || esles === 'eposta')) {
+            const bag = await smxBaglari(bulunan);
+            if (smxId && bag.size && !bag.has(smxId)) {
+                return elde('farkli_smx', `Farklı SofraMix işletmesi: telefon/e-posta eşleşen işletme başka bir SofraMix `
+                    + `işletmesine bağlı (${Array.from(bag).join(', ')}), ödeme ${smxId} numaralı işletmeden. Birleştirilmedi.`, bulunan);
+            }
+            if (esles === 'eposta') {
+                const t = (await query('SELECT parent_org, license_tier FROM tenants WHERE id = ?', [bulunan])).rows[0] || {};
+                if (!(t.parent_org === 'SofraMix' || t.license_tier === 'TIER_SOFRAMIX' || bag.size)) {
+                    return elde('yerel_eposta', 'Yalnızca e-postayla eşleşen işletme SofraMix üzerinden gelmemiş (yerel müşteri). '
+                        + 'Lisansı SofraMix paketine çevrilmedi; doğru işletmeyi seçin.', bulunan);
+                }
+            }
         }
 
         // Yetkili e-postasi YOKSA ve kiraci da bulunamadiysa kiraci ACMIYORUZ.
@@ -187,55 +255,83 @@ async function odemeIsle(o) {
         // baslar, aktivasyon postasi gidecek adres olmadigi icin gitmez, kimse
         // giremez ve hicbir uyari cikmazdi. Simdi elle cozulmek uzere bekliyor.
         if (!bulunan && !eposta) {
-            await provizyonYaz(o, { ...ortak, tenantId: null, donemBitis: null, kiraciAcildi: 0,
-                durum: 'elde', hata: 'Yetkili e-postasi bos - kiraci acilamaz, sahibi giris yapamazdi.' });
-            return { durum: 'elde', tenantId: null, sebep: 'eposta_yok' };
+            return elde('eposta_yok', 'Yetkili e-postası boş; işletme açılamaz, sahibi giriş yapamazdı.');
         }
 
         let tenantId = bulunan;
         let kiraciAcildi = 0;
         let jeton = null;
+        // Paket secimi varsa isletme SofraMix musterisidir (yenileme SofraMix'ten)
+        const smxOrg = (smxId || paket.tur) ? 'SofraMix' : null;
 
         if (tenantId) {
             // 2a) Var olan kiracinin lisansini uzat
             const m = (await query(
-                'SELECT license_end_date, license_modules FROM tenants WHERE id = ?', [tenantId])).rows[0];
+                'SELECT license_end_date, license_modules, license_tier, license_table_limit FROM tenants WHERE id = ?', [tenantId])).rows[0];
             if (!m) return { durum: 'hata', sebep: 'kiraci_kayip', tenantId };
-            // Modul listesi de tazelenir. Eskiden yalniz tarih yazilirdi; elle
-            // acilmis ya da eski bir kiraci MARKETPLACE modulu olmadan kalir,
-            // parasini odedigi halde kanal ekranlarina hic giremezdi.
-            let modul = [];
-            try { modul = JSON.parse(m.license_modules || '[]'); } catch (_) { modul = []; }
-            if (!Array.isArray(modul)) modul = [];
-            for (const x of VARSAYILAN_MODULLER) if (!modul.includes(x)) modul.push(x);
+            let modul;
+            let tier;
+            let sinir = null;
+            let sinirYaz = false;
+            if (paket.tur === 'ozel') {
+                // Yalniz secilen moduller (+ zorunlu MARKETPLACE) acik kalir. Satista olmayan mevcut moduller ve eski
+                // musteri haklari lisans onayindaki kuralla korunur (deneme ise koruma yok).
+                const LT = require('./lisansTalep');
+                const tam = await require('./lisansKatalog').tamKatalog();
+                const onay = await LT.onayModulleri({ moduller: paket.moduller },
+                    { id: tenantId, license_tier: m.license_tier, license_modules: m.license_modules }, tam);
+                modul = onay.moduller;
+                tier = paket.tier || 'TIER_SOFRAMIX';
+                sinir = paket.masaSiniri; sinirYaz = true;
+            } else {
+                // Tam paket ya da eski (paket bilgisiz) odeme: varsayilan moduller eklenir.
+                // Eskiden yalniz tarih yazilirdi; elle acilmis ya da eski bir kiraci MARKETPLACE modulu olmadan
+                // kalir, parasini odedigi halde kanal ekranlarina hic giremezdi.
+                modul = M.modulListesi(m.license_modules);
+                for (const x of VARSAYILAN_MODULLER) if (!modul.includes(x)) modul.push(x);
+                if (paket.tur === 'tam' || !m.license_tier || m.license_tier === 'TIER_DENEME') {
+                    // Odenmis SofraMix paketinden sonra TIER_DENEME KALMAZ (deneme sinifinda gorunmesin).
+                    tier = 'TIER_SOFRAMIX';
+                    sinirYaz = paket.tur === 'tam' || m.license_tier === 'TIER_DENEME';
+                } else {
+                    tier = m.license_tier;
+                }
+            }
             await query(
                 `UPDATE tenants
                     SET license_end_date = ?, is_active = 1,
                         license_modules = ?,
-                        license_tier = COALESCE(license_tier, 'TIER_SOFRAMIX'),
+                        license_tier = ?,
+                        license_table_limit = CASE WHEN ? = 1 THEN ? ELSE license_table_limit END,
                         parent_org   = COALESCE(parent_org, ?)
                   WHERE id = ?`,
-                [yeniBitis(m.license_end_date), JSON.stringify(modul), smxId ? 'SofraMix' : null, tenantId]);
+                [yeniBitis(m.license_end_date), JSON.stringify(modul), tier, sinirYaz ? 1 : 0, sinir, smxOrg, tenantId]);
+            // Yeni masa siniri yazildiysa (sinirYaz) siniri asan masalar pasife alinir:
+            // BIRLESTIRME: require('./masaSiniri').siniriUygula(tenantId, sinir, { kaynak: 'soframix' })
         } else {
             // 2b) Kiraci YOK -> ac. Sifre burada BELIRLENMEZ; sahibi tek kullanimlik
             //     baglantiyla kendi belirler, boylece duz sifre hicbir yerde durmaz.
+            const ozel = paket.tur === 'ozel';
             const y = await kiraciAc({
                 ad, eposta, tel, yetkiliAd: o.yetkili_ad,
-                parentOrg: smxId ? 'SofraMix' : null, tier: 'TIER_SOFRAMIX',
-                bitis: yeniBitis(null), moduller: VARSAYILAN_MODULLER,
+                parentOrg: smxOrg, tier: ozel ? (paket.tier || 'TIER_SOFRAMIX') : 'TIER_SOFRAMIX',
+                bitis: yeniBitis(null), moduller: ozel ? paket.moduller : VARSAYILAN_MODULLER,
             });
             tenantId = y.tenantId;
             kiraciAcildi = 1;
             jeton = y.aktivasyonJetonu;
+            if (ozel && paket.masaSiniri != null) {
+                await query('UPDATE tenants SET license_table_limit = ? WHERE id = ?', [paket.masaSiniri, tenantId]);
+            }
         }
 
         const bitis = (await query(
             'SELECT license_end_date, business_code, owner_email FROM tenants WHERE id = ?', [tenantId])).rows[0];
         await provizyonYaz(o, { ...ortak, tenantId, donemBitis: bitis && bitis.license_end_date,
-            kiraciAcildi, durum: 'islendi', hata: null });
+            kiraciAcildi, durum: 'islendi', hata: null, eldeSebep: null, adayTenantId: null });
 
         return {
-            durum: 'islendi', tenantId, kiraciAcildi: !!kiraciAcildi, esles,
+            durum: 'islendi', tenantId, kiraciAcildi: !!kiraciAcildi, esles, paketTur: paket.tur || null,
             isyeriKodu: bitis && bitis.business_code,
             eposta: (bitis && bitis.owner_email) || eposta,
             lisansBitis: bitis && bitis.license_end_date,
@@ -243,6 +339,26 @@ async function odemeIsle(o) {
             aktivasyonJetonu: jeton,
         };
     });
+}
+
+// Kayitli (elde) provizyon satirini yeniden isle. SofraMix'in gonderdigi paket secimi (pos_paket) ve root'un
+// onceki kararlari (root_cozum) korunur; boylece "tutari kabul et" sonra "yeni isletme ac" gibi iki adimli
+// cozumde ilk karar kaybolmaz. ek: bu seferki root karari ({ yeniIsletme } | { tenantId } | { tutarKabul }).
+async function kayittanTekrarIsle(k, ek = {}) {
+    let karar = {};
+    try { karar = JSON.parse(k.root_cozum || '{}') || {}; } catch (_) { karar = {}; }
+    if (ek.yeniIsletme) { delete karar.tenantId; karar.yeniIsletme = true; }
+    if (ek.tenantId) { delete karar.yeniIsletme; karar.tenantId = String(ek.tenantId); }
+    if (ek.tutarKabul) karar.tutarKabul = true;
+    if (Object.keys(ek).length) {
+        await query('UPDATE pos_provizyon SET root_cozum = ? WHERE odeme_id = ?', [JSON.stringify(karar), k.odeme_id]);
+    }
+    return odemeIsle({
+        odeme_id: k.odeme_id, business_id: k.soframix_business_id, isletme_adi: k.isletme_adi,
+        yetkili_email: k.yetkili_eposta, yetkili_tel: k.yetkili_tel, tutar_kurus: k.tutar_kurus,
+        kdv_kurus: k.kdv_kurus, yontem: k.yontem, onay_tarihi: k.onay_tarihi, kaynak: k.kaynak,
+        pos_paket: k.pos_paket || null,
+    }, karar);
 }
 
 // odeme_id benzersiz oldugu icin tekrar denemede INSERT patlar - o yuzden
@@ -253,7 +369,8 @@ async function provizyonYaz(o, k) {
         ? null : Number(o.kdv_kurus);   // NULL = "kaydedilmedi", 0 = "KDV yok"; ikisi ayni sey DEGIL
     const alanlar = [o.kaynak || 'soframix', k.smxId, k.tenantId, k.ad, k.eposta, k.tel,
         Number(o.tutar_kurus) || 0, kdv, o.yontem || null,
-        tarihNormalle(o.onay_tarihi), k.donemBitis, k.kiraciAcildi, k.durum, k.hata];
+        tarihNormalle(o.onay_tarihi), k.donemBitis, k.kiraciAcildi, k.durum, k.hata,
+        k.posPaket || null, k.adayTenantId || null, k.eldeSebep || null];
 
     if (k.tekrarDeneme) {
         await query(
@@ -261,15 +378,16 @@ async function provizyonYaz(o, k) {
                 SET kaynak = ?, soframix_business_id = ?, tenant_id = ?, isletme_adi = ?,
                     yetkili_eposta = ?, yetkili_tel = ?, tutar_kurus = ?, kdv_kurus = ?,
                     yontem = ?, onay_tarihi = ?, donem_bitis = ?, kiraci_acildi = ?,
-                    durum = ?, hata = ?
+                    durum = ?, hata = ?, pos_paket = ?, aday_tenant_id = ?, elde_sebep = ?
               WHERE odeme_id = ?`, [...alanlar, k.odemeId]);
         return;
     }
     await query(
         `INSERT INTO pos_provizyon
             (id, odeme_id, kaynak, soframix_business_id, tenant_id, isletme_adi, yetkili_eposta,
-             yetkili_tel, tutar_kurus, kdv_kurus, yontem, onay_tarihi, donem_bitis, kiraci_acildi, durum, hata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             yetkili_tel, tutar_kurus, kdv_kurus, yontem, onay_tarihi, donem_bitis, kiraci_acildi, durum, hata,
+             pos_paket, aday_tenant_id, elde_sebep)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [uuidv4(), k.odemeId, ...alanlar]);
 }
 
@@ -298,6 +416,6 @@ async function bekleyenElde() {
 }
 
 module.exports = {
-    odemeIsle, donemOzeti, bekleyenElde, kiraciBul, kiraciAc, aktivasyonJetonu, yeniBitis,
+    odemeIsle, kayittanTekrarIsle, smxBaglari, donemOzeti, bekleyenElde, kiraciBul, kiraciAc, aktivasyonJetonu, yeniBitis,
     benzersizSlug, slugla, telefonNorm, tarihNormalle, VARSAYILAN_MODULLER, LISANS_GUN,
 };

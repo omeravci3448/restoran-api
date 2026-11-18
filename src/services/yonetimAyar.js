@@ -19,6 +19,8 @@ const SAYISAL = {
     // sonrasi onay beklerken programin acik kaldigi gun; 0 = kapali). Bkz services/lisansKdv.js, odemeKorumasi.js
     kdv_orani: { ad: 'KDV oranı (%)', en: 0, cok: 50, varsayilan: () => 20 },
     odeme_koruma_gun: { ad: 'Ödeme bildirimi sonrası açık kalma (gün)', en: 0, cok: 14, varsayilan: () => 3 },
+    // SofraMix tam paket fiyati (KDV haric, TL; Paketler ve Fiyatlar sekmesinde). Bos = tam paket sunulmaz.
+    smx_tam_paket_fiyat: { ad: 'SofraMix tam paket fiyatı (KDV hariç)', en: 1, cok: 10000000, varsayilan: () => null },
 };
 // Metin ayarlari: Paketler ve Fiyatlar sekmesiyle ayni anahtarlar ve ayni sinir (sistemAyar.yaz 500'de keser;
 // burada kesmek yerine 400 doner)

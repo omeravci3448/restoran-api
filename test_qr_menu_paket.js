@@ -301,6 +301,8 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('kayit formu denemesi: QR_SIPARIS dahil butun moduller', kv.status === 201 && ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK'].every((m) => JSON.parse(kt.license_modules).includes(m)), kt);
     const smx = await kiraciKur({ ad: 'SMX', moduller: ['BASE', 'MENU_DIGITAL'] });
     const smxEposta = (await query('SELECT owner_email FROM tenants WHERE id = ?', [smx.id])).rows[0].owner_email;
+    // SofraMix kiracisi: yalniz e-postayla eslesen YEREL isletme artik elde kalir (posProvizyon, yerel_eposta)
+    await query("UPDATE tenants SET parent_org = 'SofraMix' WHERE id = ?", [smx.id]);
     const odemeId = 'qrpk-odeme-' + crypto.randomBytes(4).toString('hex');
     const s = await require('./src/services/posProvizyon').odemeIsle({ odeme_id: odemeId, business_id: null, isletme_adi: `${ON} SMX`,
         yetkili_email: smxEposta, yetkili_tel: '05320000999', tutar_kurus: 1200000, kdv_kurus: 200000, yontem: 'kart', onay_tarihi: new Date().toISOString() });

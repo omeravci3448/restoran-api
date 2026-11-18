@@ -24,5 +24,9 @@ router.post('/deneme', tanitim.denemeBaslat);
 const devir = require('../controllers/denemeDevirController');
 router.get('/soframix-deneme', devir.devir);
 router.post('/deneme-giris/:jeton', devir.girisJetonuKullan);
+// SofraMix paketleri (herkese acik) + isletmenin lisans durumu (SofraMix sunucusu icin imzali)
+const smxPaket = require('../controllers/soframixPaketController');
+router.get('/soframix-paketler', smxPaket.paketler);
+router.get('/soframix-durum', smxPaket.durum);
 
 module.exports = router;

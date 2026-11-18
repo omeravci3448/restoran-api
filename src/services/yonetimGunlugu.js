@@ -168,8 +168,9 @@ async function isletmeFarki(req, tenantId, once, { islem } = {}) {
 function katalogFarki(req, once, sonra) {
     if (req) req._yonetimGunluguYazildi = true;
     if (!once || !sonra) return Promise.resolve();
-    const alanlar = [['ad', 'ad'], ['aciklama', 'açıklama'], ['fiyat', 'fiyat'], ['masa_limiti', 'masa sınırı'], ['gorunur', 'görünürlük'], ['sira', 'sıra']];
-    const m = (k, v) => (k === 'fiyat' ? TL(v) : k === 'gorunur' ? (Number(v) ? 'Satışta' : 'Gizli')
+    const alanlar = [['ad', 'ad'], ['aciklama', 'açıklama'], ['fiyat', 'fiyat'], ['masa_limiti', 'masa sınırı'], ['gorunur', 'görünürlük'], ['sira', 'sıra'],
+        ['smx_fiyat', 'SofraMix fiyatı']];
+    const m = (k, v) => (k === 'smx_fiyat' ? (v == null || v === '' ? 'normal fiyat' : TL(v)) : k === 'fiyat' ? TL(v) : k === 'gorunur' ? (Number(v) ? 'Satışta' : 'Gizli')
         : k === 'masa_limiti' ? (v == null ? 'sınırsız' : String(v)) : (v == null || v === '' ? '(boş)' : String(v)));
     const f = alanlar.filter(([k]) => String(once[k] == null ? '' : once[k]) !== String(sonra[k] == null ? '' : sonra[k]))
         .map(([k, ad]) => ({ alan: k, once: once[k], sonra: sonra[k], metin: `${ad} ${m(k, once[k])} -> ${m(k, sonra[k])}` }));

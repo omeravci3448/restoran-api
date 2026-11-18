@@ -118,6 +118,66 @@ async function uyar(konu, metin) {
         .catch((e) => console.error('[provizyon] uyari postasi gonderilemedi:', e.message));
 }
 
+// Root uyarisi: PROVIZYON_UYARI_EPOSTA tanimliysa oraya (uyar), degilse root bildirim adresine (bildirim_eposta /
+// ROOT_EMAIL). Ikisine birden gonderilmez: ayni kisiye cift posta gitmesin.
+async function rootUyari(konu, metin) {
+    if (UYARI_EPOSTA) return uyar(konu, metin);
+    console.error(`[provizyon] UYARI: ${konu} - ${metin}`);
+    await require('./rootBildirim').rootaBildir(konu, [['Ayrıntı', metin]], { dugme: 'Root paneli > SofraMix Ödemeleri' });
+}
+
+function eldeKonusu(sebep) {
+    return ({
+        farkli_smx: 'Farklı SofraMix işletmesi',
+        yerel_eposta: 'E-posta eşleşmesi yerel bir işletmede',
+        tutar_uyumsuz: 'SofraMix paket tutarı katalogla uyuşmuyor',
+        paket_gecersiz: 'SofraMix paket bilgisi geçersiz',
+        belirsiz_eposta: 'Aynı e-postayla birden fazla işletme',
+        eposta_yok: 'Yetkili e-postası boş',
+    })[sebep] || 'Elle çözülmesi gereken ödeme';
+}
+
+// Islenen odemeden sonra: SofraMix kanalini bagla, sahibine posta gonder, zayif eslesmede root'u uyar.
+// Doner: 'acilan' | 'yenilenen' | null. Root panelinden cozulen odemelerde de kullanilir.
+async function islenenSonrasi(o, s) {
+    // SofraMix kanalini otomatik bagla + menuyu cek (best-effort, arka planda; anahtar
+    // sunucudan sunucuya). Zaten bagliysa dokunmaz.
+    if (o.business_id != null && o.business_id !== '') {
+        require('./soframixOtoBaglanti')
+            .otoBagla({ tenantId: s.tenantId, isletmeNo: String(o.business_id), sebep: 'provizyon' })
+            .catch(() => {});
+    }
+    const alici = s.eposta || o.yetkili_email;
+    if (s.kiraciAcildi && s.aktivasyonJetonu && alici) {
+        await postaDene(alici, 'MDA Restoran POS hesabiniz hazir', aktivasyonPostasi({
+            ad: o.isletme_adi || 'Isletme',
+            baglanti: `${PANEL_URL}/aktivasyon/${s.aktivasyonJetonu.ham}`,
+            isyeriKodu: s.isyeriKodu, lisansBitis: s.lisansBitis,
+        }), s.tenantId);
+        return 'acilan';
+    }
+    if (s.lisansUzatildi && alici) {
+        // Lisans SESSIZCE uzamamali: isletme odedigi paranin karsiligini
+        // gordugunu bilmeli, yanlis kiraciya yazilmissa da hemen fark edilsin.
+        await postaDene(alici, 'POS lisansiniz yenilendi', yenilemePostasi({
+            ad: o.isletme_adi || 'Isletme', lisansBitis: s.lisansBitis, isyeriKodu: s.isyeriKodu,
+        }), s.tenantId);
+        if (s.esles === 'eposta') {
+            await uyar('Lisans yalnizca E-POSTA eslesmesiyle uzatildi',
+                `Odeme ${o.odeme_id} icin SofraMix isletme numarasi veya telefon eslesmedi; ` +
+                `yalnizca ${alici} adresiyle tek bir kiraci bulundu ve ona 1 yil yazildi. ` +
+                `Yanlis isletme olma ihtimaline karsi kontrol edin.`);
+        }
+        if (s.esles === 'deneme_tel') {
+            await rootUyari('Lisans telefon eşleşmesiyle uzatıldı',
+                `Ödeme ${o.odeme_id} için SofraMix işletme numarası eşleşmedi; yetkili telefonu deneme kaydındaki ` +
+                `bir işletmeyle eşleşti ve lisansı 1 yıl uzatıldı. Yanlış işletme olma ihtimaline karşı kontrol edin.`);
+        }
+        return 'yenilenen';
+    }
+    return null;
+}
+
 // Tek tur: cek, isle, yeni acilan/yenilenen isletmelere posta gonder.
 async function birTur({ genis } = {}) {
     if (!acikMi()) return { acik: false };
@@ -160,39 +220,17 @@ async function birTur({ genis } = {}) {
         try {
             const s = await odemeIsle(o);
             if (s.durum === 'zaten_islendi') { ozet.zaten++; continue; }
-            if (s.durum === 'elde') { ozet.elde++; continue; }
+            if (s.durum === 'elde') {
+                ozet.elde++;
+                // Sebebiyle birlikte YALNIZ ilk goruldugunde haber ver (genis tur ayni odemeyi tekrar sorar).
+                if (s.ilkKez && s.uyari) await rootUyari(eldeKonusu(s.sebep), `Ödeme ${o.odeme_id} (${o.isletme_adi || '-'}): ${s.uyari}`);
+                continue;
+            }
             if (s.durum !== 'islendi') { ozet.hata++; continue; }
             ozet.islenen++;
-            // SofraMix kanalini otomatik bagla + menuyu cek (best-effort, arka planda; anahtar
-            // sunucudan sunucuya). Zaten bagliysa dokunmaz.
-            if (o.business_id != null && o.business_id !== '') {
-                require('./soframixOtoBaglanti')
-                    .otoBagla({ tenantId: s.tenantId, isletmeNo: String(o.business_id), sebep: 'provizyon' })
-                    .catch(() => {});
-            }
-
-            const alici = s.eposta || o.yetkili_email;
-            if (s.kiraciAcildi && s.aktivasyonJetonu && alici) {
-                ozet.acilan++;
-                await postaDene(alici, 'MDA Restoran POS hesabiniz hazir', aktivasyonPostasi({
-                    ad: o.isletme_adi || 'Isletme',
-                    baglanti: `${PANEL_URL}/aktivasyon/${s.aktivasyonJetonu.ham}`,
-                    isyeriKodu: s.isyeriKodu, lisansBitis: s.lisansBitis,
-                }), s.tenantId);
-            } else if (s.lisansUzatildi && alici) {
-                // Lisans SESSIZCE uzamamali: isletme odedigi paranin karsiligini
-                // gordugunu bilmeli, yanlis kiraciya yazilmissa da hemen fark edilsin.
-                ozet.yenilenen++;
-                await postaDene(alici, 'POS lisansiniz yenilendi', yenilemePostasi({
-                    ad: o.isletme_adi || 'Isletme', lisansBitis: s.lisansBitis, isyeriKodu: s.isyeriKodu,
-                }), s.tenantId);
-                if (s.esles === 'eposta') {
-                    await uyar('Lisans yalnizca E-POSTA eslesmesiyle uzatildi',
-                        `Odeme ${o.odeme_id} icin SofraMix isletme numarasi veya telefon eslesmedi; ` +
-                        `yalnizca ${alici} adresiyle tek bir kiraci bulundu ve ona 1 yil yazildi. ` +
-                        `Yanlis isletme olma ihtimaline karsi kontrol edin.`);
-                }
-            }
+            const sonuc = await islenenSonrasi(o, s);
+            if (sonuc === 'acilan') ozet.acilan++;
+            if (sonuc === 'yenilenen') ozet.yenilenen++;
         } catch (e) {
             ozet.hata++;
             console.error('[provizyon] odeme islenemedi', o && o.odeme_id, e.message);
@@ -274,4 +312,4 @@ function saglik() {
         aralikSn: ARALIK_SN, ...durumu, sonGenisTur: durumu.sonGenisTur || null };
 }
 
-module.exports = { baslat, durdur, birTur, tikla, acikMi, nereden, saglik, postaDene };
+module.exports = { baslat, durdur, birTur, tikla, acikMi, nereden, saglik, postaDene, islenenSonrasi, rootUyari };
