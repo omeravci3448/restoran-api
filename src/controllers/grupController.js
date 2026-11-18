@@ -20,5 +20,5 @@ exports.ben = async (req, res) => {
 exports.ozet = async (req, res) => {
     const g = await G.kullanicininGrubu(req.user.id, req.user.tenantId);
     if (!g) return res.status(403).json({ code: 'GRUP_YETKI_YOK', message: 'Bu ekran yalnızca şube grubu yöneticilerine açıktır.' });
-    res.json(await G.ozet(g, { bas: req.query.bas, bit: req.query.bit }));
+    res.json(await G.ozet(g, { bas: req.query.bas, bit: req.query.bit, donem: req.query.donem }));
 };
