@@ -524,16 +524,12 @@ exports.provizyonOzet = async (req, res) => {
 // Elle cozulmus 'elde' odemeyi yeniden dene. Ornek: ayni e-postali ikinci
 // isletme silindikten ya da yetkili e-postasi SofraMix'te doldurulduktan sonra.
 exports.provizyonTekrarDene = async (req, res) => {
-    const { odemeIsle } = require('../services/posProvizyon');
     const r = await query('SELECT * FROM pos_provizyon WHERE odeme_id = ?', [req.params.odemeId]);
     const k = r.rows[0];
     if (!k) return res.status(404).json({ message: 'Odeme bulunamadi.' });
     if (k.durum === 'islendi') return res.status(409).json({ message: 'Bu odeme zaten islenmis.' });
-    const s = await odemeIsle({
-        odeme_id: k.odeme_id, business_id: k.soframix_business_id, isletme_adi: k.isletme_adi,
-        yetkili_email: k.yetkili_eposta, yetkili_tel: k.yetkili_tel, tutar_kurus: k.tutar_kurus,
-        kdv_kurus: k.kdv_kurus, yontem: k.yontem, onay_tarihi: k.onay_tarihi, kaynak: k.kaynak,
-    });
+    // Paket secimi (pos_paket) ve root'un onceki kararlari korunarak (services/posProvizyon.kayittanTekrarIsle)
+    const s = await require('../services/posProvizyon').kayittanTekrarIsle(k);
     await YG.kaydet(req, { islem: 'provizyon', tenantId: k.tenant_id || null, ozet: `SofraMix ödemesi yeniden denendi (${k.odeme_id}): ${s && s.durum ? s.durum : '-'}` });
     res.json(s);
 };
