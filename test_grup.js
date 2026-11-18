@@ -242,6 +242,28 @@ const yontemTutari = (rapor, y) => Number((rapor.byPayment.find((p) => p.method 
     ok('ortalama adisyon = ciro / adisyon', esit(T.ortalamaAdisyon, 92) && esit(sB.ortalamaAdisyon, 115));
     ok('acik hesaplar (su an)', T.acikHesap.adet === 1 && esit(T.acikHesap.tutar, 45) && sA.acikHesap.adet === 1 && sB.acikHesap.adet === 0);
     ok('lisans durumu + son islem', sA.lisans.durum === 'AKTIF' && sA.lisans.bitis && sA.isyeriKodu === A.kod && typeof sA.sonIslem === 'string');
+    ok('odeme korumasi yoksa alan null', sA.lisans.odemeKorumasi === null, sA.lisans);
+    // R2-G5: lisansi bitmis ama havale bildirmis sube grup ekraninda AKTIF + odemeKorumasi (panelde gordugu durum)
+    {
+        const GO = require('./src/services/grupOzet');
+        const OK = require('./src/services/odemeKorumasi');
+        const eskiBitis = (await query('SELECT license_end_date FROM tenants WHERE id = ?', [B.id])).rows[0].license_end_date;
+        await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [new Date(Date.now() - 10 * 86400000).toISOString(), B.id]);
+        await OK.tazele();
+        const o0 = await GO.ozet({ id: GID, ad: 'x' }, { bas: D, bit: D });
+        const b0 = o0.subeler.find((s) => s.tenantId === B.id);
+        ok('koruma yok: KAPALI', b0 && b0.lisans.durum === 'KAPALI' && b0.lisans.odemeKorumasi === null, b0 && b0.lisans);
+        const oid = 'grpt-koruma-' + crypto.randomBytes(4).toString('hex');
+        await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, odeme_bildirildi_at)
+                     VALUES (?, ?, 'TIER_6_10', '["BASE"]', 1000, 'beklemede', datetime('now', '-1 hours'))`, [oid, B.id]);
+        await OK.tazele();
+        const o1 = await GO.ozet({ id: GID, ad: 'x' }, { bas: D, bit: D });
+        const b1 = o1.subeler.find((s) => s.tenantId === B.id);
+        ok('havale bildirilmis sube: AKTIF + odemeKorumasi bitisi', b1 && b1.lisans.durum === 'AKTIF' && typeof b1.lisans.odemeKorumasi === 'string', b1 && b1.lisans);
+        await query('DELETE FROM lisans_odemeleri WHERE id = ?', [oid]);
+        await query('UPDATE tenants SET license_end_date = ? WHERE id = ?', [eskiBitis, B.id]);
+        await OK.tazele();
+    }
     ok('donem bilgisi', oz.d.donem.bas === D && oz.d.donem.bit === D && oz.d.donem.gunSayisi === 1 && oz.d.donem.saatDilimi === 'Europe/Istanbul');
     ok('musteri kisisel verisi yok', !/musteri|telefon_no|adres/i.test(JSON.stringify(oz.d)));
 

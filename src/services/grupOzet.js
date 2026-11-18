@@ -169,13 +169,18 @@ async function ozet(grup, { bas, bit } = {}, simdi = new Date()) {
         }
     }
     const toplam = bosMetrik();
+    // Lisans: subenin panelde gordugu ETKIN durum (odeme korumasi dahil: havale bildirildi, onay bekliyor -> AKTIF).
+    const OK = require('./odemeKorumasi');
+    const durumlar = new Map();
+    for (const t of sb) durumlar.set(t.id, await OK.etkinDurum(t.id, t.license_end_date, simdi));
     const liste = sb.map((t) => {
         const m = harita.get(t.id);
         topla(toplam, m);
-        const d = L.hesapla(t.license_end_date, simdi);
+        const d = durumlar.get(t.id) || L.hesapla(t.license_end_date, simdi);
         return {
             tenantId: t.id, ad: t.business_name, isyeriKodu: t.business_code, aktif: !!Number(t.is_active),
-            lisans: { durum: d.durum, bitis: d.bitis ? d.bitis.toISOString() : null, kalanGun: d.kalanGun },
+            lisans: { durum: d.durum, bitis: d.bitis ? d.bitis.toISOString() : null, kalanGun: d.kalanGun,
+                odemeKorumasi: d.odemeKorumasi ? d.odemeKorumasi.bitis : null },
             sonIslem: son.get(t.id) || null,
             ...bitir(m),
         };
