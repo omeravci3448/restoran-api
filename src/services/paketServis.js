@@ -55,20 +55,16 @@ function odemeBilgisi(kanal, kod) {
 }
 const posYontemi = (kanal, kod) => (odemeBilgisi(kanal, kod) || {}).pos || 'DIGER';
 
-// --- Gun siniri: Istanbul ---
-// Paket numarasi "bugunun kacinci paketi" sorusuna cevap verir; gun Turkiye saatiyle doner.
-function istanbulGunu(d = new Date()) {
-    try {
-        const p = {};
-        for (const x of new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)) p[x.type] = x.value;
-        if (p.year && p.month && p.day) return `${p.year}-${p.month}-${p.day}`;
-    } catch (_) { /* ICU yoksa asagidaki yol */ }
-    return new Date(d.getTime() + 3 * 3600000).toISOString().slice(0, 10);   // Turkiye 2016'dan beri sabit UTC+3
+// --- Gun siniri: isletmenin is gunu (services/isGunu.js) ---
+// Paket numarasi "bugunun kacinci paketi" sorusuna cevap verir; gun Istanbul saatiyle, isletmenin kapanis saatinde
+// (gun_donumu_saat, varsayilan 00:00) doner. saat verilmezse 0.
+function istanbulGunu(d = new Date(), saat = 0) {
+    return require('./isGunu').isGunu(d, saat);
 }
-// Istanbul gununun basi, SQLite CURRENT_TIMESTAMP biciminde (UTC 'YYYY-MM-DD HH:MM:SS')
-function istanbulGunBasiUtc(d = new Date()) {
-    const ms = Date.parse(istanbulGunu(d) + 'T00:00:00+03:00');
-    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+// Is gununun basi, SQLite CURRENT_TIMESTAMP biciminde (UTC 'YYYY-MM-DD HH:MM:SS')
+function istanbulGunBasiUtc(d = new Date(), saat = 0) {
+    const IG = require('./isGunu');
+    return IG.gunBasiUtc(IG.isGunu(d, saat), saat);
 }
 // Platformun ms zamani -> SQLite UTC metni (yoksa null)
 function sqlZamani(ms) {
