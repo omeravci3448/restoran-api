@@ -41,10 +41,14 @@ function kisaAdres(kod) {
 }
 
 // Masaya yeni kod yaz. yalnizBossa: kodu olmayan masaya (yoksa verir, varsa onu doner); degilse ZORLA yeniler.
-// Cakismada yeniden dener.
-async function kodYaz(tableId, yalnizBossa) {
+// Cakismada yeniden dener. Isletme menu kodlariyla (tenants.menu_kisa_kod) da cakismamali: /q/ cozumu once masaya
+// bakar, cakismada isletmenin basili menu karekodu baska isletmenin masasini acardi (menuKarekodu.kodAl'in simetrigi).
+// uretici: test icin (varsayilan uret).
+async function kodYaz(tableId, yalnizBossa, uretici = uret) {
     for (let i = 0; i < 12; i++) {
-        const kod = uret();
+        const kod = uretici();
+        const menude = await query('SELECT 1 FROM tenants WHERE menu_kisa_kod = ?', [kod]);
+        if (menude.rows.length) continue;
         try {
             const r = await query(
                 yalnizBossa ? 'UPDATE tables SET kisa_kod = ? WHERE id = ? AND kisa_kod IS NULL' : 'UPDATE tables SET kisa_kod = ? WHERE id = ?',
@@ -155,6 +159,6 @@ function denemeBaslat(ip) {
 }
 
 module.exports = {
-    ALFABE, UZUNLUK, uret, normalle, kisaAdres, kamuAdresi, masayaAta, yenile, eksikleriDoldur, coz,
+    ALFABE, UZUNLUK, uret, normalle, kisaAdres, kamuAdresi, masayaAta, yenile, eksikleriDoldur, coz, kodYaz,
     ipAnahtari, denemeBaslat, BOS_SINIRI, ESZAMANLI_SINIR,
 };

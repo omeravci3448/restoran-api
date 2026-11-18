@@ -330,6 +330,13 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('alfabede karisan karakter yok (0 O 1 I L 2 Z 5 S 8 B G)', !/[0O1IL2Z5S8BG]/.test(K.ALFABE) && K.ALFABE.length === 24);
     ok('kisa adres bicimi', K.kisaAdres('ACDEF3') === 'https://restoran.mdayazilim.com/q/ACDEF3');
     ok('O2: kisa kodlar 8 hane', K.UZUNLUK === 8 && kodlar.every((k) => k.length === 8), kodlar);
+    // R2-G6: masa kodu uretimi isletme menu koduyla cakismaz (cakisan aday atlanir)
+    {
+        const menuKod = await require('./src/services/menuKarekodu').kodAl(yalnizMenu.id);
+        const adaylar = [menuKod, K.uret()];
+        const yeni = await K.kodYaz(m1.id, false, () => adaylar.shift() || K.uret());
+        ok('masa kodu menu koduyla cakismaz', !!menuKod && yeni && yeni !== menuKod && adaylar.length === 0, { menuKod, yeni });
+    }
 
     console.log('\n=== 11) QR Indir kisa adres, kisa kodu yenile, siparis cekme ===');
     const { masa: m2t } = await masaVeUrun(tamS, 'T2');
