@@ -49,6 +49,7 @@ router.patch('/tenants/:id', protectRoot, ctrl.updateTenant);
 router.post('/tenants/:id/owner-password', protectRoot, ctrl.resetOwnerPassword);
 router.post('/tenants/:id/yonetici-sifresi-sifirla', protectRoot, ctrl.yoneticiSifresiSifirla);
 router.post('/tenants/:id/lisans-uzat', protectRoot, ctrl.lisansUzat);
+router.post('/tenants/:id/menu-ice-aktar', protectRoot, require('../controllers/menuIceAktarController').menuIceAktar);   // menu dosyasi (JSON/CSV) ice aktarma: onizleme + tek islemde yazma
 
 // SofraMix POS ödemeleri — lisansın nereden uzadığının ve faturanın dayanağı
 router.get('/provizyon', protectRoot, ctrl.provizyonListe);
