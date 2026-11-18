@@ -47,13 +47,14 @@ async function kisaKodCoz(kod) {
     return { durum: Number(x.is_active) === 1 ? 'aktif' : 'pasif', slug: x.slug, menu: k };
 }
 
-// t: { license_modules, license_end_date }. Menu kipinde ve lisans N gundur KAPALI ise true.
+// t: { id | tenant_id, license_modules, license_end_date }. Menu kipinde ve lisans N gundur KAPALI ise true.
 function menuKapaliMi(t, simdi = new Date()) {
     if (!t) return false;
     if (!require('./lisansModul').menuKipiMi(t.license_modules)) return false;
     const n = require('./yonetimAyar').menuKipiKapanmaGun();
     if (!n) return false;
-    const h = require('./lisansDurumu').hesapla(t.license_end_date, simdi);
+    // Odeme korumasi (havale bildirildi, onay bekliyor) varken durum AKTIF doner: menu acik kalir
+    const h = require('./odemeKorumasi').etkinDurumSenkron(t.id || t.tenant_id, t.license_end_date, simdi);
     if (h.durum !== 'KAPALI' || !h.toleransBitis) return false;
     return simdi.getTime() - new Date(h.toleransBitis).getTime() > n * GUN_MS;
 }

@@ -222,7 +222,14 @@ async function isletmeKur(g, personel) {
     await cagrilariKapat();
     once = giden().length;
     const sonCagri = await cagir(); await uyu(500);
-    ok('lisansi bitmis isletmede cagri kaydi olur ama telefona bildirim gitmez', sonCagri.status === 201 && giden(once).length === 0, giden(once));
+    // Salt-okunur donem (bitisten 1 gun sonra): garson cagrisi kabul edilir, bildirim de gider (SSE ile ayni kural)
+    ok('salt-okunur donemde cagri kaydi olur ve telefona bildirim gider', sonCagri.status === 201 && giden(once).length > 0, giden(once));
+    await query("UPDATE tenants SET license_end_date = datetime('now', '-10 day') WHERE id = ?", [A.tid]);
+    await cagrilariKapat();
+    once = giden().length;
+    const kapaliCagri = await cagir(); await uyu(500);
+    ok('lisansi KAPALI isletmede cagri yok, telefona bildirim gitmez', kapaliCagri.status === 403 && giden(once).length === 0, [kapaliCagri.status, giden(once)]);
+    ok('KAPALI: isletmeAcik null', (await require('./src/services/pushBildirim').isletmeAcik(A.tid)) === null);
 
     await temizle();
     console.log(`\n=== SONUC: ${pass} gecti, ${fail} kaldi (temizlendi) ===`);

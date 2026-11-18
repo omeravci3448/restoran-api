@@ -101,12 +101,13 @@ async function abonelikleriGonder(abonelikler, veri, secenek = {}) {
     return gonderilen;
 }
 
-// Isletme bildirim alabilir mi: aktif ve lisansi bitmemis (SSE akisiyla ayni kural)
+// Isletme bildirim alabilir mi: aktif ve lisansi KAPALI degil (SSE akisiyla ayni kural: Istanbul gun sonu + odeme korumasi)
 async function isletmeAcik(tenantId) {
     const r = await query('SELECT is_active, license_end_date, bildirim_roller FROM tenants WHERE id = ?', [tenantId]);
     const t = r.rows[0];
     if (!t || !t.is_active) return null;
-    if (t.license_end_date && Date.now() > new Date(t.license_end_date).getTime()) return null;
+    const ld = await require('./odemeKorumasi').etkinDurum(tenantId, t.license_end_date);
+    if (ld.durum === 'KAPALI') return null;
     return t;
 }
 
@@ -179,6 +180,6 @@ async function alacagiOlaylar(user) {
 
 module.exports = {
     OLAYLAR, ROLLER, VARSAYILAN_ROLLER, rolleriCoz,
-    acikAnahtar, olayBildir, arkadaBildir, abonelikleriGonder,
+    acikAnahtar, olayBildir, arkadaBildir, abonelikleriGonder, isletmeAcik,
     abonelikDogrula, aboneKaydet, alacagiOlaylar,
 };

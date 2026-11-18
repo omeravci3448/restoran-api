@@ -33,9 +33,12 @@ exports.stream = async (req, res) => {
     // Canli olaylar QR siparisi / adisyon (BASE) ve garson cagrisi (GARSON): ikisi de yoksa akis yok
     const { varMi } = require('../services/lisansModul');
     if (!varMi(row.license_modules, 'BASE') && !varMi(row.license_modules, 'GARSON')) return res.status(403).end();
-    if (row.license_end_date && Date.now() > new Date(row.license_end_date).getTime()) {
-        return res.status(403).end();
-    }
+    // Lisans: istegin etkin durumu (Istanbul gun sonu + odeme korumasi; protect ve QR menuyle ayni kural).
+    // Yalniz KAPALI'da reddedilir: salt-okunur donemde de QR garson cagrisi ve acik hesap kapatma surer.
+    try {
+        const ld = await require('../services/odemeKorumasi').etkinDurum(row.tenant_id, row.license_end_date);
+        if (ld.durum === 'KAPALI') return res.status(403).end();
+    } catch (_) { return res.status(500).end(); }
     const tenantId = row.tenant_id;
 
     res.writeHead(200, {

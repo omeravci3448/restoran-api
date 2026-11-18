@@ -93,6 +93,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
 (async () => {
     initDb(); await uyu(1000);
     await temizle();
+    const BASLA = (await query("SELECT datetime('now', '-2 seconds') AS t")).rows[0].t;
     katalogYedek = (await query('SELECT id, fiyat, gorunur FROM lisans_katalog')).rows;
     ayarYedek = (await query(`SELECT anahtar, deger, guncellendi_at FROM sistem_ayarlari WHERE anahtar IN ('kdv_orani', 'odeme_koruma_gun')`)).rows;
     await query(`DELETE FROM sistem_ayarlari WHERE anahtar IN ('kdv_orani', 'odeme_koruma_gun')`);   // varsayilanlar: %20, 3 gun
@@ -108,6 +109,12 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     const rj = await rootJeton();
     const rootKaydi = async (id) => (await js('/api/root/lisans-odemeleri', { token: rj })).d.find((x) => x.id === id);
     const yaz = (u) => js('/api/categories', { token: u.token, body: { name: 'Koruma deneme ' + crypto.randomBytes(2).toString('hex') } });
+    const sse = async (u) => {
+        const ac = new AbortController();
+        const r = await fetch(TABAN + '/api/realtime/stream?token=' + encodeURIComponent(u.token), { signal: ac.signal }).catch(() => ({ status: 0 }));
+        ac.abort();
+        return r.status;
+    };
 
     console.log('=== 0) Sema + birim hesap ===');
     const kolonlar = (await query('PRAGMA table_info(lisans_odemeleri)')).rows.map((x) => x.name);
@@ -144,7 +151,8 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('gecerli fatura bilgisi 200 + tamam (bosluklar atilir)', fOk.status === 200 && fOk.d.tamam === true && fOk.d.billingTaxId === '1234567890', fOk);
     ok('TCKN vergi dairesiz gecerli', (await put({ ...FATURA, billingTaxId: '12345678901', billingTaxOffice: '' })).d.tamam === true);
     await put(FATURA);
-    ok('yonetim gunlugune vergi no yazilmadi', !(await query("SELECT COUNT(*) AS n FROM yonetim_gunlugu WHERE ozet LIKE '%1234567890%' OR ayrinti LIKE '%1234567890%'")).rows[0].n);
+    // Yalniz bu calismanin kayitlarina bakilir (eski test calismalarinin magaza kayitlari ayni numarayi icerebilir)
+    ok('yonetim gunlugune vergi no yazilmadi', !(await query("SELECT COUNT(*) AS n FROM yonetim_gunlugu WHERE (ozet LIKE '%1234567890%' OR ayrinti LIKE '%1234567890%') AND created_at >= ?", [BASLA])).rows[0].n);
 
     console.log('\n=== 2) KDV: teklif, kayit, liste, root ===');
     const q = (await js('/api/license/quote', { token: a.token, body: { tier: 'TIER_6_10', modules: ['BASE', 'MENU_DIGITAL'] } })).d;
@@ -203,6 +211,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('3 gun dolunca yazma 403 LICENSE_EXPIRED', yz2.status === 403 && yz2.d.code === 'LICENSE_EXPIRED', yz2);
     const me2 = (await js('/api/auth/me', { token: b.token })).d;
     ok('/me KAPALI, koruma yok', me2.lisansDurum === 'KAPALI' && !me2.odemeKorumasi, me2);
+    ok('KAPALI: canli olay akisi 403', (await sse(b)) === 403);
     ok('tekrar "odemeyi yaptim" 200', (await js(`/api/license/purchases/${sb.d.id}/mark-paid`, { token: b.token, body: { paymentRef: 'Ali Veli 2' } })).status === 200);
     ok('tekrar bildirmek pencereyi uzatmaz (403)', (await yaz(b)).status === 403);
     ok('ilk bildirim ani korundu, not guncellendi', (await kayit(sb.d.id)).aciklama === 'Ali Veli 2'
@@ -213,6 +222,23 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     const OK = require('./src/services/odemeKorumasi');
     await OK.tazele();   // bu surecin onbellegi (sunucudaki degil) acilista yuklendi; taze oku
     ok('etkinDurum servis duzeyinde AKTIF', (await OK.etkinDurum(b.id, new Date(Date.now() - 10 * GUN).toISOString())).durum === 'AKTIF');
+    // R1-L1: canli olay akisi ve telefon bildirimi de korumayi gorur (ham bitis tarihine bakmaz)
+    ok('korumada canli olay akisi 200', (await sse(b)) === 200);
+    ok('korumada telefon bildirimi acik (isletmeAcik)', !!(await require('./src/services/pushBildirim').isletmeAcik(b.id)));
+    // R2-G1: yalniz QR menu isletmesi, lisans 40 gun once bitti (menu kapali) -> havale bildirdi -> menu acilir
+    const mk = await kiraciKur({ ad: 'Menu koruma', tier: 'TIER_1_5', moduller: ['MENU_DIGITAL'], bitis: new Date(Date.now() - 40 * GUN).toISOString() });
+    const MK = require('./src/services/menuKarekodu');
+    const mkT = await kiraci(mk.id);
+    ok('menu kipi: 40 gun KAPALI -> menu kapali', MK.menuKapaliMi(mkT) === true);
+    await query(`INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, odeme_bildirildi_at)
+                 VALUES (?, ?, 'TIER_1_5', '["MENU_DIGITAL"]', 1000, 'beklemede', datetime('now', '-1 hours'))`, ['kdvk-mk-' + crypto.randomBytes(4).toString('hex'), mk.id]);
+    await OK.tazele();
+    ok('menu kipi: odeme korumasinda menu acik', MK.menuKapaliMi(mkT) === false);
+    ok('menu kipi: tenant_id alaniyla da (masa baglami)', MK.menuKapaliMi({ ...mkT, id: undefined, tenant_id: mk.id }) === false);
+    // Salt-okunur: canli akis acik, bildirim acik (yalniz KAPALI'da kapanir)
+    const so = await kiraciKur({ ad: 'Salt okunur', bitis: new Date(Date.now() - 1 * GUN - 3600000).toISOString() });
+    ok('salt-okunur donemde canli olay akisi 200', (await sse(so)) === 200);
+    ok('salt-okunur donemde telefon bildirimi acik', !!(await require('./src/services/pushBildirim').isletmeAcik(so.id)));
 
     console.log('\n=== 5) Red: sebep zorunlu, koruma biter, musteri gorur ===');
     ok('kisa red sebebi 400', (await js(`/api/root/lisans-odemeleri/${sb.d.id}/reddet`, { token: rj, body: { not: 'yok' } })).status === 400);
