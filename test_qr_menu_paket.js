@@ -292,7 +292,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
         headers: { 'X-Forwarded-For': '10.9.0.2' } });
     const dt = (await query('SELECT * FROM tenants WHERE owner_email = ?', [`${EPOSTA_ON}d1@ornek.test`])).rows[0];
     ok('tanitim denemesi: butun moduller (QR_SIPARIS dahil), program secimi yok sayilir', d1.status === 201 && dt && ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON'].every((m) => JSON.parse(dt.license_modules).includes(m)), dt && dt.license_modules);
-    const kf = await js('/api/auth/register/request', { body: { businessName: `${ON} Kayıt`, email: `${EPOSTA_ON}kayit@ornek.test`, password: 'kayit1234', kvkkConsent: true, tier: 'TIER_6_10', modules: ['BASE'] } });
+    const kf = await js('/api/auth/register/request', { body: { businessName: `${ON} Kayıt`, email: `${EPOSTA_ON}kayit@ornek.test`, phone: '0532 400 00 03', password: 'kayit1234', kvkkConsent: true, tier: 'TIER_6_10', modules: ['BASE'] } });
     const kv = await js('/api/auth/register/verify', { body: { pendingId: kf.d.pendingId, otp: kf.d.devOtp } });
     const kt = (await query('SELECT license_modules FROM tenants WHERE owner_email = ?', [`${EPOSTA_ON}kayit@ornek.test`])).rows[0];
     ok('kayit formu denemesi: QR_SIPARIS dahil butun moduller', kv.status === 201 && ['BASE', 'MENU_DIGITAL', 'QR_SIPARIS', 'GARSON', 'STOK'].every((m) => JSON.parse(kt.license_modules).includes(m)), kt);
