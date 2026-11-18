@@ -75,6 +75,9 @@ exports.menu = async (req, res) => {
     if (!tenantHasModule(ctx, 'MENU_DIGITAL')) {
         return res.status(403).json({ code: 'MODULE_NOT_LICENSED', message: 'Dijital menü modülü aktif değil.' });
     }
+    // Yalniz QR menu kullanan isletme: lisans N gundur kapaliysa menu gosterilmez (services/menuKarekodu.js)
+    const MK = require('../services/menuKarekodu');
+    if (MK.menuKapaliMi(ctx)) return res.status(410).json(MK.KAPALI_YANIT);
     const cats = await query(
         'SELECT id, name, sort_order FROM categories WHERE tenant_id = ? AND is_active = 1 ORDER BY sort_order, name',
         [ctx.tenant_id]);
@@ -192,7 +195,11 @@ exports.kisaKodCoz = async (req, res) => {
     const bitir = K.denemeBaslat(ip);
     if (!bitir) return res.status(429).json({ code: 'COK_FAZLA_ISTEK', message: 'Çok fazla deneme. Lütfen biraz sonra tekrar deneyin.' });
     let c;
-    try { c = await K.coz(req.params.kod); }
+    try {
+        c = await K.coz(req.params.kod);
+        // Masa kodu degilse isletme duzeyi menu karekodu olabilir (menu kipi; services/menuKarekodu.js)
+        if (c.durum === 'yok') c = (await require('../services/menuKarekodu').kisaKodCoz(req.params.kod)) || c;
+    }
     finally { bitir(!!(c && (c.durum === 'aktif' || c.durum === 'pasif'))); }
     res.set('Cache-Control', 'no-store');
     if (c.durum === 'pasif') {
@@ -201,5 +208,5 @@ exports.kisaKodCoz = async (req, res) => {
     if (c.durum !== 'aktif') {
         return res.status(404).json({ code: 'KISA_KOD_YOK', message: 'Bu karekod geçerli değil. Lütfen personele başvurun.' });
     }
-    res.json({ slug: c.slug, token: c.token });
+    res.json(c.menu ? { slug: c.slug, menu: c.menu } : { slug: c.slug, token: c.token });
 };
