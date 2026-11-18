@@ -141,11 +141,13 @@ const yontemTutari = (rapor, y) => Number((rapor.byPayment.find((p) => p.method 
     ok('grup disi isletmenin kullanicisi yonetici olamaz (404)', disYon.status === 404, disYon.d);
     const kasYon = await js(`/api/root/gruplar/${GID}/yoneticiler`, { token: rj, body: { eposta: A.kasiyer.eposta } });
     ok('kasiyer yonetici olamaz (400)', kasYon.status === 400, kasYon.d);
+    const mudYon = await js(`/api/root/gruplar/${GID}/yoneticiler`, { token: rj, body: { eposta: A.mudur.eposta } });
+    ok('mudur yonetici olamaz (400, yalniz isletme sahibi)', mudYon.status === 400 && /yalnızca işletme sahibi/.test(mudYon.d.message), mudYon.d);
     const yon = await js(`/api/root/gruplar/${GID}/yoneticiler`, { token: rj, body: { eposta: A.sahip.eposta.toUpperCase() } });
     ok('A sahibi yonetici (e-posta buyuk harfle de)', yon.status === 201, yon.d);
     const ad = await js(`/api/root/gruplar/${GID}/adaylar`, { token: rj });
-    ok('adaylar: yalniz uye isletmelerin sahip / mudurleri', ad.status === 200 && ad.d.length === 4
-        && ad.d.every((x) => ['OWNER', 'MANAGER'].includes(x.rol) && [A.id, B.id].includes(x.tenantId))
+    ok('adaylar: yalniz uye isletmelerin sahipleri (mudur yok)', ad.status === 200 && ad.d.length === 2
+        && ad.d.every((x) => x.rol === 'OWNER' && [A.id, B.id].includes(x.tenantId))
         && ad.d.find((x) => x.userId === A.sahip.id).yonetici === true, ad.d);
     const ren = await js(`/api/root/gruplar/${GID}`, { token: rj, method: 'PATCH', body: { ad: `${ON} Grubu Yeni` } });
     ok('ad degisti', ren.status === 200 && ren.d.ad === `${ON} Grubu Yeni`);
@@ -196,6 +198,27 @@ const yontemTutari = (rapor, y) => Number((rapor.byPayment.find((p) => p.method 
     ok('ayni isletmenin yonetici olmayan muduru 403', ozM.status === 403, ozM.d);
     ok('kasiyer 403 (rol)', (await js('/api/grup/ozet?bas=' + D, { token: await giris(A, A.kasiyer), headers: PH })).status === 403);
     ok('jetonsuz 401', (await js('/api/grup/ozet')).status === 401);
+    // Eski kayitta kalan mudur yoneticiligi (OWNER-only kararindan once): grubu goremez, liste "gecerli degil" der
+    await query('INSERT OR IGNORE INTO sube_grup_yoneticileri (grup_id, user_id) VALUES (?, ?)', [GID, A.mudur.id]);
+    const jM = await giris(A, A.mudur);
+    ok('eski kayit: mudur grup yoneticisi ozet 403 (rol)', (await js('/api/grup/ozet?bas=' + D, { token: jM, headers: PH })).status === 403);
+    ok('eski kayit: listede mudur yonetici gecerli degil', ((await js('/api/root/gruplar', { token: rj })).d.find((x) => x.id === GID).yoneticiler
+        .find((y) => y.userId === A.mudur.id) || {}).gecerli === false);
+    // Personel ekrani: grup yoneticisinin sifresi / rolu / aktifligi baskasi tarafindan degistirilemez
+    const stf = (tok, id, body) => js('/api/auth/staff/' + id, { token: tok, method: 'PATCH', body });
+    const sM = await stf(jA, A.mudur.id, { password: 'YeniSifre123' });
+    ok('sahip, grup yoneticisi mudurun sifresini degistiremez (403 GRUP_YONETICISI)', sM.status === 403 && sM.d.code === 'GRUP_YONETICISI', sM.d);
+    ok('rol degisikligi de 403', (await stf(jA, A.mudur.id, { role: 'CASHIER' })).status === 403);
+    ok('pasife alma da 403', (await stf(jA, A.mudur.id, { isActive: false })).status === 403);
+    ok('ad degisikligi serbest (200)', (await stf(jA, A.mudur.id, { name: 'Mudur Yeni Ad' })).status === 200);
+    ok('hesabin kendisi sifresini degistirebilir (200)', (await stf(jM, A.mudur.id, { password: SIFRE })).status === 200);
+    const sahip2 = await kullaniciEkle(A.id, A.slug + '-ikinci', 'OWNER');
+    const j2 = await giris(A, sahip2);
+    const s2 = await stf(j2, A.sahip.id, { password: 'YeniSifre123' });
+    ok('ikinci sahip, grup yoneticisi sahibin sifresini degistiremez (403)', s2.status === 403 && s2.d.code === 'GRUP_YONETICISI', s2.d);
+    ok('grup yoneticisi olmayan personelin sifresi eskisi gibi degisir (200)', (await stf(jA, A.kasiyer.id, { password: SIFRE })).status === 200);
+    await query('DELETE FROM sube_grup_yoneticileri WHERE grup_id = ? AND user_id = ?', [GID, A.mudur.id]);
+    await query('DELETE FROM users WHERE id = ?', [sahip2.id]);
 
     console.log('\n=== 4) Gunluk ozet = subelerin kendi gun raporlari ===');
     const oz = await js(`/api/grup/ozet?bas=${D}&bit=${D}`, { token: jA, headers: PH });

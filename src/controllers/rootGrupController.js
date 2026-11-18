@@ -5,14 +5,17 @@ const L = require('../services/lisansDurumu');
 
 // --- Root: sube gruplari (cok subeli isletme) ---
 // Grup = birden fazla isletmenin (sube) toplu ozetini goren yonetici(ler). Root kurar: grup adi, uye isletmeler,
-// grup yoneticileri (uye isletmelerin OWNER / MANAGER kullanicilari, e-postayla secilir).
+// grup yoneticileri (uye isletmelerin OWNER kullanicilari, e-postayla secilir).
+// Karar (2026-11-18, inceleme R2-G3): grup yoneticisi YALNIZ isletme sahibi olabilir. Mudur olamaz: subenin sahibi
+// mudurun sifresini sifirlayip onun adina girerek diger subelerin rakamlarini gorebilirdi. Grup yoneticisinin sifresi,
+// rolu ve aktifligi personel ekranindan da degistirilemez (authController.updateStaff; yalniz hesabin kendisi).
 // Kurallar:
 //  - Bir isletme en fazla BIR grupta olur (tablo UNIQUE + burada anlasilir mesaj).
 //  - Isletme gruptan cikarilinca o isletmenin kullanicilarinin bu gruptaki yoneticiligi de silinir.
 //  - Her degisiklik yonetim gunlugune yazilir (islem: sube_grubu).
 
 const ISLEM = 'sube_grubu';
-const ROLLER = ['OWNER', 'MANAGER'];
+const ROLLER = ['OWNER'];
 const ROL_AD = { OWNER: 'İşletme sahibi', MANAGER: 'Müdür' };
 
 function hata(status, message) { const e = new Error(message); e.status = status; return e; }
@@ -130,7 +133,7 @@ exports.uyeCikar = async (req, res) => {
     res.json({ ok: true, kaldirilanYonetici: y.rows.length });
 };
 
-// Yonetici adaylari: uye isletmelerin aktif OWNER / MANAGER kullanicilari (root ekraninda secim listesi)
+// Yonetici adaylari: uye isletmelerin aktif OWNER kullanicilari (root ekraninda secim listesi)
 exports.adaylar = async (req, res) => {
     const g = await grupGetir(req.params.id);
     const r = await query(
@@ -139,13 +142,13 @@ exports.adaylar = async (req, res) => {
            FROM users us
            JOIN sube_grup_uyeleri gu ON gu.tenant_id = us.tenant_id AND gu.grup_id = ?
            JOIN tenants t ON t.id = us.tenant_id
-          WHERE us.is_active = 1 AND us.role IN ('OWNER', 'MANAGER')
+          WHERE us.is_active = 1 AND us.role = 'OWNER'
           ORDER BY t.business_name COLLATE NOCASE, us.role DESC, us.email`, [g.id, g.id]);
     res.json(r.rows.map((x) => ({ userId: x.id, ad: x.name || '', eposta: x.email, rol: x.role, rolAd: ROL_AD[x.role] || x.role,
         tenantId: x.tenant_id, isletmeAdi: x.business_name, yonetici: !!x.yonetici })));
 };
 
-// Yonetici ekle: { eposta, tenantId? } ya da { userId }. Kullanici uye isletmelerden birinde aktif OWNER / MANAGER olmali.
+// Yonetici ekle: { eposta, tenantId? } ya da { userId }. Kullanici uye isletmelerden birinde aktif OWNER olmali.
 exports.yoneticiEkle = async (req, res) => {
     const g = await grupGetir(req.params.id);
     const b = req.body || {};
@@ -167,7 +170,7 @@ exports.yoneticiEkle = async (req, res) => {
     if (r.rows.length > 1) throw hata(409, 'Bu e-posta adresi gruptaki birden fazla işletmede kayıtlı. Listeden işletmeyi seçerek ekleyin.');
     const us = r.rows[0];
     if (!Number(us.is_active)) throw hata(400, 'Bu kullanıcı hesabı pasif.');
-    if (!ROLLER.includes(us.role)) throw hata(400, 'Grup yöneticisi yalnızca işletme sahibi ya da müdür olabilir.');
+    if (!ROLLER.includes(us.role)) throw hata(400, 'Grup yöneticisi yalnızca işletme sahibi olabilir.');
     const e = await query('INSERT OR IGNORE INTO sube_grup_yoneticileri (grup_id, user_id) VALUES (?, ?)', [g.id, us.id]);
     if (!e.changes) return res.json({ ok: true, zatenYonetici: true });
     await YG.kaydet(req, { islem: ISLEM, tenantId: us.tenant_id, hedefTur: 'sube_grubu', hedefId: g.id,

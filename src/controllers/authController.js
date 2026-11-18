@@ -456,6 +456,14 @@ exports.updateStaff = async (req, res) => {
         return res.status(403).json({ message: 'Müdür hesaplarını yalnız işletme sahibi düzenleyebilir.' });
     }
     if (role != null && (!PERSONEL_ROLLER.includes(role) || u.role === 'OWNER')) return res.status(400).json({ message: 'Geçersiz rol.' });
+    // Sube grubu yoneticisinin sifresi, rolu ve aktifligi yalniz kendisi tarafindan degistirilir (rootGrupController):
+    // aksi halde ayni subedeki biri hesabi ele gecirip diger subelerin rakamlarini gorebilirdi.
+    if (u.id !== req.user.id && (password != null || role != null || isActive != null)) {
+        const gy = await query('SELECT 1 FROM sube_grup_yoneticileri WHERE user_id = ? LIMIT 1', [u.id]).catch(() => ({ rows: [] }));
+        if (gy.rows.length) {
+            return res.status(403).json({ code: 'GRUP_YONETICISI', message: 'Bu hesap şube grubu yöneticisi. Şifresini, rolünü ve durumunu yalnızca hesabın sahibi değiştirebilir; gerekirse destek ekibimize başvurun.' });
+        }
+    }
     if (password != null && String(password).length < 6) return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
     const hash = password != null ? await bcrypt.hash(String(password), 10) : null;
     await query(
