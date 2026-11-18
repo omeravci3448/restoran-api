@@ -715,6 +715,8 @@ exports.lisansOdemeleri = async (req, res) => {
             // Odeme korumasi: musteri "odemeyi yaptim" dedi, onay beklerken program acik (bitis)
             const kb = await require('../services/odemeKorumasi').kayitKorumaBitisi(x).catch(() => null);
             ek.koruma_bitis = kb ? kb.toISOString() : null;
+            // Son 30 gunde red: bu bildirime odeme korumasi verilmez (kartta ve onay penceresinde yazilir)
+            ek.onceki_red = await require('../services/odemeKorumasi').sonRed(x.tenant_id, x.odeme_bildirildi_at).catch(() => null);
             // Masa siniri: onaylanirsa aktif masalar pasife alinacak mi (services/masaSiniri.js; onay penceresi uyarisi)
             const ms = await masaSiniriOnizleme(x, onay.moduller);
             ek.aktif_masa = ms.aktif;

@@ -202,6 +202,15 @@ exports.yenilemeKanali = async (req, res) => {
     const yk = await yenilemeKanali(req.user.tenantId);
     if (yk.kanal === 'yerel') {
         try { yk.donem = await LT.donemBilgisi(req.user.tenantId); } catch (_) { /* donem bilgisi olmadan da calisir */ }
+        // Bekleyen bildirim (lisans seridi: "odemeniz incelemede"; son 30 gunde red varsa koruma yok, program kapali kalir)
+        try {
+            const b = (await query("SELECT * FROM lisans_odemeleri WHERE tenant_id = ? AND durum = 'beklemede' LIMIT 1", [req.user.tenantId])).rows[0];
+            if (b) {
+                const kb = b.odeme_bildirildi_at ? await OK.kayitKorumaBitisi(b).catch(() => null) : null;
+                yk.bekleyenOdeme = { id: b.id, bildirildi: !!b.odeme_bildirildi_at, korumaBitis: kb ? kb.toISOString() : null,
+                    redVar: !!(await OK.sonRed(req.user.tenantId, b.odeme_bildirildi_at).catch(() => null)) };
+            }
+        } catch (_) { /* serit bilgisi olmadan da calisir */ }
     }
     if (yk.kanal === 'soframix') yk.paket = await require('../services/soframixPaket').kiraciPaketBilgisi(req.user.tenantId).catch(() => null);
     res.json(yk);
@@ -317,9 +326,9 @@ exports.purchase = async (req, res) => {
 
 // Satin almada aktif masa sayisi paketin sinirinin uzerindeyse gosterilen uyari (arayuzde ayni metin)
 function masaUyariMetni(aktif, sinir) {
-    return `Aktif masa sayınız (${aktif}) seçtiğiniz paketin sınırının (${sinir}) üzerinde. Ödemeniz onaylandığında tüm masalarınız `
-        + 'pasife alınır; lisansınızdaki masa sayısı kadar masayı Masalar sayfasından yeniden aktif edebilirsiniz. '
-        + 'Aktif ettiğiniz masaların karekodları çalışmaya devam eder.';
+    return `Aktif masa sayınız (${aktif}) seçtiğiniz paketin sınırının (${sinir}) üzerinde. Ödemeniz onaylandığında açık hesabı `
+        + 'olmayan masalarınız pasife alınır (açık hesaplı masalar hesap kapanana kadar aktif kalır); lisansınızdaki masa sayısı kadar '
+        + 'masayı Masalar sayfasından yeniden aktif edebilirsiniz. Aktif ettiğiniz masaların karekodları çalışmaya devam eder.';
 }
 
 exports.markPaid = async (req, res) => {
@@ -379,6 +388,8 @@ async function kayitEkleri(tenantId, x) {
         const b = await OK.kayitKorumaBitisi({ ...x, tenant_id: tenantId }).catch(() => null);
         ek.koruma_bitis = b ? b.toISOString() : null;
     }
+    // Son 30 gunde reddedilmis bildirim: bu bildirimde onay beklerken program acik tutulmaz (musteriye soylenir)
+    if (x && x.durum === 'beklemede') ek.koruma_yok_red = !!(await OK.sonRed(tenantId, x.odeme_bildirildi_at).catch(() => null));
     return ek;
 }
 // Patron'a e-posta: ortak servis services/rootBildirim.js (rootaBildir), degerleri HTML kacislar.

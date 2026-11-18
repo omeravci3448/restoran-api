@@ -207,7 +207,7 @@ const fiyatYaz = (id, fiyat, gorunur = 1) => query('UPDATE lisans_katalog SET fi
     ok('yeterli paket: masaUyarisi false', qb2.d.masaUyarisi === false, qb2.d);
     const pb0 = await js('/api/license/purchase', { token: B.token, body: { tier: 'TIER_1_5', modules: ['BASE', 'MENU_DIGITAL'] } });
     ok('onaysiz satin alma 400 MASA_UYARISI_ONAY_GEREKLI + metin', pb0.status === 400 && pb0.d.code === 'MASA_UYARISI_ONAY_GEREKLI'
-        && pb0.d.message.startsWith('Aktif masa sayınız (8) seçtiğiniz paketin sınırının (5) üzerinde. Ödemeniz onaylandığında tüm masalarınız pasife alınır;'), pb0.d);
+        && pb0.d.message.startsWith('Aktif masa sayınız (8) seçtiğiniz paketin sınırının (5) üzerinde. Ödemeniz onaylandığında açık hesabı olmayan masalarınız pasife alınır'), pb0.d);
     const pb = await js('/api/license/purchase', { token: B.token, body: { tier: 'TIER_1_5', modules: ['BASE', 'MENU_DIGITAL'], masaUyarisiOnay: true } });
     ok('onayli satin alma 201', pb.status === 201, pb.d);
     const kb = (await query('SELECT * FROM lisans_odemeleri WHERE id = ?', [pb.d.id])).rows[0];

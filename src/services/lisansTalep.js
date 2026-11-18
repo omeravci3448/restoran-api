@@ -54,8 +54,10 @@ const TARIH = (s) => {
 };
 const sinir = (x) => (x == null ? Infinity : Number(x));   // masa siniri: null = sinirsiz
 const modulAdi = (tam, m) => ((tam.find((x) => x.tur === 'MODUL' && x.kod === m) || {}).ad) || M.AD[m] || m;
+// Katalogda olmayan ozel paket kodlari (deneme, elle musteri, SofraMix, kurum): ham kod gosterilmesin
+const OZEL_TIER_AD = { TIER_DENEME: 'Deneme sürümü', TIER_MUSTERI: 'Müşteri paketi', TIER_SOFRAMIX: 'SofraMix paketi', TIER_KURUM: 'Kurum lisansı' };
 const tierAdi = (tam, k) => (k === M.MENU_TIER ? 'QR Menü paketi'
-    : k ? (((tam.find((x) => x.tur === 'TIER' && x.kod === k) || {}).ad) || k) : '-');
+    : k ? (((tam.find((x) => x.tur === 'TIER' && x.kod === k) || {}).ad) || OZEL_TIER_AD[k] || k) : '-');
 
 // Satistaki (satin alinabilir) modul kodlari
 const satistakiModuller = (tam) => new Set(tam.filter((x) => x.tur === 'MODUL' && Number(x.gorunur) === 1).map((x) => x.kod));
