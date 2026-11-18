@@ -235,8 +235,12 @@ exports.bankInfo = async (_req, res) => {
         hesapSahibi: await A.oku('iban_sahibi', ''),
         banka: await A.oku('banka_adi', ''),
         aciklama: await A.oku('odeme_aciklama', ''),
+        // Red kutusunda musterinin yazacagi numara (root ayari; bos ise MDA'nin numarasi)
+        destekWhatsapp: (await A.oku('destek_whatsapp', '')) || DESTEK_WHATSAPP,
     });
 };
+// Varsayilan destek WhatsApp numarasi (sitede ve Instagram'da kullanilan MDA numarasi)
+const DESTEK_WHATSAPP = '0532 662 97 46';
 
 // Satin alma: YEREL bildirim kaydi. Hub'a hicbir cagri yapilmiyor.
 //

@@ -38,6 +38,8 @@ const METIN = {
     banka_adi: { ad: 'Banka', sinir: 500 },
     odeme_aciklama: { ad: 'Açıklama notu', sinir: 500 },
     bildirim_eposta: { ad: 'Bildirim e-postası', sinir: 200 },
+    // Musteriye gosterilen destek WhatsApp numarasi (red kutusu). Bos = licenseController.DESTEK_WHATSAPP
+    destek_whatsapp: { ad: 'Destek WhatsApp numarası', sinir: 40 },
     // YYYY-MM-DD (Istanbul gun sonuna kadar). Bos = varsayilan (lansmanKampanya.VARSAYILAN_KAYIT_SON)
     lansman_kayit_son: { ad: 'Lansman: son kayıt günü', sinir: 10 },
 };
