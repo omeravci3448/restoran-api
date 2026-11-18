@@ -118,7 +118,8 @@ async function isletmeler() {
 async function tek(sql, p = []) { return (await query(sql, p)).rows[0] || {}; }
 
 async function gelir(baslangic, magaza) {
-    const lisans = await tek(`SELECT COALESCE(SUM(tutar), 0) AS t, COUNT(*) AS n FROM lisans_odemeleri
+    // Havale: tahsil edilen tutar (KDV dahil genel_toplam; eski kayitta tutar). SofraMix ve magaza da KDV dahil toplanir.
+    const lisans = await tek(`SELECT COALESCE(SUM(COALESCE(genel_toplam, tutar)), 0) AS t, COUNT(*) AS n FROM lisans_odemeleri
                                WHERE durum = 'onaylandi' AND datetime(islenen_at) >= datetime(?)`, [baslangic]);
     const smx = await tek(`SELECT COALESCE(SUM(tutar_kurus), 0) AS k, COUNT(*) AS n FROM pos_provizyon
                             WHERE durum = 'islendi' AND datetime(onay_tarihi) >= datetime(?)`, [baslangic]);
@@ -238,7 +239,7 @@ async function isletmeAyrinti(id) {
     };
 
     const havale = await query(
-        `SELECT id, tur, tier, moduller, tutar, yeni_toplam, kredi_tutari, durum, admin_note, donem_bitis, onay_gun,
+        `SELECT id, tur, tier, moduller, tutar, genel_toplam, yeni_toplam, kredi_tutari, durum, admin_note, donem_bitis, onay_gun,
                 created_at, odeme_bildirildi_at, islenen_at
            FROM lisans_odemeleri WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 100`, [id]);
     const smx = await query(
@@ -249,7 +250,9 @@ async function isletmeAyrinti(id) {
     const odemeler = [
         ...havale.rows.map((o) => ({
             id: o.id, kaynak: 'Havale/EFT', tur: TUR_AD[o.tur] || 'Lisans', paket: tierAdi(tierler, o.tier),
-            moduller: M.modulListesi(o.moduller).map((k) => M.AD[k] || k), tutar: Number(o.tutar || 0),
+            // tutar: havale tutari (KDV dahil; eski kayitta KDV yok). kdvHaric: KDV haric tutar.
+            moduller: M.modulListesi(o.moduller).map((k) => M.AD[k] || k), tutar: Number((o.genel_toplam != null ? o.genel_toplam : o.tutar) || 0),
+            kdvHaric: Number(o.tutar || 0),
             kredi: o.kredi_tutari == null ? null : Number(o.kredi_tutari), durum: DURUM_AD[o.durum] || o.durum, durumKod: o.durum,
             tarih: o.islenen_at || o.created_at, talep: o.created_at, odemeBildirildi: o.odeme_bildirildi_at, donemBitis: o.donem_bitis,
             not: o.admin_note || null,

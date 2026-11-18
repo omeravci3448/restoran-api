@@ -86,11 +86,13 @@ async function temizle() {
         const { query } = require('./src/config/db');
         await query("INSERT INTO tenants (id, slug, business_name) VALUES ('rootcihaz-bildirim-tenant', 'rootcihaz-bildirim-test', 'Bildirim Test Lokantasi')");
         await query("INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, created_at) VALUES ('rootcihaz-bildirim-odeme', 'rootcihaz-bildirim-tenant', 'TIER_PRO', '[]', 16000, 'beklemede', datetime('now', '+1 minute'))");
+        // KDV'li kayit: telefona havale edilecek tutar (genel toplam) gider (R1-L3)
+        await query("UPDATE lisans_odemeleri SET kdv_orani = 20, kdv_tutari = 3200, genel_toplam = 19200 WHERE id = 'rootcihaz-bildirim-odeme'");
     }
     d = await iste('/api/root/cihaz/bildirim-durumu', { bildirimJetonu: bj });
-    ok('yeni bekleyen: sayi +1, son = bizim isletme, 16000, bildirildi=false, zaman dolu',
+    ok('yeni bekleyen: sayi +1, son = bizim isletme, KDV dahil 19200, bildirildi=false, zaman dolu',
         d.kod === 200 && d.veri.bekleyen === oncekiBekleyen + 1 && d.veri.son && d.veri.son.isletme === 'Bildirim Test Lokantasi'
-        && d.veri.son.tutar === 16000 && d.veri.son.bildirildi === false && typeof d.veri.son.zaman === 'string', d.veri);
+        && d.veri.son.tutar === 19200 && d.veri.son.bildirildi === false && typeof d.veri.son.zaman === 'string', d.veri);
     const zaman1 = d.veri.son && d.veri.son.zaman;
     {
         const { query } = require('./src/config/db');

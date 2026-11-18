@@ -66,12 +66,12 @@ async function giris(t, eposta, sifre) {
     const r = await js('/api/auth/login', { body: { email: eposta || t.eposta, businessCode: t.kod, password: sifre || SAHIP_SIFRE } });
     return r.d && r.d.token;
 }
-async function odemeEkle(tenantId, { tutar = 1000, durum = 'onaylandi', islenen = "datetime('now')", bildirildi = false } = {}) {
+async function odemeEkle(tenantId, { tutar = 1000, genel = null, durum = 'onaylandi', islenen = "datetime('now')", bildirildi = false } = {}) {
     const id = uuid();
     await query(
-        `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, durum, tur, donem_bitis, islenen_at, onay_gun, odeme_bildirildi_at)
-         VALUES (?, ?, 'TIER_6_10', '["BASE"]', ?, ?, 'ilk', ?, ${durum === 'onaylandi' ? islenen : 'NULL'}, 365, ?)`,
-        [id, tenantId, tutar, durum, gun(365), bildirildi ? new Date().toISOString() : null]);
+        `INSERT INTO lisans_odemeleri (id, tenant_id, tier, moduller, tutar, genel_toplam, durum, tur, donem_bitis, islenen_at, onay_gun, odeme_bildirildi_at)
+         VALUES (?, ?, 'TIER_6_10', '["BASE"]', ?, ?, ?, 'ilk', ?, ${durum === 'onaylandi' ? islenen : 'NULL'}, 365, ?)`,
+        [id, tenantId, tutar, genel, durum, gun(365), bildirildi ? new Date().toISOString() : null]);
     return id;
 }
 async function plakaEkle(tenantId, { durum = 'ALINDI', tutar = 0, odemeAlindi = false, bildirildi = false } = {}) {
@@ -172,7 +172,7 @@ async function ayarlariGeriYukle() {
     const T = {};
     T.deneme = await kiraciKur('Deneme', { tier: 'TIER_DENEME', bitis: gun(5), deneme: true, telefon: '0533 771 11 11' });
     T.odemeli = await kiraciKur('Odemeli', { tier: 'TIER_6_10', bitis: gun(200) });
-    await odemeEkle(T.odemeli.id, { tutar: 1200 });
+    await odemeEkle(T.odemeli.id, { tutar: 1000, genel: 1200 });   // KDV haric 1000 + %20 = 1200 havale (R1-L3: gelir KDV dahil)
     T.salt = await kiraciKur('Salt', { tier: 'TIER_1_5', bitis: gun(-1) });
     await odemeEkle(T.salt.id, { tutar: 800, islenen: "datetime('now', '-400 days')" });
     T.kapali = await kiraciKur('Kapali', { aktif: 0 });
@@ -247,7 +247,7 @@ async function ayarlariGeriYukle() {
         && d.kimlik.slug === T.odemeli.slug && !!d.kimlik.sahipEposta && !!d.kimlik.telefon && d.kimlik.adres === 'Test Mah. No: 1' && !!d.kimlik.kayit && d.kimlik.kanal === 'Yerel', d.kimlik);
     ok('ayrinti: lisans (kademe adi, modul adlari, bitis, kalan gun, durum, sinif)', d.lisans.tierAd === '6-10 Masa' && d.lisans.modulAdlari.includes('QR Menü')
         && d.lisans.kalanGun > 190 && d.lisans.durum === 'AKTIF' && d.lisans.sinif === 'odemeli' && d.lisans.indirimOrani === 0, d.lisans);
-    ok('ayrinti: odeme gecmisi (tur, tutar, durum)', d.odemeler.length === 1 && d.odemeler[0].tutar === 1200 && d.odemeler[0].durum === 'Onaylandı' && d.odemeler[0].tur === 'İlk alım', d.odemeler);
+    ok('ayrinti: odeme gecmisi (tur, tutar, durum)', d.odemeler.length === 1 && d.odemeler[0].tutar === 1200 && d.odemeler[0].kdvHaric === 1000 && d.odemeler[0].durum === 'Onaylandı' && d.odemeler[0].tur === 'İlk alım', d.odemeler);
     ok('ayrinti: plaka talepleri (3)', d.plakalar.length === 3 && d.plakalar.some((x) => x.durum_ad));
     ok('ayrinti: magaza siparisleri listesi (bu isletmede yok: bos)', Array.isArray(d.magaza) && d.magaza.length === 0, d.magaza);
     ok('ayrinti: kullanim (aktif masa 1, kullanici 1, urun 1, son 30 gunde 2 siparis; iptal ve eski sayilmaz)',

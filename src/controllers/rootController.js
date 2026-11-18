@@ -202,7 +202,7 @@ exports.cihazBildirimDurumu = async (req, res) => {
     if (!c.rows.length) { cihazBasarisiz(ip); return res.status(401).json({ message: 'Bildirim jetonu geçersiz ya da iptal edilmiş.' }); }
     cihazDenemeleri.delete(ip);
     const r = await query(
-        `SELECT o.tutar, o.created_at, o.odeme_bildirildi_at, t.business_name
+        `SELECT o.tutar, o.genel_toplam, o.created_at, o.odeme_bildirildi_at, t.business_name
            FROM lisans_odemeleri o JOIN tenants t ON t.id = o.tenant_id
           WHERE o.durum = 'beklemede'
           ORDER BY COALESCE(o.odeme_bildirildi_at, o.created_at) DESC`);
@@ -213,7 +213,8 @@ exports.cihazBildirimDurumu = async (req, res) => {
     catch (e) { console.error('[olay] telefon ozeti:', e.message); }
     res.json({
         bekleyen: r.rows.length,
-        son: s ? { isletme: s.business_name, tutar: Number(s.tutar) || 0, bildirildi: !!s.odeme_bildirildi_at,
+        // tutar: havale edilecek tutar (KDV dahil genel toplam; eski kayitta KDV yok, tutar). Bankadaki rakamla ayni olmali.
+        son: s ? { isletme: s.business_name, tutar: Number(s.genel_toplam != null ? s.genel_toplam : s.tutar) || 0, bildirildi: !!s.odeme_bildirildi_at,
                    zaman: s.odeme_bildirildi_at || s.created_at } : null,
         olay,
     });
@@ -270,7 +271,7 @@ exports.listTenants = async (_req, res) => {
                 -- Havale/EFT ile onaylanan lisans odemeleri (Genel Bakis ile ayni sinif: services/yonetimOzet.js)
                 (SELECT COUNT(*) FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi') AS havale_adedi,
                 (SELECT o.islenen_at FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi' ORDER BY o.islenen_at DESC LIMIT 1) AS havale_son_tarih,
-                (SELECT o.tutar FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi' ORDER BY o.islenen_at DESC LIMIT 1) AS havale_son_tutar
+                (SELECT COALESCE(o.genel_toplam, o.tutar) FROM lisans_odemeleri o WHERE o.tenant_id = t.id AND o.durum = 'onaylandi' ORDER BY o.islenen_at DESC LIMIT 1) AS havale_son_tutar
            FROM tenants t
           ORDER BY t.is_active DESC, t.business_name`);
 
