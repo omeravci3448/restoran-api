@@ -528,15 +528,11 @@ const initDb = () => {
         )`);
         db.run("CREATE INDEX IF NOT EXISTS idx_qr_bekleyen ON qr_bekleyen_siparisler(tenant_id, durum, created_at)", [], () => {});
         db.run("ALTER TABLE tenants ADD COLUMN qr_onay_gerekli INTEGER DEFAULT 0", [], () => {}); // QR siparisi kasa onayi bekler mi
-        db.run("ALTER TABLE order_items ADD COLUMN added_by TEXT", [], () => {});               // kalemi ekleyen personel (gunluk)
-        // Mutfak ekrani (KDS): kategori istasyonu, kalem zamanlari, isletme anahtari
-        db.run("ALTER TABLE categories ADD COLUMN istasyon TEXT DEFAULT 'MUTFAK'", [], () => {});  // MUTFAK | BAR | YOK (ekrana dusmez)
+        // Mutfak ekrani (KDS) isletme anahtari. Kategori istasyonu, kalem zamanlari, kalemi ekleyen ve siparisi iptal eden
+        // sutunlari kendi tablolarinin CREATE TABLE satirindan SONRA eklenir (categories, orders, order_items asagida):
+        // bos veritabaninda tablodan once calisan ALTER sessizce duser ve tablo o sutun olmadan kurulur
+        // (bkz test_ilk_acilis_sema.js).
         db.run("ALTER TABLE tenants ADD COLUMN mutfak_ekrani INTEGER DEFAULT 0", [], () => {});     // mutfak ekrani kullaniliyor mu
-        db.run("ALTER TABLE order_items ADD COLUMN prep_started_at TEXT", [], () => {});
-        db.run("ALTER TABLE order_items ADD COLUMN ready_at TEXT", [], () => {});
-        db.run("ALTER TABLE order_items ADD COLUMN served_at TEXT", [], () => {});
-        db.run("CREATE INDEX IF NOT EXISTS idx_order_items_order_status ON order_items(order_id, status)", [], () => {});
-        db.run("ALTER TABLE orders ADD COLUMN cancelled_by TEXT", [], () => {});
 
         // — TABLES (masalar) —
         db.run(`CREATE TABLE IF NOT EXISTS tables (
@@ -571,6 +567,8 @@ const initDb = () => {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(tenant_id) REFERENCES tenants(id)
         )`);
+        // Mutfak ekrani (KDS): kategori istasyonu
+        db.run("ALTER TABLE categories ADD COLUMN istasyon TEXT DEFAULT 'MUTFAK'", [], () => {});  // MUTFAK | BAR | YOK (ekrana dusmez)
 
         // — PRODUCTS (ürünler — stoklu veya stoksuz) —
         db.run(`CREATE TABLE IF NOT EXISTS products (
@@ -629,6 +627,7 @@ const initDb = () => {
         db.run("ALTER TABLE orders ADD COLUMN platform_fee REAL DEFAULT 0", [], () => {});      // sipariş başı sabit ücret
         db.run("ALTER TABLE orders ADD COLUMN extra_cost REAL DEFAULT 0", [], () => {});         // kurye, zarar, vb.
         db.run("ALTER TABLE orders ADD COLUMN extra_cost_note TEXT", [], () => {});
+        db.run("ALTER TABLE orders ADD COLUMN cancelled_by TEXT", [], () => {});           // siparisi iptal eden kullanici
 
         // — ORDER ITEMS —
         db.run(`CREATE TABLE IF NOT EXISTS order_items (
@@ -651,6 +650,12 @@ const initDb = () => {
         db.run("ALTER TABLE order_items ADD COLUMN unit TEXT", [], () => {});
         // Kalem bazlı tahsilat: bu kalemin kaç adedi ödendi (kalan = qty - paid_qty)
         db.run("ALTER TABLE order_items ADD COLUMN paid_qty REAL DEFAULT 0", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN added_by TEXT", [], () => {});               // kalemi ekleyen personel (gunluk)
+        // Mutfak ekrani (KDS): kalem zamanlari
+        db.run("ALTER TABLE order_items ADD COLUMN prep_started_at TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN ready_at TEXT", [], () => {});
+        db.run("ALTER TABLE order_items ADD COLUMN served_at TEXT", [], () => {});
+        db.run("CREATE INDEX IF NOT EXISTS idx_order_items_order_status ON order_items(order_id, status)", [], () => {});
 
         // — PAZARYERİ KANALLARI — Yemeksepeti/Trendyol/Getir vb. komisyon + sabit ücret config.
         // Entegrasyon yok; manuel sipariş girişinde kanal seçilince komisyon otomatik hesaplanır.
