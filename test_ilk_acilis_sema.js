@@ -1,15 +1,18 @@
-// Bos veritabaninda ILK acilis: initDb tek seferde EKSIKSIZ sema kurmali.
-// Hata (2026-11-19): bazi "ALTER TABLE ... ADD COLUMN" satirlari hedef tablonun CREATE TABLE satirindan ONCE
+// Bos veritabaninda ILK acilis: initDb tek seferde EKSIKSIZ sema kurmali, baglantilar kilit hatasi almadan acilmali.
+// Hata 1 (2026-11-19): bazi "ALTER TABLE ... ADD COLUMN" satirlari hedef tablonun CREATE TABLE satirindan ONCE
 // calisiyordu. Bos veritabaninda ALTER sessizce dusuyor (geri cagri hatayi yutuyor), tablo o sutun olmadan
 // kuruluyordu: ilk acilista POST /api/categories 500 ("table categories has no column named istasyon"), ikinci
 // acilista ALTER'lar tuttugu icin duzeliyordu. Canli veritabani eski oldugu icin etkilenmedi.
+// Hata 2 (2026-11-20): iki baglanti (yazma + okuma) bos dosyada ayni anda journal_mode=WAL diyordu; biri SQLITE_BUSY
+// aliyor, geri cagri olmadigi icin hata surec duzeyine cikiyordu (sunucu loglayip suruyordu, testler cokuyordu).
 //
 // Yontem: her acilis AYRI surec (sunucu acilisi gibi). Veritabani gecici klasorde; calisma veritabanina
 // (database.sqlite) dokunulmaz. Cocuk surec sqlite3.Database'i gecici dosyaya yonlendirir, initDb'yi calistirir,
-// kuyruk bitince semayi (tablo -> sutunlar, indeksler) ve "no such table / no such column" hatalarini yazar.
+// kuyruk bitince semayi (tablo -> sutunlar, indeksler), baglanti kiplerini ve hatalari yazar.
 //   1) Ilk acilista mutfak / islem gunlugu sutunlari ve indeks var; kategori istasyonla yazilabiliyor
-//   2) Ilk acilista hicbir ifade "no such table / no such column" hatasi vermedi (sira hatalarinin genel bekcisi)
-//   3) Ikinci acilis semaya HICBIR sey eklemedi (ilk acilis eksiksiz)
+//   2) Hicbir ifade "no such table / no such column" hatasi vermedi (sira hatalarinin genel bekcisi)
+//   3) Hicbir ifade SQLITE_BUSY / SQLITE_LOCKED almadi; yazma ve okuma baglantisi WAL kipinde
+//   4) Ikinci acilis semaya HICBIR sey eklemedi (ilk acilis eksiksiz)
 process.env.HUB_URL = 'http://127.0.0.1:9';   // canli hub'a asla gitmesin
 const fs = require('fs');
 const os = require('os');
@@ -18,6 +21,7 @@ const { spawnSync } = require('child_process');
 
 const ISARET = 'SEMA_JSON ';
 const siraHatasiMi = (m) => /no such (table|column)/i.test(m || '');
+const kilitHatasiMi = (m) => /SQLITE_(BUSY|LOCKED)/.test(m || '');
 
 // ---------- Cocuk surec: tek acilis ----------
 async function acilis(yaz) {
@@ -30,8 +34,8 @@ async function acilis(yaz) {
     Yonlendirilmis.prototype = Asil.prototype;
     sqlite3.Database = Yonlendirilmis;
 
-    // initDb hatalari bos geri cagriyla yutar: geri cagriyi sarip sira hatasi belirtilerini kaydet
-    const siraHatalari = [];
+    // initDb hatalari bos geri cagriyla yutar (db.js acilis ayarlari yalniz loglar): geri cagriyi sarip kaydet
+    const siraHatalari = [], kilitHatalari = [], digerHatalar = [];
     const kisalt = (s) => String(s).replace(/\s+/g, ' ').trim().slice(0, 140);
     for (const ad of ['run', 'all', 'get']) {
         const asil = Asil.prototype[ad];
@@ -40,7 +44,9 @@ async function acilis(yaz) {
             if (son >= 0 && typeof args[son] === 'function') {
                 const cb = args[son];
                 args[son] = function (err) {
-                    if (err && siraHatasiMi(err.message)) siraHatalari.push(`${err.message} :: ${kisalt(sql)}`);
+                    const m = err && err.message;
+                    if (siraHatasiMi(m)) siraHatalari.push(`${m} :: ${kisalt(sql)}`);
+                    else if (kilitHatasiMi(m)) kilitHatalari.push(`${m} :: ${kisalt(sql)}`);
                     return cb.apply(this, arguments);
                 };
             }
@@ -48,15 +54,13 @@ async function acilis(yaz) {
         };
     }
     // Geri cagrisiz ifadenin hatasi surec duzeyine cikar: server.js gibi cokmeden kaydet
-    const digerHatalar = [];
-    const yakala = (e) => {
+    process.on('uncaughtException', (e) => {
         const m = (e && e.message) || String(e);
-        (siraHatasiMi(m) ? siraHatalari : digerHatalar).push(m);
-    };
-    process.on('uncaughtException', yakala);
-    process.on('unhandledRejection', yakala);
+        (siraHatasiMi(m) ? siraHatalari : kilitHatasiMi(m) ? kilitHatalari : digerHatalar).push(m);
+    });
+    process.on('unhandledRejection', (e) => digerHatalar.push((e && e.message) || String(e)));
 
-    const { db, initDb, tx } = require('./src/config/db');
+    const { db, initDb, tx, query } = require('./src/config/db');
     if (db.filename !== hedef) throw new Error(`yonlendirme tutmadi: ${db.filename}`);
     initDb();
     const hepsi = (sql, p = []) => new Promise((ok, red) => db.all(sql, p, (e, r) => (e ? red(e) : ok(r))));
@@ -71,6 +75,11 @@ async function acilis(yaz) {
     sema.indeksler = (await hepsi("SELECT tbl_name || '.' || name AS ad FROM sqlite_master WHERE type = 'index' ORDER BY 1"))
         .map((r) => r.ad);
 
+    // Baglanti kipleri: yazma baglantisi WAL'a gecirir; okuma baglantisi dosyayi okuyunca WAL'da olmali
+    const kip = { yazma: ((await hepsi('PRAGMA journal_mode'))[0] || {}).journal_mode };
+    await query('SELECT COUNT(*) AS c FROM sqlite_master');
+    kip.okuma = ((await query('PRAGMA journal_mode')).rows[0] || {}).journal_mode;
+
     let kategori = null, kategoriHata = null;
     if (yaz) {
         try {
@@ -81,7 +90,7 @@ async function acilis(yaz) {
             kategori = ((await hepsi("SELECT istasyon FROM categories WHERE id = 'ilk-acilis-k'"))[0] || {}).istasyon || null;
         } catch (e) { kategoriHata = e.message; }
     }
-    const cikti = JSON.stringify({ sema, siraHatalari, digerHatalar, kategori, kategoriHata });
+    const cikti = JSON.stringify({ sema, kip, siraHatalari, kilitHatalari, digerHatalar, kategori, kategoriHata });
     process.stdout.write(ISARET + cikti + '\n', () => process.exit(0));
 }
 
@@ -113,10 +122,6 @@ function semaFarki(a, b) {
     return fark;
 }
 
-// Ilk acilista iki baglanti ayni anda "PRAGMA journal_mode=WAL" der; biri SQLITE_BUSY alabilir (bilinen, ayri konu,
-// server.js uncaughtException ile ayakta kalir). Sema ile ilgisi yok: not olarak yazilir, testi dusurmez.
-const bilinenMi = (m) => /SQLITE_BUSY/.test(m);
-
 if (process.argv[2] === '--acilis') {
     acilis(process.argv[3] === 'yaz').catch((e) => { console.error('[acilis]', (e && e.stack) || e); process.exit(1); });
 } else {
@@ -133,14 +138,13 @@ if (process.argv[2] === '--acilis') {
             console.log(String(r.stdout || '').slice(-1500) + String(r.stderr || '').slice(-1500));
             return null;
         }
-        const s = JSON.parse(satir.slice(ISARET.length));
-        for (const m of s.digerHatalar.filter(bilinenMi)) console.log(`  NOT ${no}. acilis (ayri konu): ${m}`);
-        return s;
+        return JSON.parse(satir.slice(ISARET.length));
     };
     const denetle = (no, s) => {
         ok(`${no}. acilista hicbir ifade "no such table/column" hatasi vermedi`, s.siraHatalari.length === 0, s.siraHatalari);
-        const diger = s.digerHatalar.filter((m) => !bilinenMi(m));
-        ok(`${no}. acilista beklenmeyen hata yok`, diger.length === 0, diger);
+        ok(`${no}. acilista kilit hatasi (SQLITE_BUSY / SQLITE_LOCKED) yok`, s.kilitHatalari.length === 0, s.kilitHatalari);
+        ok(`${no}. acilista beklenmeyen hata yok`, s.digerHatalar.length === 0, s.digerHatalar);
+        ok(`${no}. acilista yazma ve okuma baglantisi WAL kipinde`, s.kip.yazma === 'wal' && s.kip.okuma === 'wal', s.kip);
     };
     try {
         console.log('=== 1) Bos veritabaninda ILK acilis ===');

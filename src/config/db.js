@@ -15,15 +15,22 @@ if (process.env.NODE_ENV === 'production' && !fs.existsSync('/app/data')) {
 //  - writeDb: yazmalar + transaction'lar, tek sıradan (kilit) geçer.
 //  - readDb : okumalar, KİLİTSİZ ve eşzamanlı. Böylece /api/auth/me, /tables gibi
 //    okumalar bir yazmanın/transaction'ın arkasında ASLA beklemez (donma biter).
+//
+// Acilis ayarlari baglanti olusur olusmaz KUYRUGA konur: dosya acilinca initDb'nin CREATE/ALTER'larindan ONCE ve
+// SIRAYLA calisir; bekleme suresi en once (kilit cakismasinda hemen SQLITE_BUSY yerine bekler). WAL'a yalniz YAZMA
+// baglantisi gecirir: WAL kipi dosyaya yazilir, okuma baglantisi ilk okumasinda kendiliginden WAL'da calisir.
+// Eskiden iki baglanti bos dosyada AYNI ANDA, geri cagrisiz journal_mode=WAL diyordu: biri SQLITE_BUSY aliyor, hata
+// surec duzeyine cikiyordu (sunucu [uncaughtException] yazip suruyordu, testler cokuyordu). Yalniz yeni (bos)
+// veritabaninda olurdu; zaten WAL'da olan veritabaninda davranis ayni (bkz test_ilk_acilis_sema.js).
 function mkConn(label) {
     const c = new sqlite3.Database(dbPath, (err) => {
-        if (!err) {
-            c.run('PRAGMA journal_mode=WAL');
-            c.run('PRAGMA foreign_keys=ON');
-            c.run('PRAGMA busy_timeout=4000');
-        } else {
-            console.error(`[db:${label}]`, err.message);
-        }
+        if (err) console.error(`[db:${label}]`, err.message);
+    });
+    const hataYaz = (ayar) => (e) => { if (e) console.error(`[db:${label}] ${ayar} ayarlanamadi:`, e.message); };
+    c.serialize(() => {
+        c.run('PRAGMA busy_timeout=4000', [], hataYaz('busy_timeout'));
+        if (label === 'write') c.run('PRAGMA journal_mode=WAL', [], hataYaz('journal_mode'));
+        c.run('PRAGMA foreign_keys=ON', [], hataYaz('foreign_keys'));
     });
     return c;
 }
